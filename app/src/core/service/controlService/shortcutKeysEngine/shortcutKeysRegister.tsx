@@ -1517,6 +1517,35 @@ export const allKeyBinds: KeyBindItem[] = [
     },
   },
   {
+    id: "copySelectedEntityPrgDeepLink",
+    defaultKey: "",
+    icon: Link,
+    when: whenHasProject,
+    onPress: async (project) => {
+      if (!project) {
+        toast.warning("请先打开工程文件");
+        return;
+      }
+      if (project.isDraft) {
+        await showDraftCannotExportDeepLinkDialog();
+        return;
+      }
+      const selectedEntities = project.stageManager.getSelectedEntities();
+      if (selectedEntities.length === 0) {
+        toast.warning("请先选中一个物体");
+        return;
+      }
+      if (selectedEntities.length > 1) {
+        toast.warning("只能复制一个选中物体的链接");
+        return;
+      }
+      const url = createSelectedEntityDeepLink(project);
+      if (!url) return;
+      writeText(url);
+      toast.success("已复制节点链接");
+    },
+  },
+  {
     id: "exportCurrentFilePrgDeepLink",
     defaultKey: "",
     icon: Link,

@@ -2517,6 +2517,9 @@ keyBinds:
   exportSelectedEntityPrgDeepLink:
     title: 导出当前选中物体的prg协议链接（有bug）
     description: 导出带有当前选中物体定位信息的 prg 协议链接，目前有已知问题
+  copySelectedEntityPrgDeepLink:
+    title: 复制节点链接
+    description: 将当前选中物体对应的 prg 协议链接直接复制到剪贴板
   exportCurrentFilePrgDeepLink:
     title: 导出当前文件的prg协议链接
     description: 导出当前文件的 prg 协议链接

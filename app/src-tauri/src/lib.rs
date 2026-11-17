@@ -17,7 +17,7 @@ pub mod ownership_helper {
 }
 
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 #[cfg(target_os = "linux")]
 use std::path::Path;
@@ -25,6 +25,34 @@ use std::path::Path;
 pub static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 #[derive(Default)]
 struct PendingOpenFiles(Mutex<Vec<String>>);
+
+/// 第二个实例把命令行参数转发过来后，把主窗口拉到前台。
+/// Windows 上前台权限已由 single-instance 插件通过 AllowSetForegroundWindow 让渡，
+/// 因此这里直接 set_focus 即可；最小化或被隐藏的窗口需要先 show/unminimize。
+#[cfg(desktop)]
+fn focus_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// 双击 .prg 文件时系统会把文件路径作为参数交给新进程。
+/// 新进程已被 single-instance 插件拦下并转发参数，这里把路径还原成前端已有的
+/// open-file-from-os 事件，交由前端在已运行的实例里打开标签页。
+#[cfg(desktop)]
+fn forward_open_files(app: &tauri::AppHandle, args: &[String]) {
+    for arg in args.iter().skip(1) {
+        if !arg.to_lowercase().ends_with(".prg") {
+            continue;
+        }
+        if !std::path::Path::new(arg).exists() {
+            continue;
+        }
+        let _ = app.emit("open-file-from-os", arg.clone());
+    }
+}
 
 #[tauri::command]
 fn take_pending_open_files(state: State<PendingOpenFiles>) -> Vec<String> {
@@ -61,6 +89,17 @@ pub fn run() {
     }
 
     let builder = tauri::Builder::default();
+
+    // 单实例插件必须第一个注册：它在 setup 阶段创建具名互斥体。
+    // 第二个实例（例如点击外部 prg:// 链接、双击 .prg 文件）不会再启动进程，
+    // 而是把命令行参数转发给已运行实例后立即退出。
+    // 开启 deep-link 特性后，转发过来的 URL 会先交给 deep-link 插件，
+    // 由它触发 deep-link://new-url 事件，前端 onOpenUrl 即可跳转到对应节点。
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        focus_main_window(app);
+        forward_open_files(app, &args);
+    }));
 
     builder
         .manage(PendingOpenFiles::default())

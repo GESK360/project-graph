@@ -12,10 +12,27 @@ interface DeepLinkParams {
   target?: string;
 }
 
-const handledUrls = new Set<string>();
+/**
+ * 同一条链接可能被投递两次：热启动时 deep-link 插件既会触发 deep-link://new-url 事件，
+ * 也会把 URL 写进 getCurrent() 的结果里。这里只在一个很短的时间窗内去重，
+ * 使同一条链接在稍后再次点击时仍然能重新定位（长期去重会让第二次点击失效）。
+ */
+const handledUrls = new Map<string, number>();
+const DEDUPE_WINDOW_MS = 2000;
+
+function shouldHandleUrl(url: string) {
+  const now = Date.now();
+  for (const [handledUrl, handledAt] of handledUrls) {
+    if (now - handledAt > DEDUPE_WINDOW_MS) handledUrls.delete(handledUrl);
+  }
+  const lastHandledAt = handledUrls.get(url);
+  if (lastHandledAt !== undefined && now - lastHandledAt <= DEDUPE_WINDOW_MS) return false;
+  handledUrls.set(url, now);
+  return true;
+}
 
 export function isProjectGraphDeepLink(input: string) {
-  return /^prg:(\/\/)?/i.test(input);
+  return /^(prg|flux):(\/\/)?/i.test(input);
 }
 
 function buildProjectGraphUrl(params: DeepLinkParams) {
@@ -125,7 +142,7 @@ function parseProjectGraphUrl(url: string): DeepLinkParams | null {
   try {
     parsed = new URL(url);
   } catch {
-    const normalized = url.replace(/^prg:(?!\/\/)/i, "prg://");
+    const normalized = url.replace(/^(prg|flux):(?!\/\/)/i, "$1://");
     parsed = new URL(normalized);
   }
 
@@ -199,8 +216,7 @@ function applyCameraParams(project: Project, params: DeepLinkParams) {
 export async function handleDeepLink(urls: string[]) {
   for (const url of urls) {
     if (!isProjectGraphDeepLink(url)) continue;
-    if (handledUrls.has(url)) continue;
-    handledUrls.add(url);
+    if (!shouldHandleUrl(url)) continue;
 
     const params = parseProjectGraphUrl(url);
     if (!params) continue;

@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="https://assets.graphif.dev/icon.png" width="96" height="96" alt="Project Graph 标志">
+<img src="https://assets.graphif.dev/icon.png" width="96" height="96" alt="Flux Graph 标志">
 
-# Project Graph
+# Flux Graph
 
 **让想法连成图，让复杂关系变清晰。**
 
@@ -20,13 +20,22 @@
 </div>
 
 <p align="center">
-  <img src="/docs/assets/readme/canvas.gif" width="960" alt="Project Graph 实际操作：缩放画布，在局部节点与全局结构之间切换">
+  <img src="/docs/assets/readme/canvas.gif" width="960" alt="Flux Graph 实际操作：缩放画布，在局部节点与全局结构之间切换">
 </p>
 <p align="center"><sub>从局部细节到整体结构。演示素材来自 <a href="https://graphif.dev/">官方网站</a>，<a href="https://assets.graphif.dev/videos/scale.webm">查看完整视频</a>。</sub></p>
 
+## Flux Graph 与上游的差异
+
+Flux Graph 是 [Project Graph](https://github.com/graphif/project-graph) 的 fork，界面与工作流保持一致，在此基础上补齐了深链接相关的体验：
+
+- **原生单实例转发**：在系统里点击 `prg://` 链接时，会唤起已经运行的实例并直接跳转到对应节点，不再另起一个进程。
+- **右键「复制节点链接」**：在节点上右键即可拿到指向该节点的 `prg://` 链接，方便贴进文档或聊天工具。
+- **同时注册两种协议**：安装包同时注册 `prg://` 与 `flux://`，旧链接和新链接都能直接打开。
+- **identifier 沿用上游**：应用 identifier 仍是 `liren.project-graph`，因此既有设置、扩展与最近文件数据目录无需迁移。
+
 ## 一张画布，多种表达
 
-Project Graph 不要求你的想法只有一个中心、一个方向或一种层级。你可以先放下零散的想法，再通过连接、分组与布局逐步梳理关系。
+Flux Graph 不要求你的想法只有一个中心、一个方向或一种层级。你可以先放下零散的想法，再通过连接、分组与布局逐步梳理关系。
 
 | 你想做的事             | 可以使用的能力                           |
 | ---------------------- | ---------------------------------------- |
