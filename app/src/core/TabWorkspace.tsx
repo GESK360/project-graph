@@ -17,6 +17,7 @@ import {
   createTabGroup,
   findTabGroup,
   findTabGroupByTabId,
+  FIXED_GROUP_LAYOUT,
   FIXED_SIDE_GROUP_IDS,
   getTabGroups,
   insertTabIntoGroup,
@@ -53,28 +54,40 @@ function preferMainGroup(root: TabGroupNode | null) {
  * Subsequent default side windows stack as tabs in the same group instead of splitting again.
  * Caller should focus the tab afterwards.
  */
-function dockToSideGroup(tabId: string, edge: FixedSideEdge) {
-  const fixedId = FIXED_SIDE_GROUP_IDS[edge];
+function dockToFixedGroup(tabId: string, fixedId: string) {
+  const layout = FIXED_GROUP_LAYOUT[fixedId];
+  if (!layout) return false;
+  // 刚从主组创建出来的标签要先摘掉，否则会在两个组里各留一份
+  if (findTabGroupByTabId(store.get(tabGroupRootAtom), tabId)) removeFromGroup(tabId);
   let root = store.get(tabGroupRootAtom);
 
   if (findTabGroup(root, fixedId)) {
     store.set(tabGroupRootAtom, insertTabIntoGroup(root, fixedId, tabId));
     store.set(activeGroupIdAtom, fixedId);
-    return;
-  }
-
-  const target = preferMainGroup(root);
-  if (!target) {
-    const group = createTabGroup([tabId], fixedId);
-    store.set(tabGroupRootAtom, group);
-    store.set(activeGroupIdAtom, fixedId);
-    return;
+    return true;
   }
 
   const sideGroup = createTabGroup([tabId], fixedId);
-  root = splitTabGroup(root, target.id, sideGroup, edge);
+  const target = preferMainGroup(root);
+  if (!target) {
+    store.set(tabGroupRootAtom, sideGroup);
+    store.set(activeGroupIdAtom, fixedId);
+    return true;
+  }
+
+  root = splitTabGroup(root, target.id, sideGroup, layout.edge, undefined, [layout.ratio, 100 - layout.ratio]);
   store.set(tabGroupRootAtom, root);
   store.set(activeGroupIdAtom, fixedId);
+  return true;
+}
+
+function dockToSideGroup(tabId: string, edge: FixedSideEdge) {
+  return dockToFixedGroup(tabId, FIXED_SIDE_GROUP_IDS[edge]);
+}
+
+/** 工作空间文件树固定停靠在自己的组里，点页面打开的新工程不会挤进这个组 */
+export function dockWorkspacePanel(tabId: string) {
+  return dockToFixedGroup(tabId, FIXED_SIDE_GROUP_IDS.workspace);
 }
 
 function constrainRect(rect: Rectangle) {
@@ -136,7 +149,11 @@ export namespace TabWorkspace {
       dockToSideGroup(tab.id, splitEdge);
     } else if (tab.layout === "docked") {
       const root = store.get(tabGroupRootAtom);
-      const target = findTabGroup(root, store.get(activeGroupIdAtom) ?? "") ?? getTabGroups(root)[0];
+      // 当前激活的是固定侧组时，新工程应该进主编辑组；否则工程会替换掉侧栏里的面板
+      const activeGroupId = store.get(activeGroupIdAtom) ?? "";
+      const target =
+        (isFixedSideGroupId(activeGroupId) ? preferMainGroup(root) : findTabGroup(root, activeGroupId)) ??
+        getTabGroups(root)[0];
       if (target) {
         store.set(
           tabGroupRootAtom,
@@ -208,7 +225,8 @@ export namespace TabWorkspace {
             activeTabId: id,
           })),
         );
-        store.set(activeGroupIdAtom, group.id);
+        // 固定侧组只是“显示区”，不让它成为新标签的目标组
+        if (!isFixedSideGroupId(group.id)) store.set(activeGroupIdAtom, group.id);
       }
       store.set(activeDockedTabAtom, tab);
     }

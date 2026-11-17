@@ -5,12 +5,21 @@ export type TabDropEdge = "left" | "right" | "top" | "bottom";
 export const FIXED_SIDE_GROUP_IDS = {
   left: "pg-side-left",
   right: "pg-side-right",
+  /** 工作空间文件树独占的固定组：不和左侧其它面板共组，否则会被大纲/标签顶掉 */
+  workspace: "pg-side-workspace",
 } as const;
 
 export type FixedSideEdge = keyof typeof FIXED_SIDE_GROUP_IDS;
 
+/** 每个固定组贴在哪条边、首次拆分占多少比例 */
+export const FIXED_GROUP_LAYOUT: Record<string, { edge: "left" | "right"; ratio: number }> = {
+  [FIXED_SIDE_GROUP_IDS.left]: { edge: "left", ratio: 20 },
+  [FIXED_SIDE_GROUP_IDS.right]: { edge: "right", ratio: 20 },
+  [FIXED_SIDE_GROUP_IDS.workspace]: { edge: "left", ratio: 18 },
+};
+
 export function isFixedSideGroupId(id: string): boolean {
-  return id === FIXED_SIDE_GROUP_IDS.left || id === FIXED_SIDE_GROUP_IDS.right;
+  return id in FIXED_GROUP_LAYOUT;
 }
 
 export interface TabGroup {

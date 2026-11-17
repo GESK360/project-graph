@@ -10,13 +10,14 @@ import {
   MenubarSubTrigger,
   MenubarTrigger,
 } from "@/components/ui/menubar";
+import { Button } from "@/components/ui/button";
 import { Project } from "@/core/Project";
 import { KeyBindsUI } from "@/core/service/controlService/shortcutKeysEngine/KeyBindsUI";
 import { allKeyBinds } from "@/core/service/controlService/shortcutKeysEngine/shortcutKeysRegister";
 import { RecentFileManager } from "@/core/service/dataFileService/RecentFileManager";
 import { onOpenFile } from "@/core/service/GlobalMenu";
 import { Settings } from "@/core/service/Settings";
-import { activeResourceTabAtom } from "@/state";
+import { activeResourceTabAtom, store, tabsAtom } from "@/state";
 import { formatKeyBindSequenceToString } from "@/utils/keyDisplay";
 import { PathString } from "@/utils/pathString";
 import { isMac } from "@/utils/platform";
@@ -25,6 +26,7 @@ import { useAtom } from "jotai";
 import type { LucideProps } from "lucide-react";
 import * as LucideIcons from "lucide-react";
 import type { ComponentType, ReactNode } from "react";
+import { FolderTree } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -174,11 +176,53 @@ export default function GlobalMenuContent() {
   return (
     <>
       {isMac && <NativeMacosMenu onReady={setNativeMenuReady} />}
+      <WorkspaceToggleButton />
       {topMenus.length > 0 && (
         <Menubar className="bg-background shrink-0 rounded-full px-2 sm:rounded-full sm:px-2 [&_[data-slot=menubar-trigger]]:rounded-full">
           {topMenus}
         </Menubar>
       )}
     </>
+  );
+}
+
+/**
+ * 标题栏最左侧的「空间」按钮：一眼能找到工作空间文件树，不用翻文件菜单。
+ * 没打开工作空间时点了直接选目录，打开中就只切换面板显示。
+ */
+function WorkspaceToggleButton() {
+  const { t } = useTranslation("workspace");
+  const [root] = Settings.use("activeWorkspaceRoot");
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    void import("@/sub/WorkspaceWindow").then(({ findWorkspaceTab }) => setOpen(!!findWorkspaceTab()));
+    return store.sub(tabsAtom, () => {
+      void import("@/sub/WorkspaceWindow").then(({ findWorkspaceTab }) => setOpen(!!findWorkspaceTab()));
+    });
+  }, []);
+
+  return (
+    <Button
+      variant={open ? "secondary" : "ghost"}
+      size="sm"
+      className="h-7 shrink-0 gap-1.5 rounded-full px-2.5 text-xs"
+      title={root || t("openFolder")}
+      onClick={() => {
+        void (async () => {
+          const { default: WorkspaceWindow, findWorkspaceTab } = await import("@/sub/WorkspaceWindow");
+          if (!Settings.activeWorkspaceRoot) {
+            const { WorkspaceManager } = await import("@/core/service/workspace/WorkspaceManager");
+            await WorkspaceManager.openWorkspace();
+            if (Settings.activeWorkspaceRoot && !findWorkspaceTab()) WorkspaceWindow.open();
+            return;
+          }
+          WorkspaceWindow.toggle();
+        })();
+      }}
+    >
+      <FolderTree />
+      <span className="hidden sm:inline">{t("title")}</span>
+    </Button>
   );
 }

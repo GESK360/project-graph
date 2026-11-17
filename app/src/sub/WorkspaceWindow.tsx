@@ -18,7 +18,7 @@ import {
   renameWorkspacePage,
 } from "@/core/service/workspace/WorkspacePageOps";
 import { ComponentTab, Tab } from "@/core/Tab";
-import { TabWorkspace } from "@/core/TabWorkspace";
+import { dockWorkspacePanel, TabWorkspace } from "@/core/TabWorkspace";
 import { createSubWindow } from "@/core/subWindowOpen";
 import { activeResourceTabAtom, store, tabsAtom } from "@/state";
 import { Vector } from "@graphif/data-structures";
@@ -328,13 +328,25 @@ export default function WorkspaceWindow() {
   );
 }
 
+/** 已经开着就只聚焦，别开第二个（快捷键和菜单都会调它） */
+export function findWorkspaceTab(): Tab | undefined {
+  return store.get(tabsAtom).find(isWorkspaceTab);
+}
+
 WorkspaceWindow.open = () => {
-  createSubWindow("WorkspaceWindow", {
+  const existing = findWorkspaceTab();
+  if (existing) {
+    TabWorkspace.focus(existing.id);
+    return;
+  }
+  const tab = createSubWindow("WorkspaceWindow", {
     title: i18next.t("workspace.title"),
     contextTarget: "activeResourceTab",
     children: <WorkspaceWindow />,
     rect: new Rectangle(new Vector(100, 100), new Vector(260, 640)),
   });
+  // 从主组挪到工作空间专属固定组，之后的标签就不会挤掉它
+  dockWorkspacePanel(tab.id);
 };
 
 /** 用元素类型识别自己的 tab，避免跟着语言切换或标题文案变化失效 */
@@ -345,7 +357,7 @@ function isWorkspaceTab(tab: Tab) {
 
 /** 与 open() 配对：已开着就关掉，没开才打开 */
 WorkspaceWindow.toggle = () => {
-  const existing = store.get(tabsAtom).find(isWorkspaceTab);
+  const existing = findWorkspaceTab();
   if (existing) void TabWorkspace.close(existing.id);
   else WorkspaceWindow.open();
 };

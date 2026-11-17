@@ -20,7 +20,8 @@ const HISTORY_DIR = ".flux-graph/history";
 /** 同一页面两次快照的最小间隔，避免自动保存把历史冲刷掉 */
 const SNAPSHOT_INTERVAL_MS = 30_000;
 const SNAPSHOT_KEEP_COUNT = 20;
-const IGNORED_DIR_NAMES = new Set(["node_modules"]);
+/** 树里只显示目录和 .prg 页面，其余文件类型一律不出现 */
+const IGNORED_DIR_NAMES = new Set(["node_modules", "dist", "__pycache__", "target"]);
 const IGNORED_PREFIX = ".";
 
 /**
