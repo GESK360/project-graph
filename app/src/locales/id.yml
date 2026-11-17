@@ -1565,6 +1565,9 @@ controlSettingsGroup:
   exportSelectedEntityPrgDeepLink:
     title: Ekspor Tautan prg Objek Terpilih
     description: Ekspor tautan protokol prg yang menargetkan objek yang sedang dipilih
+  copySelectedEntityPrgDeepLink:
+    title: Salin Tautan Node
+    description: Salin tautan protokol prg objek terpilih ke clipboard
   exportCurrentFilePrgDeepLink:
     title: Ekspor Tautan prg File Saat Ini
     description: Ekspor tautan protokol prg untuk file saat ini
@@ -2500,6 +2503,9 @@ keyBinds:
       Ekspor struktur jaringan yang dipilih ke format diagram Mermaid dan salin ke clipboard
       Dapat ditempel di editor yang mendukung Mermaid
       Catatan tombol pintas default: shift e di mana e singkatan dari Export (ekspor), n singkatan dari Network (jaringan), m singkatan dari Mermaid
+  copySelectedEntityPrgDeepLink:
+    title: Salin Tautan Node
+    description: Salin tautan protokol prg objek terpilih ke clipboard
 
 sounds:
   soundEnabled: Sakelar Suara

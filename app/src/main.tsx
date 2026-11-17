@@ -250,7 +250,17 @@ async function loadStartFile() {
     }
   });
 
-  // Deep link: 冷启动（应用通过 URL 唤起）
+  // Deep link: 热启动（应用已运行时收到 URL）
+  // 第二个实例的链接由 Rust 端 single-instance 插件转发给已运行实例，
+  // 再经 deep-link 插件派发成 deep-link://new-url 事件。
+  onOpenUrl((urls) => {
+    if (urls.length > 0) {
+      void handleDeepLink(urls);
+    }
+  });
+
+  // Deep link: 冷启动（应用通过 URL 唤起）以及启动期内被转发过的链接。
+  // 监听必须在读取之前注册，否则启动期到达的转发会漏掉。
   try {
     const urls = await getCurrent();
     if (urls && urls.length > 0) {
@@ -259,13 +269,6 @@ async function loadStartFile() {
   } catch (e) {
     toast.error("处理 Deep Link 失败: " + String(e));
   }
-
-  // Deep link: 热启动（应用已运行时收到 URL）
-  onOpenUrl((urls) => {
-    if (urls.length > 0) {
-      void handleDeepLink(urls);
-    }
-  });
 }
 
 /** 无外部文件时创建空草稿并弹出欢迎窗（类 Blender splash） */

@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Project Graph",
+  "productName": "Flux Graph",
   "version": "4.2.6-alpha1",
   "identifier": "liren.project-graph",
   "build": {
@@ -15,7 +15,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Project Graph",
+        "title": "Flux Graph",
         "url": "/index.html",
         "width": 1200,
         "height": 800,
@@ -36,8 +36,8 @@
     "targets": ["nsis", "rpm", "dmg", "app"],
     "createUpdaterArtifacts": true,
     "category": "Productivity",
-    "longDescription": "A simple tool to create topology diagrams.",
-    "shortDescription": "Diagram creator",
+    "longDescription": "Flux Graph: a desktop node-graph tool for visual thinking, knowledge mapping and project planning.",
+    "shortDescription": "Flux Graph node-graph editor",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "windows": {
       "nsis": {
@@ -67,8 +67,8 @@
     },
     "fileAssociations": [
       {
-        "name": "Project Graph Document",
-        "description": "Project Graph Document",
+        "name": "Flux Graph Document",
+        "description": "Flux Graph Document",
         "ext": ["prg"],
         "mimeType": "application/vnd.project-graph",
         "role": "Editor"
@@ -78,11 +78,11 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["prg"]
+        "schemes": ["prg", "flux"]
       }
     },
     "cli": {
-      "description": "A simple tool to create topology diagrams.",
+      "description": "Flux Graph: a desktop node-graph tool for visual thinking.",
       "args": [
         {
           "name": "path",

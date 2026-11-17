@@ -1512,6 +1512,9 @@ controlSettingsGroup:
   exportSelectedEntityPrgDeepLink:
     title: 導出目前選中物體的 prg 協議連結（有bug）
     description: 導出帶有目前選中物體定位資訊的 prg 協議連結，目前有已知問題
+  copySelectedEntityPrgDeepLink:
+    title: 複製節點連結
+    description: 將目前選中物體對應的 prg 協議連結直接複製到剪貼簿
   exportCurrentFilePrgDeepLink:
     title: 導出目前檔案的 prg 協議連結
     description: 導出目前檔案的 prg 協議連結
@@ -1743,6 +1746,9 @@ keyBinds:
       等同於瀏覽器重新整理網頁
 
       這個功能很危險！會導致未儲存的進度遺失！'
+  copySelectedEntityPrgDeepLink:
+    title: 複製節點連結
+    description: 將目前選中物體對應的 prg 協議連結直接複製到剪貼簿
   saveFile:
     title: 保存文件
     description: 儲存目前專案檔案，若目前檔案是草稿則另存新檔

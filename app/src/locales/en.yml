@@ -2019,6 +2019,9 @@ keyBinds:
       Export the selected net structure as Mermaid diagram format and copy to clipboard
       Can be pasted in editors that support Mermaid
       Default shortcut note: shift e where e stands for Export, n stands for Network, m stands for Mermaid
+  copySelectedEntityPrgDeepLink:
+    title: Copy Node Link
+    description: Copy the prg protocol link of the selected object to the clipboard
   
 effects:
   RectangleLittleNoteEffect:
@@ -2327,6 +2330,9 @@ controlSettingsGroup:
   exportSelectedEntityPrgDeepLink:
     title: Export Selected Object prg Link
     description: Export a prg protocol link targeting the currently selected object
+  copySelectedEntityPrgDeepLink:
+    title: Copy Node Link
+    description: Copy the prg protocol link of the selected object to the clipboard
   exportCurrentFilePrgDeepLink:
     title: Export Current File prg Link
     description: Export a prg protocol link for the current file
