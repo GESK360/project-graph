@@ -131,6 +131,9 @@ export default function MyContextMenuContent() {
   const checkVisible = (itemId: string) => {
     const kb = allKeyBinds.find((k) => k.id === itemId);
     if (kb && kb.when(p) === false) return false;
+    // 扩展被卸载（或加载失败）后，它当初写进 contextMenuConfig 的条目还留在设置里。
+    // 没有对应动作的 ext: 条目点了不会有任何反应，直接跳过，免得菜单里堆死条目。
+    if (itemId.startsWith("ext:") && !KeyBindsUI.getUIKeyBind(itemId)) return false;
     return true;
   };
 
@@ -344,6 +347,18 @@ export default function MyContextMenuContent() {
     );
   };
 
+  const isSeparatorItem = (itemConfig: ContextMenuConfigItem) => itemConfig.type === "separator";
+
+  /** 判断某个位置的上/下方向是否还存在可见条目，用于丢掉悬空分隔线 */
+  const hasVisibleNeighbor = (items: ContextMenuConfigItem[], index: number, direction: 1 | -1) => {
+    for (let i = index + direction; i >= 0 && i < items.length; i += direction) {
+      const candidate = items[i];
+      if (isSeparatorItem(candidate)) continue;
+      return isConfigVisible(candidate);
+    }
+    return false;
+  };
+
   const renderItems = (items: ContextMenuConfigItem[]) => {
     const rendered: ReactNode[] = [];
 
@@ -384,6 +399,10 @@ export default function MyContextMenuContent() {
     for (let index = 0; index < items.length; index++) {
       const item = items[index];
       if (!isConfigVisible(item)) continue;
+      // 扩展条目被过滤掉后，原本包裹它的分隔线会悬空，连同菜单首尾的分隔线一起丢掉
+      if (isSeparatorItem(item) && !(hasVisibleNeighbor(items, index, -1) && hasVisibleNeighbor(items, index, 1))) {
+        continue;
+      }
 
       if (item.type === "group" && item.layout === "grid") {
         const gridGroups = [item];
