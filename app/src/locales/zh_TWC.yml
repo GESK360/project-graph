@@ -2512,7 +2512,7 @@ workspace:
   linkCopied: 已經複製頁面連結
   pageCreated: 已經新增頁面
   nameRequired: 請輸入頁面名稱
-  invalidName: 檔案名唔可以包含：\ / : * ? " < > |
+  invalidName: '檔案名唔可以包含：\ / : * ? " < > |'
   demoteUnavailable: 上面冇其他頁面，降唔到級
   promoteUnavailable: 呢個頁面已經喺最上層，升唔到級
   dirUnreadable: 讀唔到資料夾：{{name}}

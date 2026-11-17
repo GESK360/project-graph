@@ -2804,7 +2804,7 @@ workspace:
   linkCopied: 已复制页面链接
   pageCreated: 已新建页面
   nameRequired: 请输入页面名称
-  invalidName: 文件名不能包含以下字符：\ / : * ? " < > |
+  invalidName: '文件名不能包含以下字符：\ / : * ? " < > |'
   demoteUnavailable: 上一个页面不存在，无法降级
   promoteUnavailable: 该页面已在根层级，无法升级
   dirUnreadable: 无法读取目录：{{name}}

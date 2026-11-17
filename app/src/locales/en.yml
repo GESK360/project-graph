@@ -1955,6 +1955,7 @@ keyBinds:
     description: "Select a previously saved json/prg file and open it.\n"
   openCurrentProjectFileFolder:
     title: Open Current Project File Folder
+    description: "Open the folder containing the current project file in the system file manager.\nNot available when the current file is a draft.\n"
   openWorkspace:
     title: Open Workspace
     description: |
@@ -1967,7 +1968,6 @@ keyBinds:
   toggleWorkspacePanel:
     title: Toggle Workspace Panel
     description: Show or hide the workspace file tree on the left
-    description: "Open the folder containing the current project file in the system file manager.\nNot available when the current file is a draft.\n"
   newDraft:
     title: Create New Draft
     description: "Create a new draft file and switch to this file.\nIf the current
@@ -2624,7 +2624,7 @@ workspace:
   invalidName: 'File names cannot contain: \ / : * ? " < > |'
   demoteUnavailable: No previous page to demote under
   promoteUnavailable: This page is already at the root level
-  dirUnreadable: Cannot read folder: {{name}}
+  dirUnreadable: "Cannot read folder: {{name}}"
   watchUnavailable: Workspace change watching is unavailable; refresh manually
   autoSaveFailed: Auto-save failed
   versionSnapshotFailed: Failed to write the version snapshot

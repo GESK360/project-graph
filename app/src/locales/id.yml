@@ -2580,7 +2580,7 @@ workspace:
   invalidName: 'Nama file tidak boleh berisi: \ / : * ? " < > |'
   demoteUnavailable: Tidak ada halaman sebelumnya untuk dijadikan induk
   promoteUnavailable: Halaman ini sudah berada di tingkat akar
-  dirUnreadable: Tidak bisa membaca folder: {{name}}
+  dirUnreadable: "Tidak bisa membaca folder: {{name}}"
   watchUnavailable: Pemantauan perubahan ruang kerja tidak tersedia; muat ulang manual
   autoSaveFailed: Gagal menyimpan otomatis
   versionSnapshotFailed: Gagal menulis snapshot versi
