@@ -152,6 +152,7 @@ import {
   FolderOpen,
   FolderPlus,
   FolderTree,
+  FolderX,
   Gem,
   Ghost,
   GitBranch,
@@ -191,6 +192,7 @@ import {
   OctagonX,
   Package,
   Palette,
+  PanelLeft,
   Paperclip,
   PenTool,
   PictureInPicture2,
@@ -1649,6 +1651,38 @@ export const allKeyBinds: KeyBindItem[] = [
     icon: FileUp,
     when: whenAlways,
     onPress: () => onOpenFile(),
+  },
+  {
+    id: "openWorkspace",
+    defaultKey: "C-S-o",
+    icon: FolderTree,
+    when: whenAlways,
+    onPress: async () => {
+      const { WorkspaceManager } = await import("@/core/service/workspace/WorkspaceManager");
+      await WorkspaceManager.openWorkspace();
+      const { default: WorkspaceWindow } = await import("@/sub/WorkspaceWindow");
+      WorkspaceWindow.open();
+    },
+  },
+  {
+    id: "closeWorkspace",
+    defaultKey: "",
+    icon: FolderX,
+    when: whenAlways,
+    onPress: async () => {
+      const { WorkspaceManager } = await import("@/core/service/workspace/WorkspaceManager");
+      await WorkspaceManager.closeWorkspace();
+    },
+  },
+  {
+    id: "toggleWorkspacePanel",
+    defaultKey: "C-S-e",
+    icon: PanelLeft,
+    when: whenAlways,
+    onPress: async () => {
+      const { default: WorkspaceWindow } = await import("@/sub/WorkspaceWindow");
+      WorkspaceWindow.toggle();
+    },
   },
   {
     id: "openCurrentProjectFileFolder",

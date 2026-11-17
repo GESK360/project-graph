@@ -37,6 +37,7 @@ export const SUB_WINDOW_IDS = [
   "TextImportWindow",
   "WelcomeWindow",
   "SettingsWindow",
+  "WorkspaceWindow",
 ] as const;
 
 export type SubWindowId = (typeof SUB_WINDOW_IDS)[number];
@@ -80,6 +81,7 @@ export const DEFAULT_SUB_WINDOW_OPEN_MODES = {
   TextImportWindow: "floating",
   WelcomeWindow: "floating",
   SettingsWindow: "docked",
+  WorkspaceWindow: "dockedLeft",
 } as const satisfies SubWindowOpenModes;
 
 export const subWindowOpenModesSchema = z.preprocess(

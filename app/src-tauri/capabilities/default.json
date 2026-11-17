@@ -60,6 +60,9 @@
     "fs:allow-exists",
     "fs:allow-watch",
     "fs:read-dirs",
+    "fs:allow-remove",
+    "fs:allow-copy-file",
+    "fs:allow-watch",
     {
       "identifier": "fs:scope",
       "allow": ["**/*"]

@@ -2,6 +2,7 @@ import { runCli } from "@/cli";
 import { Toaster } from "@/components/ui/sonner";
 import { authClient } from "@/core/service/AuthClient";
 import { MouseLocation } from "@/core/service/controlService/MouseLocation";
+import { AutoSaveOnSwitch } from "@/core/service/workspace/AutoSaveOnSwitch";
 import { RecentFileManager } from "@/core/service/dataFileService/RecentFileManager";
 import { StartFilesManager } from "@/core/service/dataFileService/StartFilesManager";
 import { ColorManager } from "@/core/service/feedbackService/ColorManager";
@@ -80,6 +81,7 @@ let appRendered = false;
     }
     // 这些东西依赖上面的东西，所以单独一个Promise.all
     await Promise.all([loadLanguageFiles(), loadSyncModules(), ...(isCliDesktopAcceptance ? [] : [initAuth()])]);
+    AutoSaveOnSwitch.install();
     await renderApp(isCliMode, isCliDesktopAcceptance);
     appRendered = true;
     if (isCliDesktopAcceptance) {
@@ -93,6 +95,7 @@ let appRendered = false;
     await loadStartFile();
     if (!isCliMode) {
       await ensureStartupDraftAndWelcome();
+      await reopenWorkspacePanel();
     }
     if (isCliMode) {
       try {
@@ -269,6 +272,13 @@ async function loadStartFile() {
   } catch (e) {
     toast.error("处理 Deep Link 失败: " + String(e));
   }
+}
+
+/** 上次退出时开着工作空间的话，这次启动把文件树面板重新停靠到左侧 */
+async function reopenWorkspacePanel() {
+  if (!Settings.activeWorkspaceRoot) return;
+  const { default: WorkspaceWindow } = await import("./sub/WorkspaceWindow");
+  WorkspaceWindow.open();
 }
 
 /** 无外部文件时创建空草稿并弹出欢迎窗（类 Blender splash） */

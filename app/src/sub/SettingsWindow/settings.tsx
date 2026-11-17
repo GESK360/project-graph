@@ -25,6 +25,7 @@ import {
   Cpu,
   Eye,
   FolderSync,
+  FolderTree,
   Gamepad2,
   Gpu,
   Image,
@@ -321,6 +322,7 @@ export const categories = {
       "autoBackupCustomPath2",
     ],
     autoImport: ["autoImportTxtFileWhenOpenPrg", "imageImportOrder"],
+    workspace: ["activeWorkspaceRoot", "autoSaveOnSwitch", "workspaceVersionHistory"],
   },
   control: {
     mouse: [
@@ -449,6 +451,7 @@ export const categoryIcons = {
     autoSave: Save,
     autoBackup: FolderSync,
     autoImport: Import,
+    workspace: FolderTree,
   },
   control: {
     icon: Wrench,

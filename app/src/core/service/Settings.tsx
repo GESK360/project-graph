@@ -124,6 +124,10 @@ export const settingsSchema = z.object({
   autoBackupStrategy: z
     .union([z.literal("default"), z.literal("sideBySide"), z.literal("subfolder")])
     .default("default"),
+  autoSaveOnSwitch: z.boolean().default(true),
+  workspaceRoots: z.array(z.string()).default([]),
+  activeWorkspaceRoot: z.string().default(""),
+  workspaceVersionHistory: z.boolean().default(true),
   enableDragEdgeRotateStructure: z.boolean().default(true),
   enableCtrlWheelRotateStructure: z.boolean().default(false),
   aiApiBaseUrl: projectToolSettingSchemas.aiApiBaseUrl,
@@ -638,6 +642,10 @@ export const settingsSchema = z.object({
             children: [{ type: "recentFiles", id: "recentFilesEntries" }],
           },
           { type: "item", id: "clickAppMenuRecentFileButton", icon: "LayoutGrid" },
+          { type: "separator", id: "sep-file-workspace" },
+          { type: "item", id: "openWorkspace", icon: "FolderTree" },
+          { type: "item", id: "closeWorkspace", icon: "FolderX" },
+          { type: "item", id: "toggleWorkspacePanel", icon: "PanelLeft" },
           { type: "separator", id: "sep-file-1" },
           { type: "item", id: "saveFile", icon: "Save" },
           { type: "item", id: "saveAs", icon: "FileDown" },

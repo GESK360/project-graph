@@ -216,6 +216,7 @@ settings:
       autoSave: 自動儲存
       autoBackup: 自動備份
       autoImport: 自動匯入
+      workspace: 工作空間
     control:
       title: 控制
       mouse: 滑鼠
@@ -666,6 +667,21 @@ settings:
   autoSaveInterval:
     title: 開啟自動儲存間隔（秒）
     description: 注意：目前計時時間僅在軟體視窗啟動時計時，軟體最小化後不會計時。
+  autoSaveOnSwitch:
+    title: 轉頁面時自動儲存
+    description: |
+      由工作空間文件樹轉去第二個頁面時，自動儲存目前頁面
+      只對已經存落硬碟嘅工程有效，草稿同協作工程唔受影響
+  workspaceVersionHistory:
+    title: 記錄工作空間頁面版本
+    description: |
+      儲存頁面時喺工作空間嘅 .flux-graph/history 目錄留一份快照
+      可以喺文件樹嘅「顯示頁面版本」睇返同還原
+  activeWorkspaceRoot:
+    title: 目前工作空間目錄
+    description: |
+      工作空間文件樹用嘅根目錄
+      一般經「檔案 → 開啟工作空間」設定，亦可以自己填絕對路徑
   clearHistoryWhenManualSave:
     title: 使用快捷鍵手動儲存時，自動清空歷史紀錄
     description: '當使用Ctrl+S快捷鍵手動儲存檔案時，自動清空操作歷史紀錄。
@@ -1768,6 +1784,18 @@ keyBinds:
   openCurrentProjectFileFolder:
     title: 開啟目前專案檔所在資料夾
     description: 在系統檔案管理員中開啟目前專案檔所在的資料夾，草稿狀態時不可用
+  openWorkspace:
+    title: 開啟工作空間
+    description: |
+      揀一個本機資料夾做工作空間，左邊文件樹會列出當中嘅 prg 檔
+      喺工作空間入面新建、刪除、改名都係直接改硬碟上面嘅檔案
+  closeWorkspace:
+    title: 收埋工作空間
+    description: |
+      收埋目前嘅工作空間，左邊文件樹清空，唔會刪走任何檔案
+  toggleWorkspacePanel:
+    title: 開／閂工作空間面板
+    description: 切換左邊工作空間文件樹嘅顯示狀態
   undo:
     title: 撤销
     description: 撤销上一次操作
@@ -2444,6 +2472,55 @@ keyBinds:
     description: 將窗口大小設置為設置中配置的迷你窗口寬度和高度。
 sounds:
   soundEnabled: 音效開關
+
+workspace:
+  title: 工作空間
+  openFolder: 開啟資料夾
+  emptyHint: |
+    仲未開工作空間
+    揀一個資料夾，入面嘅 prg 檔就會喺度列出來
+  newPage: 新增頁面
+  rename: 改名
+  delete: 刪除
+  cut: 剪下
+  copy: 複製
+  paste: 貼上
+  copyLink: 複製指向頁面嘅連結
+  moveOrCopy: 移動或複製…
+  demote: 降級做子頁
+  promote: 升級做上層頁
+  collapse: 摺埋子頁
+  showVersions: 睇頁面版本
+  refresh: 重新載入
+  revealInExplorer: 喺檔案總管顯示
+  closeWorkspace: 收埋工作空間
+  move: 移動
+  copyMode: 複製
+  targetFolder: 目標資料夾
+  newFolder: 開新資料夾…
+  confirm: 確定
+  cancel: 取消
+  unnamedPage: 未命名頁面
+  deleteConfirmTitle: 刪除頁面
+  deleteConfirmBody: |
+    確定要刪除「{{name}}」？
+    檔案會直接喺硬碟刪走，冇得還原。
+  versionsEmpty: 呢個頁面仲未有歷史版本
+  restore: 還原呢個版本
+  openAsCopy: 開副本
+  versionRestored: 已經還原到所選版本
+  linkCopied: 已經複製頁面連結
+  pageCreated: 已經新增頁面
+  nameRequired: 請輸入頁面名稱
+  invalidName: 檔案名唔可以包含：\ / : * ? " < > |
+  demoteUnavailable: 上面冇其他頁面，降唔到級
+  promoteUnavailable: 呢個頁面已經喺最上層，升唔到級
+  dirUnreadable: 讀唔到資料夾：{{name}}
+  watchUnavailable: 監聽唔到工作空間變動，要手動重新載入
+  autoSaveFailed: 自動儲存失敗
+  versionSnapshotFailed: 寫入歷史版本快照失敗
+  notAWorkspace: 所選資料夾用唔到
+  rootMissing: 工作空間資料夾已經唔存在
 
 common:
   editModeHint:

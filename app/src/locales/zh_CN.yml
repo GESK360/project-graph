@@ -179,6 +179,7 @@ settings:
       autoSave: 自动保存
       autoBackup: 自动备份
       autoImport: 自动导入
+      workspace: 工作空间
     control:
       title: 控制
       mouse: 鼠标
@@ -657,6 +658,21 @@ settings:
     title: 开启自动保存间隔（秒）
     description: |
       注意：目前计时时间仅在软件窗口激活时计时，软件最小化后不会计时。
+  autoSaveOnSwitch:
+    title: 切换页面时自动保存
+    description: |
+      从工作空间文件树切换到另一个页面时，自动保存当前页面
+      只对已保存到磁盘的工程生效，草稿与协作工程不受影响
+  workspaceVersionHistory:
+    title: 记录工作空间页面版本
+    description: |
+      保存页面时在工作空间的 .flux-graph/history 目录留一份快照
+      可在文件树的“显示页面版本”里查看与恢复
+  activeWorkspaceRoot:
+    title: 当前工作空间目录
+    description: |
+      工作空间文件树使用的根目录
+      一般通过“文件 → 打开工作空间”设置，也可手动填写绝对路径
   clearHistoryWhenManualSave:
     title: 使用快捷键手动保存时，自动清空历史记录
     description: |
@@ -1545,6 +1561,18 @@ keyBinds:
     description: |
       在系统文件管理器中打开当前工程文件所在的文件夹
       当前文件为草稿时不可用
+  openWorkspace:
+    title: 打开工作空间
+    description: |
+      选择一个本地文件夹作为工作空间，左侧文件树会展示其中的 prg 文件
+      工作空间里的新建、删除、重命名会直接作用到磁盘上的文件
+  closeWorkspace:
+    title: 关闭工作空间
+    description: |
+      关闭当前工作空间，左侧文件树清空，不会删除任何文件
+  toggleWorkspacePanel:
+    title: 显示/隐藏工作空间面板
+    description: 切换左侧工作空间文件树的显示状态
   undo:
     title: 撤销
     description: 撤销上一次操作
@@ -2736,6 +2764,55 @@ keyBinds:
 
 sounds:
   soundEnabled: 音效开关
+
+workspace:
+  title: 工作空间
+  openFolder: 打开文件夹
+  emptyHint: |
+    还没有打开工作空间
+    选择一个文件夹，里面的 prg 文件会显示在这里
+  newPage: 新建页面
+  rename: 重命名
+  delete: 删除
+  cut: 剪切
+  copy: 复制
+  paste: 粘贴
+  copyLink: 复制指向页面的链接
+  moveOrCopy: 移动或复制…
+  demote: 降级子页
+  promote: 升级子页
+  collapse: 折叠子页
+  showVersions: 显示页面版本
+  refresh: 刷新
+  revealInExplorer: 在资源管理器中显示
+  closeWorkspace: 关闭工作空间
+  move: 移动
+  copyMode: 复制
+  targetFolder: 目标文件夹
+  newFolder: 新建文件夹…
+  confirm: 确定
+  cancel: 取消
+  unnamedPage: 未命名页面
+  deleteConfirmTitle: 删除页面
+  deleteConfirmBody: |
+    确定要删除「{{name}}」吗？
+    文件会从磁盘上直接删除，且不可恢复。
+  versionsEmpty: 这个页面还没有历史版本
+  restore: 恢复此版本
+  openAsCopy: 作为副本打开
+  versionRestored: 已恢复到所选版本
+  linkCopied: 已复制页面链接
+  pageCreated: 已新建页面
+  nameRequired: 请输入页面名称
+  invalidName: 文件名不能包含以下字符：\ / : * ? " < > |
+  demoteUnavailable: 上一个页面不存在，无法降级
+  promoteUnavailable: 该页面已在根层级，无法升级
+  dirUnreadable: 无法读取目录：{{name}}
+  watchUnavailable: 工作空间变动监听不可用，需要手动刷新
+  autoSaveFailed: 自动保存失败
+  versionSnapshotFailed: 历史版本快照写入失败
+  notAWorkspace: 所选文件夹不可用
+  rootMissing: 工作空间目录已不存在
 
 common:
   editModeHint:

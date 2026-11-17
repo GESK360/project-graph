@@ -72,6 +72,11 @@ export function createCurrentFileDeepLink(project: Project) {
   return buildProjectGraphUrl({ path: project.uri.fsPath });
 }
 
+/** 生成指向某个 .prg 文件本身的链接（工作空间文件树“复制指向页面的链接”用） */
+export function createPageDeepLink(fsPath: string) {
+  return buildProjectGraphUrl({ path: fsPath });
+}
+
 export function createCurrentViewDeepLink(project: Project) {
   return buildProjectGraphUrl({
     path: project.uri.fsPath,

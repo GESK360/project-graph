@@ -444,6 +444,21 @@ settings:
     title: Auto-Save Interval (Seconds)
     description: |
       Note: The timer only counts when the software window is active and will not count when the software is minimized.
+  autoSaveOnSwitch:
+    title: Auto-Save When Switching Pages
+    description: |
+      Save the current page when switching to another page from the workspace tree.
+      Only applies to projects already saved on disk; drafts and collaboration projects are skipped.
+  workspaceVersionHistory:
+    title: Keep Workspace Page Versions
+    description: |
+      Write a snapshot under the workspace .flux-graph/history folder on each save.
+      Review and restore them from "Show Page Versions" in the file tree.
+  activeWorkspaceRoot:
+    title: Workspace Folder
+    description: |
+      Root folder used by the workspace file tree.
+      Usually set via File → Open Workspace; an absolute path can also be typed here.
   clearHistoryWhenManualSave:
     title: Clear History When Manually Saving
     description: |
@@ -1940,6 +1955,18 @@ keyBinds:
     description: "Select a previously saved json/prg file and open it.\n"
   openCurrentProjectFileFolder:
     title: Open Current Project File Folder
+  openWorkspace:
+    title: Open Workspace
+    description: |
+      Choose a local folder as the workspace; the left file tree lists its prg files
+      Creating, deleting and renaming pages writes to real files on disk
+  closeWorkspace:
+    title: Close Workspace
+    description: |
+      Close the current workspace and empty the left file tree; no file is deleted
+  toggleWorkspacePanel:
+    title: Toggle Workspace Panel
+    description: Show or hide the workspace file tree on the left
     description: "Open the folder containing the current project file in the system file manager.\nNot available when the current file is a draft.\n"
   newDraft:
     title: Create New Draft
@@ -2554,6 +2581,55 @@ visualSettingsGroup:
 
 sounds:
   soundEnabled: Sound Effect Switch
+
+workspace:
+  title: Workspace
+  openFolder: Open Folder
+  emptyHint: |
+    No workspace opened yet
+    Pick a folder and its prg files will show up here
+  newPage: New Page
+  rename: Rename
+  delete: Delete
+  cut: Cut
+  copy: Copy
+  paste: Paste
+  copyLink: Copy Link to Page
+  moveOrCopy: Move or Copy…
+  demote: Demote Subpage
+  promote: Promote Subpage
+  collapse: Collapse Subpages
+  showVersions: Show Page Versions
+  refresh: Refresh
+  revealInExplorer: Reveal in Explorer
+  closeWorkspace: Close Workspace
+  move: Move
+  copyMode: Copy
+  targetFolder: Target Folder
+  newFolder: New Folder…
+  confirm: Confirm
+  cancel: Cancel
+  unnamedPage: Untitled Page
+  deleteConfirmTitle: Delete Page
+  deleteConfirmBody: |
+    Delete "{{name}}"?
+    The file is removed from disk immediately and cannot be recovered.
+  versionsEmpty: No versions for this page yet
+  restore: Restore This Version
+  openAsCopy: Open as Copy
+  versionRestored: Restored the selected version
+  linkCopied: Page link copied
+  pageCreated: Page created
+  nameRequired: Please enter a page name
+  invalidName: 'File names cannot contain: \ / : * ? " < > |'
+  demoteUnavailable: No previous page to demote under
+  promoteUnavailable: This page is already at the root level
+  dirUnreadable: Cannot read folder: {{name}}
+  watchUnavailable: Workspace change watching is unavailable; refresh manually
+  autoSaveFailed: Auto-save failed
+  versionSnapshotFailed: Failed to write the version snapshot
+  notAWorkspace: The selected folder is unavailable
+  rootMissing: The workspace folder no longer exists
 
 common:
   editModeHint:

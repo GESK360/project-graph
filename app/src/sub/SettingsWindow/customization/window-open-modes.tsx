@@ -58,6 +58,7 @@ const WINDOW_LABELS: Record<SubWindowId, string> = {
   TextImportWindow: "文本导入",
   WelcomeWindow: "欢迎页",
   SettingsWindow: "设置",
+  WorkspaceWindow: "工作空间文件树",
 };
 
 export default function WindowOpenModesPage() {

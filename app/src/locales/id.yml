@@ -168,6 +168,7 @@ settings:
       autoSave: Penyimpanan Otomatis
       autoBackup: Pencadangan Otomatis
       autoImport: Impor Otomatis
+      workspace: Ruang Kerja
     control:
       title: Kontrol
       mouse: Mouse
@@ -630,6 +631,21 @@ settings:
     title: Interval Penyimpanan Otomatis (detik)
     description: |
       Perhatian: Saat ini waktu hanya dihitung saat jendela perangkat lunak aktif, tidak dihitung saat perangkat lunak diminimalkan.
+  autoSaveOnSwitch:
+    title: Simpan Otomatis Saat Berpindah Halaman
+    description: |
+      Simpan halaman saat ini ketika berpindah ke halaman lain dari pohon ruang kerja.
+      Hanya berlaku untuk proyek yang sudah tersimpan di disk; draf dan proyek kolaborasi dilewati.
+  workspaceVersionHistory:
+    title: Simpan Versi Halaman Ruang Kerja
+    description: |
+      Tulis snapshot di folder .flux-graph/history pada ruang kerja setiap kali menyimpan.
+      Lihat dan pulihkan lewat "Tampilkan Versi Halaman" di pohon file.
+  activeWorkspaceRoot:
+    title: Folder Ruang Kerja
+    description: |
+      Folder akar yang dipakai pohon file ruang kerja.
+      Biasanya diatur lewat File → Buka Ruang Kerja; path absolut juga bisa diketik di sini.
   clearHistoryWhenManualSave:
     title: Bersihkan Riwayat Otomatis Saat Simpan Manual dengan Pintasan
     description: |
@@ -1824,6 +1840,18 @@ keyBinds:
     description: |
       Buka folder yang berisi file proyek saat ini di manajer file sistem
       Tidak tersedia saat file saat ini adalah konsep
+  openWorkspace:
+    title: Buka Ruang Kerja
+    description: |
+      Pilih folder lokal sebagai ruang kerja; pohon file di kiri menampilkan file prg di dalamnya
+      Membuat, menghapus, dan mengganti nama halaman langsung mengubah file di disk
+  closeWorkspace:
+    title: Tutup Ruang Kerja
+    description: |
+      Tutup ruang kerja saat ini dan kosongkan pohon file kiri; tidak ada file yang dihapus
+  toggleWorkspacePanel:
+    title: Tampilkan/Sembunyikan Panel Ruang Kerja
+    description: Mengatur tampilan pohon file ruang kerja di kiri
   undo:
     title: Batalkan
     description: Batalkan operasi sebelumnya
@@ -2509,6 +2537,55 @@ keyBinds:
 
 sounds:
   soundEnabled: Sakelar Suara
+
+workspace:
+  title: Ruang Kerja
+  openFolder: Buka Folder
+  emptyHint: |
+    Belum ada ruang kerja yang dibuka
+    Pilih folder dan file prg di dalamnya akan tampil di sini
+  newPage: Halaman Baru
+  rename: Ganti Nama
+  delete: Hapus
+  cut: Potong
+  copy: Salin
+  paste: Tempel
+  copyLink: Salin Tautan ke Halaman
+  moveOrCopy: Pindahkan atau Salin…
+  demote: Turunkan Subhalaman
+  promote: Naikkan Subhalaman
+  collapse: Lipat Subhalaman
+  showVersions: Tampilkan Versi Halaman
+  refresh: Muat Ulang
+  revealInExplorer: Tampilkan di Explorer
+  closeWorkspace: Tutup Ruang Kerja
+  move: Pindahkan
+  copyMode: Salin
+  targetFolder: Folder Tujuan
+  newFolder: Folder Baru…
+  confirm: Konfirmasi
+  cancel: Batal
+  unnamedPage: Halaman Tanpa Nama
+  deleteConfirmTitle: Hapus Halaman
+  deleteConfirmBody: |
+    Hapus "{{name}}"?
+    File langsung dihapus dari disk dan tidak dapat dipulihkan.
+  versionsEmpty: Halaman ini belum punya versi
+  restore: Pulihkan Versi Ini
+  openAsCopy: Buka sebagai Salinan
+  versionRestored: Versi terpilih telah dipulihkan
+  linkCopied: Tautan halaman tersalin
+  pageCreated: Halaman dibuat
+  nameRequired: Masukkan nama halaman
+  invalidName: 'Nama file tidak boleh berisi: \ / : * ? " < > |'
+  demoteUnavailable: Tidak ada halaman sebelumnya untuk dijadikan induk
+  promoteUnavailable: Halaman ini sudah berada di tingkat akar
+  dirUnreadable: Tidak bisa membaca folder: {{name}}
+  watchUnavailable: Pemantauan perubahan ruang kerja tidak tersedia; muat ulang manual
+  autoSaveFailed: Gagal menyimpan otomatis
+  versionSnapshotFailed: Gagal menulis snapshot versi
+  notAWorkspace: Folder yang dipilih tidak tersedia
+  rootMissing: Folder ruang kerja sudah tidak ada
 
 common:
   editModeHint:
