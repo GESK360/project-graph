@@ -15,6 +15,9 @@ export namespace QuickSettingsManager {
    */
   export type SettingType = "boolean" | "enum" | "number" | "unknown";
 
+  /** 标记「小地图」开关是否已经补进快捷栏，避免用户删掉后又加回来 */
+  const MINIMAP_MIGRATION_FLAG = "minimapQuickSettingAdded";
+
   /**
    * 快捷设置项类型
    */
@@ -37,6 +40,7 @@ export namespace QuickSettingsManager {
     { settingKey: "enableDragAutoAlign" },
     { settingKey: "reverseTreeMoveMode" },
     { settingKey: "textIntegerLocationAndSizeRender" },
+    { settingKey: "showMinimap" },
   ];
 
   export async function init() {
@@ -46,7 +50,20 @@ export namespace QuickSettingsManager {
       await setQuickSettings(DEFAULT_QUICK_SETTINGS);
     } else {
       await setQuickSettings(existingItems);
+      await migrateMinimapQuickSetting(existingItems);
     }
+  }
+
+  /**
+   * 老用户的快捷栏列表里没有「小地图」开关，升级后补一个到末尾
+   */
+  async function migrateMinimapQuickSetting(existingItems: QuickSettingItem[]) {
+    if (await store.get(MINIMAP_MIGRATION_FLAG)) return;
+    if (!existingItems.some((item) => item.settingKey === "showMinimap")) {
+      await setQuickSettings([...existingItems, { settingKey: "showMinimap" }]);
+    }
+    await store.set(MINIMAP_MIGRATION_FLAG, true);
+    await store.save();
   }
 
   /**

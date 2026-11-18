@@ -1,3 +1,4 @@
+import Minimap from "@/components/minimap";
 import RightToolbar from "@/components/right-toolbar";
 import { Dialog } from "@/components/ui/dialog";
 import type { CurveRenderer } from "@/core/render/canvas2d/basicRenderer/curveRenderer";
@@ -528,6 +529,7 @@ export class Project extends Tab {
           <div className="absolute inset-0 overflow-hidden">
             <div className="absolute inset-0 overflow-hidden" ref={this.containerRef}></div>
             {this.state.showQuickSettingsToolbar && <RightToolbar />}
+            <Minimap project={self} />
           </div>
         );
       }
@@ -540,6 +542,7 @@ export class Project extends Tab {
       <div className="absolute inset-0 overflow-hidden">
         <div className="absolute inset-0 overflow-hidden" ref={this.containerRef}></div>
         {Settings.showQuickSettingsToolbar && <RightToolbar />}
+        <Minimap project={this} />
       </div>
     );
   }

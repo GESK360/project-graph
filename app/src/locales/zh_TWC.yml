@@ -307,6 +307,13 @@ settings:
     description: '控制“最近打開的文件”面板中是否顯示工程文件縮略圖。
 
       關閉後可以少啲界面干擾。'
+  showMinimap:
+    title: 顯示小地圖
+    description: '喺畫布右下角顯示尺寸固定嘅小地圖，綠色框表示當前視野覆蓋嘅範圍。
+
+      小地圖會按最外側嘅節點自動調整顯示比例，方便喺大圖入面搵位。
+
+      撳小地圖可以將視野移去對應位置。'
   autoAdjustLineEndpointsByMouseTrack:
     title: 根據滑鼠拖曳軌跡自動調整生成連線的端點位置
     description: '開啟後，在拖曳連線時會根據滑鼠移動軌跡自動調整連線端點在實體上的位置

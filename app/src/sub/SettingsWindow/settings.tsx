@@ -252,6 +252,7 @@ export const categories = {
       "isClassroomMode",
       "viewerMode",
       "showQuickSettingsToolbar",
+      "showMinimap",
       "showRecentFilesThumbnails",
       "showKeyBindHint",
       "windowBackgroundAlpha",

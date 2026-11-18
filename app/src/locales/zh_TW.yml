@@ -271,6 +271,12 @@ settings:
     description: |
       控制“最近打開的文件”面板中是否顯示工程文件縮略圖。
       關閉後可減少界面干擾。
+  showMinimap:
+    title: 顯示小地圖
+    description: |
+      在畫布右下角顯示尺寸固定的小地圖，綠色框表示當前視野覆蓋的範圍。
+      小地圖會按最外側的節點自動調整顯示比例，便於在大圖中定位。
+      點擊小地圖可以把視野移動到對應位置。
   autoAdjustLineEndpointsByMouseTrack:
     title: 根據鼠標拖動軌跡自動調整生成連線的端點位置
     description: |
@@ -2817,6 +2823,15 @@ workspace:
     確定要刪除所選的 {{count}} 項嗎？
     文件會從磁盤上直接刪除，且不可恢復。
   reorderFailed: 調整順序失敗
+  sortBy: 排序
+  sortCustom: 無
+  sortName: 按字母順序
+  sortCreatedAt: 創建日期
+  sortModifiedAt: 修改日期
+  moveUp: 上移
+  moveDown: 下移
+  sortLockedHint: 切換到「無」才能手動調整順序
+  dragHint: 拖動可排序，拖到文件夾上可放進去
   versionsEmpty: 這個頁面還沒有歷史版本
   restore: 恢復此版本
   openAsCopy: 作為副本打開

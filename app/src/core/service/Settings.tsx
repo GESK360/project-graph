@@ -50,6 +50,7 @@ export const settingsSchema = z.object({
   isClassroomMode: z.boolean().default(false),
   viewerMode: z.boolean().default(false),
   showQuickSettingsToolbar: z.boolean().default(true),
+  showMinimap: z.boolean().default(true),
   showRecentFilesThumbnails: z.boolean().default(true),
   windowBackgroundAlpha: z.number().min(0).max(1).default(0.72),
   windowBackgroundOpacityAfterOpenClickThrough: z.number().min(0).max(1).default(0),
