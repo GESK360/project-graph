@@ -130,7 +130,12 @@ export namespace TabWorkspace {
     const knownIds = new Set(getTabGroups(root).flatMap((group) => group.tabIds));
     const missing = dockedTabs.filter((tab) => !knownIds.has(tab.id));
     if (missing.length === 0) return;
-    const target = findTabGroup(root, store.get(activeGroupIdAtom) ?? "") ?? getTabGroups(root)[0];
+    // 和 open() 保持同一套选取规则：固定侧组不能成为新标签的落点，否则文件树会被工程顶掉
+    const activeGroupId = store.get(activeGroupIdAtom) ?? "";
+    const target =
+      (isFixedSideGroupId(activeGroupId) ? preferMainGroup(root) : findTabGroup(root, activeGroupId)) ??
+      preferMainGroup(root) ??
+      getTabGroups(root)[0];
     if (!target) {
       const group = createTabGroup(missing.map((tab) => tab.id));
       store.set(tabGroupRootAtom, group);
