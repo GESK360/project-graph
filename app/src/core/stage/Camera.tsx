@@ -122,6 +122,15 @@ export class Camera {
   private tickIndex = -1;
   private hasResetOnOpen = false;
 
+  /**
+   * 外部（如深度链接）已经指定了视野，打开文件时的"自动重置视野"应当让位。
+   * 否则第 3 帧的 reset() 会把刚设好的镜头拉回全图中心，
+   * 表现为"先打开画布，过一会才跳到节点"甚至跳不过去。
+   */
+  skipResetOnOpen() {
+    this.hasResetOnOpen = true;
+  }
+
   tick() {
     // --- 初次打开文件的时候，重制视野
     this.tickIndex++; // 从0开始

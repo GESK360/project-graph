@@ -43,6 +43,11 @@ jobs:
       - name: Build frontend and packages
         run: pnpm build:no-tauri
 
+      - name: Run Rust unit tests
+        # 本地没有 Rust 工具链，zip 分段读取这类逻辑只能在这里验证
+        working-directory: app/src-tauri
+        run: cargo test --lib
+
       - name: Build Tauri app (NSIS installer)
         # createUpdaterArtifacts 需要签名私钥，fork 构建不提供密钥，这里显式关掉。
         run: pnpm tauri build --bundles nsis --config src-tauri/tauri.ci.conf.json

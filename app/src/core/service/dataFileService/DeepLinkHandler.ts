@@ -1,9 +1,8 @@
 import { RecentFileManager } from "./RecentFileManager";
 import { onOpenFile } from "../GlobalMenu";
 import { URI } from "vscode-uri";
-import { exists, readFile } from "@tauri-apps/plugin-fs";
+import { exists } from "@tauri-apps/plugin-fs";
 import { Decoder } from "@msgpack/msgpack";
-import { Uint8ArrayReader, Uint8ArrayWriter, ZipReader } from "@zip.js/zip.js";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { Project } from "@/core/Project";
@@ -179,34 +178,53 @@ export function relativePathFromDir(baseDir: string, targetPath: string): string
   return segments[0] === ".." ? segments.join("/") : "./" + segments.join("/");
 }
 
-/** 读取一个 .prg 的 metadata，只解 zip 里的 metadata.msgpack，不加载整个工程 */
+/**
+ * 读取一个 .prg 的 docId。
+ * 走 Rust 侧的 read_prg_metadata：只按 zip 中央目录定位到 metadata.msgpack 那一段，
+ * 不把整个文件读进内存、也不解压其余内容。含大图附件的 .prg 用整文件读取会明显卡顿。
+ */
 export async function readPrgDocId(fsPath: string): Promise<string | undefined> {
   try {
-    const content = await readFile(fsPath);
-    const reader = new ZipReader(new Uint8ArrayReader(content));
-    try {
-      const entries = await reader.getEntries();
-      const entry = entries.find((it) => it.filename === "metadata.msgpack");
-      if (!entry || !("getData" in entry) || typeof entry.getData !== "function") return undefined;
-      const raw = await entry.getData(new Uint8ArrayWriter());
-      const metadata = new Decoder().decode(raw) as { docId?: string } | undefined;
-      return metadata?.docId;
-    } finally {
-      await reader.close();
-    }
+    const base64Content = await invoke<string>("read_prg_metadata", { path: fsPath });
+    return docIdFromMetadataBytes(base64ToBytes(base64Content));
   } catch {
     return undefined;
   }
 }
 
-/** 在若干根目录里递归找 .prg，返回全部路径 */
+/** 把刚读到 / 刚写出的 metadata 字节解成 docId，供 Rust 命令不可用时兜底 */
+export function docIdFromMetadataBytes(raw: Uint8Array): string | undefined {
+  try {
+    const metadata = new Decoder().decode(raw) as { docId?: string } | undefined;
+    return metadata?.docId;
+  } catch {
+    return undefined;
+  }
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+/**
+ * 在若干根目录里递归找 .prg，返回全部路径。
+ * 跳过工作空间的历史快照目录：那里存的是同一文档的旧副本，
+ * docId 与正本相同，命中会把人带到过期的版本上。
+ */
 async function listPrgFilesUnder(root: string): Promise<string[]> {
   if (!(await exists(root))) return [];
+  let files: string[];
   try {
-    return await invoke<string[]>("read_folder_recursive", { path: root, fileExts: [".prg"] });
+    files = await invoke<string[]>("read_folder_recursive", { path: root, fileExts: [".prg"] });
   } catch {
     return [];
   }
+  return files.filter((file) => !file.replace(/\\/g, "/").includes("/.flux-graph/history/"));
 }
 
 /**
@@ -226,12 +244,18 @@ export async function findFileByDocId(docId: string, searchRoots: string[], name
   }
 
   const hinted = nameHint ? candidates.filter((file) => baseNameWithoutPrg(file) === nameHint) : [];
-  for (const candidate of [...hinted, ...candidates]) {
+
+  // 先按文件名提示并发探测，命中即返回，避免为了一次查找把所有文件都读一遍
+  for (const candidate of hinted) {
     if ((await readPrgDocId(candidate)) === docId) {
       return candidate;
     }
   }
-  return null;
+
+  // 全部候选并发读，按原顺序取第一个命中，保证结果稳定
+  const results = await Promise.all(candidates.map((file) => readPrgDocId(file)));
+  const hitIndex = results.findIndex((doc) => doc === docId);
+  return hitIndex >= 0 ? candidates[hitIndex] : null;
 }
 
 async function normalizeFilePath(rawPath: string): Promise<string | null> {
@@ -338,6 +362,9 @@ function parseProjectGraphUrl(url: string): DeepLinkParams | null {
 }
 
 function applyCameraParams(project: Project, params: DeepLinkParams) {
+  // 链接已经指定了要看哪里，就别让"打开文件自动重置视野"再抢一次镜头
+  project.camera.skipResetOnOpen();
+
   if (params.target) {
     // 按 uuid 定位，与节点的文本内容、位置、类型变化无关
     const entity = project.stageManager.get(params.target);

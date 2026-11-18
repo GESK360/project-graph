@@ -28,6 +28,24 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args: { path: string }) => {
+    // read_prg_metadata：真实实现是 Rust 只取 metadata.msgpack 那一段，
+    // 这里按同样的契约返回该段的 base64，保证被测代码拿到的是 metadata 原始字节
+    if (command === "read_prg_metadata") {
+      // vi.mock 的工厂会被提升到文件顶部，那时静态导入还没求值，
+      // 所以这里必须动态 import，不能直接用外层的 ZipReader
+      const { ZipReader, Uint8ArrayReader, Uint8ArrayWriter } = await import("@zip.js/zip.js");
+      const content = new Uint8Array(readFileSync(args.path));
+      const reader = new ZipReader(new Uint8ArrayReader(content));
+      try {
+        const entries = await reader.getEntries();
+        const entry = entries.find((it) => it.filename === "metadata.msgpack");
+        if (!entry || typeof entry.getData !== "function") throw new Error("缺少 metadata.msgpack");
+        const raw = await entry.getData(new Uint8ArrayWriter());
+        return Buffer.from(raw).toString("base64");
+      } finally {
+        await reader.close();
+      }
+    }
     if (command !== "read_folder_recursive") return [];
     const out: string[] = [];
     const walk = (dir: string) => {
@@ -125,5 +143,16 @@ describe("按 docId 反查文件（文件改名/移动后仍可定位）", () =>
     const file = join(dir, "a.prg");
     await writePrg(file, "doc-1");
     expect(await findFileByDocId("missing", [dir])).toBe(null);
+  });
+
+  it("跳过 .flux-graph/history 里的历史快照，避免命中过期副本", async () => {
+    const historyDir = join(dir, ".flux-graph", "history", "a");
+    mkdirSync(historyDir, { recursive: true });
+    // 快照与正本 docId 相同，若不过滤会先命中快照
+    await writePrg(join(historyDir, "20260101-000000.prg"), "doc-1");
+    const current = join(dir, "current.prg");
+    await writePrg(current, "doc-1");
+
+    expect(await findFileByDocId("doc-1", [dir])).toBe(current);
   });
 });

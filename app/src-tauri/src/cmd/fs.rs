@@ -130,6 +130,127 @@ pub fn read_file_base64(path: String) -> Result<String, String> {
         .encode(&std::fs::read(path).map_err(|e| format!("无法读取文件: {}", e))?))
 }
 
+/// 只读取 .prg（zip）里 metadata.msgpack 的内容，返回 base64。
+///
+/// 深度链接靠 docId 在文件改名后重新找回文档，需要扫描一批 .prg 的 metadata。
+/// 直接用 read_file_base64 会把整个 zip（可能含几十兆图片附件）读进来再解压，
+/// 十几个文件就能卡住主线程几秒。这里只走 zip 的中央目录，定位到
+/// metadata.msgpack 的数据区，按需读出那一段，其余字节不碰。
+#[tauri::command]
+pub fn read_prg_metadata(path: String) -> Result<String, String> {
+    let data = extract_zip_entry_stored(&path, "metadata.msgpack")?;
+    Ok(general_purpose::STANDARD.encode(&data))
+}
+
+/// 从 zip 中取出一个「未压缩存储」条目的原始字节。
+///
+/// prg 保存时所有条目都是 level 0（见 Project.getFileContent），所以不需要解压，
+/// 只要按中央目录找到数据区位置再读那一段，就能避开整包读取。
+fn extract_zip_entry_stored(path: &str, entry_name: &str) -> Result<Vec<u8>, String> {
+    use std::io::{BufReader, Read, Seek, SeekFrom};
+
+    const MAX_ENTRY_BYTES: u64 = 1024 * 1024;
+
+    let file = std::fs::File::open(path).map_err(|e| format!("无法读取文件: {}", e))?;
+    let file_len = file
+        .metadata()
+        .map_err(|e| format!("无法读取文件信息: {}", e))?
+        .len();
+    let mut reader = BufReader::new(file);
+
+    // 1. 从尾部找 End Of Central Directory 签名 0x06054b50（最多回退 64KB，容纳注释）
+    let tail_len = file_len.min(66_000) as usize;
+    let tail_start = file_len - tail_len as u64;
+    let mut tail = vec![0u8; tail_len];
+    reader
+        .seek(SeekFrom::Start(tail_start))
+        .map_err(|e| e.to_string())?;
+    reader.read_exact(&mut tail).map_err(|e| e.to_string())?;
+
+    let eocd = tail
+        .windows(4)
+        .rposition(|w| w == [0x50, 0x4b, 0x05, 0x06])
+        .ok_or_else(|| "不是有效的 prg 文件（缺少 zip 结束记录）".to_string())?;
+
+    let read_u16 = |bytes: &[u8], at: usize| -> u16 {
+        u16::from_le_bytes([bytes[at], bytes[at + 1]])
+    };
+    let read_u32 = |bytes: &[u8], at: usize| -> u32 {
+        u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+    };
+
+    let entry_count = read_u16(&tail, eocd + 10) as usize;
+    let cd_size = read_u32(&tail, eocd + 12) as u64;
+    let cd_offset = read_u32(&tail, eocd + 16) as u64;
+
+    // 2. 读中央目录，按文件名找 metadata.msgpack 的本地头偏移
+    if cd_size == 0 || cd_size > 64 * 1024 * 1024 {
+        return Err("prg 文件中央目录异常".to_string());
+    }
+    let mut cd = vec![0u8; cd_size as usize];
+    reader
+        .seek(SeekFrom::Start(cd_offset))
+        .map_err(|e| e.to_string())?;
+    reader.read_exact(&mut cd).map_err(|e| e.to_string())?;
+
+    let mut cursor = 0usize;
+    let mut local_header_offset: Option<u64> = None;
+    let mut compressed_size_out = 0u32;
+    let mut compressed_method = 0u16;
+    for _ in 0..entry_count {
+        if cursor + 46 > cd.len() || read_u32(&cd, cursor) != 0x0201_4b50 {
+            break;
+        }
+        compressed_method = read_u16(&cd, cursor + 10);
+        let compressed_size = read_u32(&cd, cursor + 20);
+        let name_len = read_u16(&cd, cursor + 28) as usize;
+        let extra_len = read_u16(&cd, cursor + 30) as usize;
+        let comment_len = read_u16(&cd, cursor + 32) as usize;
+        let local_offset = read_u32(&cd, cursor + 42);
+        let name_start = cursor + 46;
+        if name_start + name_len > cd.len() {
+            break;
+        }
+        let name = String::from_utf8_lossy(&cd[name_start..name_start + name_len]).to_string();
+        if name == entry_name {
+            local_header_offset = Some(local_offset as u64);
+            compressed_size_out = compressed_size;
+            break;
+        }
+        cursor = name_start + name_len + extra_len + comment_len;
+    }
+
+    let local_offset =
+        local_header_offset.ok_or_else(|| format!("prg 文件缺少 {}", entry_name))?;
+
+    // 3. 读本地头，跳过文件名与扩展区，只取数据区
+    let mut header = vec![0u8; 30];
+    reader
+        .seek(SeekFrom::Start(local_offset))
+        .map_err(|e| e.to_string())?;
+    reader.read_exact(&mut header).map_err(|e| e.to_string())?;
+    let local_name_len = read_u16(&header, 26) as usize;
+    let local_extra_len = read_u16(&header, 28) as usize;
+    let data_start = local_offset + 30 + local_name_len as u64 + local_extra_len as u64;
+
+    let size = compressed_size_out as u64;
+    if size == 0 || size > MAX_ENTRY_BYTES {
+        return Err(format!("{} 尺寸异常", entry_name));
+    }
+    let mut data = vec![0u8; size as usize];
+    reader
+        .seek(SeekFrom::Start(data_start))
+        .map_err(|e| e.to_string())?;
+    reader.read_exact(&mut data).map_err(|e| e.to_string())?;
+
+    // prg 里所有内容都以 level 0 存储（见 Project.getFileContent），即 STORED
+    if compressed_method != 0 {
+        return Err(format!("{} 不是未压缩存储，无法快速读取", entry_name));
+    }
+
+    Ok(data)
+}
+
 /// 写入文件
 #[tauri::command]
 pub fn write_text_file(path: String, content: String) -> Result<(), String> {
@@ -160,3 +281,138 @@ pub fn write_file_base64(content: String, path: String) -> Result<(), String> {
 pub fn create_folder(path: String) -> bool {
     std::fs::create_dir_all(&path).is_ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::extract_zip_entry_stored;
+
+    /// 手写一个「全部 STORED」的最小 zip，用来验证只读中央目录那一段的逻辑。
+    /// 不引第三方打 zip 依赖，保证这个单测只覆盖我们自己的解析代码。
+    fn build_stored_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut directory = Vec::new();
+
+        for (name, body) in entries {
+            let local_offset = out.len() as u32;
+            let name_bytes = name.as_bytes();
+            let crc = crc32(body);
+
+            // local file header
+            out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+            out.extend_from_slice(&20u16.to_le_bytes()); // version needed
+            out.extend_from_slice(&0u16.to_le_bytes()); // flags
+            out.extend_from_slice(&0u16.to_le_bytes()); // method = STORED
+            out.extend_from_slice(&0u16.to_le_bytes()); // mod time
+            out.extend_from_slice(&0u16.to_le_bytes()); // mod date
+            out.extend_from_slice(&crc.to_le_bytes());
+            out.extend_from_slice(&(body.len() as u32).to_le_bytes()); // compressed
+            out.extend_from_slice(&(body.len() as u32).to_le_bytes()); // uncompressed
+            out.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes()); // extra len
+            out.extend_from_slice(name_bytes);
+            out.extend_from_slice(body);
+
+            // central directory record
+            directory.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+            directory.extend_from_slice(&20u16.to_le_bytes()); // version made by
+            directory.extend_from_slice(&20u16.to_le_bytes()); // version needed
+            directory.extend_from_slice(&0u16.to_le_bytes()); // flags
+            directory.extend_from_slice(&0u16.to_le_bytes()); // method = STORED
+            directory.extend_from_slice(&0u16.to_le_bytes()); // mod time
+            directory.extend_from_slice(&0u16.to_le_bytes()); // mod date
+            directory.extend_from_slice(&crc.to_le_bytes());
+            directory.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            directory.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            directory.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+            directory.extend_from_slice(&0u16.to_le_bytes()); // extra len
+            directory.extend_from_slice(&0u16.to_le_bytes()); // comment len
+            directory.extend_from_slice(&0u16.to_le_bytes()); // disk number
+            directory.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
+            directory.extend_from_slice(&0u32.to_le_bytes()); // external attrs
+            directory.extend_from_slice(&local_offset.to_le_bytes());
+            directory.extend_from_slice(name_bytes);
+        }
+
+        let cd_offset = out.len() as u32;
+        let cd_size = directory.len() as u32;
+        out.extend_from_slice(&directory);
+
+        // end of central directory
+        out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // disk
+        out.extend_from_slice(&0u16.to_le_bytes()); // cd disk
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_offset.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes()); // comment len
+
+        out
+    }
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffffu32;
+        for byte in data {
+            crc ^= *byte as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xedb8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    fn temp_file(bytes: &[u8], tag: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "flux-graph-zip-test-{}-{}.prg",
+            std::process::id(),
+            tag
+        ));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    #[test]
+    fn reads_requested_entry_without_touching_others() {
+        let zip = build_stored_zip(&[
+            ("stage.msgpack", &[1u8, 2, 3, 4, 5]),
+            ("metadata.msgpack", b"hello-metadata"),
+            ("thumbnail.png", &[9u8; 4096]),
+        ]);
+        let path = temp_file(&zip, "one");
+        let data = extract_zip_entry_stored(path.to_str().unwrap(), "metadata.msgpack").unwrap();
+        assert_eq!(data, b"hello-metadata");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn reads_entry_that_is_not_first() {
+        let zip = build_stored_zip(&[
+            ("a.png", &[7u8; 2048]),
+            ("b.png", &[8u8; 2048]),
+            ("metadata.msgpack", b"second-last"),
+        ]);
+        let path = temp_file(&zip, "two");
+        let data = extract_zip_entry_stored(path.to_str().unwrap(), "metadata.msgpack").unwrap();
+        assert_eq!(data, b"second-last");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn reports_missing_entry() {
+        let zip = build_stored_zip(&[("stage.msgpack", &[1u8, 2, 3])]);
+        let path = temp_file(&zip, "three");
+        let error = extract_zip_entry_stored(path.to_str().unwrap(), "metadata.msgpack").unwrap_err();
+        assert!(error.contains("metadata.msgpack"), "unexpected error: {error}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_non_zip_file() {
+        let path = temp_file(b"this is definitely not a zip file", "four");
+        let error = extract_zip_entry_stored(path.to_str().unwrap(), "metadata.msgpack").unwrap_err();
+        assert!(!error.is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+}
+
