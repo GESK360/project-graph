@@ -148,3 +148,90 @@ workspace.nameRequired / invalidName / rootMissing / notAWorkspace
 
 - `pnpm --filter @graphif/project-graph type-check` 零报错（唯一验证手段，禁止 build）。
 - 手工验收清单写在 PR 描述里：打开工作空间 → 新建页面 → 树出现 → 编辑 → 切到另一个页面 → 前一个文件 mtime 更新 → 重命名/删除/剪切粘贴/降级升级 → 链接可点开。
+
+---
+
+# 追加契约（2026-11-18 第二轮迭代）
+
+## A. 取消降级/升级子页
+
+删掉 `demotePage` / `promotePage`（Manager）、`demoteWorkspacePage` / `promoteWorkspacePage`（PageOps）、以及树里的两个菜单项。
+i18n 键保留（不引用了也不报错）。**不要**保留半死代码。
+
+## B. 文件夹成为一等公民
+
+```ts
+export type WorkspaceClipboard = { mode: "cut" | "copy"; paths: string[] };
+
+/** dirPath 下新建空目录；name 省略时用 "新建文件夹"，重名依次 "新建文件夹（1）"、"（2）"…… */
+async createFolder(dirPath: string, name?: string): Promise<string>;
+async renameFolder(path: string, newName: string): Promise<string>;
+/** 递归删除整棵目录；UI 必须二次确认 */
+async deleteFolder(path: string): Promise<void>;
+
+/** 通用：内部按 exists/readDir 判断是目录还是页面 */
+async renameNode(path: string, newName: string): Promise<string>;
+async moveNode(path: string, targetDir: string): Promise<string>;
+async copyNode(path: string, targetDir: string): Promise<string>;
+
+/** 批量：逐个处理，任一失败抛出但已完成的保留（UI 报错即可，不要回滚） */
+async moveNodes(paths: string[], targetDir: string): Promise<string[]>;
+async copyNodes(paths: string[], targetDir: string): Promise<string[]>;
+
+/** 多选剪贴板 */
+cutMany(paths: string[]): void;
+copyMany(paths: string[]): void;
+/** 返回落成的新路径数组；paste 后清空剪贴板 */
+async paste(targetDir: string): Promise<string[]>;
+```
+
+规则：
+
+- 目录复制 = 递归复制（含子目录与其中的 `.prg`）；目录移动 = 直接 rename。
+- 移动/复制时若目标已存在同名项，按 `uniquePath` 规则加 ` (2)`——**注意**：文件夹的重名后缀用中文全角括号 `（1）`，页面沿用半角 ` (2)`，保持与用户描述一致。
+- 禁止把目录移进自己的子树（`isInside` 检查），抛错。
+
+## C. 自定义排序（拖拽"调整位置"）
+
+排序文件：`<root>/.flux-graph/order.json`
+
+```json
+{ "": ["a.prg", "笔记", "b.prg"], "笔记": ["x.prg"] }
+```
+
+- key 是相对根目录的目录路径（`""` = 根），value 是该目录下**文件名数组**（含扩展名，目录名就是目录名）。
+- `readTree` 排序：如果某目录在 order 里有记录 → 严格按数组顺序（目录与页面混排，数组里没出现的项排在末尾按默认规则）；没有记录 → 目录在前、各自 `localeCompare` 升序（保持旧行为）。
+- 写入时机：拖拽落点、`createFolder`/`createPage`（追加到末尾）。删除/改名/移动后要顺手清理 order 里的陈旧项（找不到对应文件的项丢掉）。
+
+```ts
+/** 把 path 移到 targetDir，并排在 beforeFileName 之前（省略 = 该目录末尾）。beforeFileName 用文件名，如 "a.prg" */
+async reorderNode(path: string, targetDir: string, beforeFileName?: string): Promise<void>;
+```
+
+## D. 界面：多选 + 拖拽 + 文件夹菜单
+
+树行状态：
+
+- `selectedPaths: ReadonlySet<string>`，`anchorPath?: string`（shift 锚点）
+- **单击**：选中该项（清空其它），并打开页面（仅当点的是页面）
+- **Ctrl+单击**：切换该项的选中状态（不改变锚点以外的行为）；点页面时仍然打开页面
+- **Shift+单击**：选中「锚点 ↔ 当前项」在**当前可见扁平顺序**里的整段（目录与页面都算），不打开页面
+- 选中多行时右键任意选中行，菜单作用于整个选择集；右键未选中行则先把它变为唯一选中
+
+文件夹右键菜单：重命名、删除、剪切、复制、粘贴、移动或复制…、新建页面、新建文件夹
+页面右键菜单：重命名、删除、剪切、复制、粘贴、复制指向页面的链接、移动或复制…、新建页面、新建文件夹、显示页面版本
+空白右键：新建页面、新建文件夹、粘贴、刷新、关闭工作空间
+
+顶部一行按钮顺序：**工作空间名 → 刷新 → 新建文件夹 → 新建页面 → 在资源管理器中显示**
+
+## E. 拖拽
+
+- 页面行与目录行都 `draggable`；`dataTransfer` 里放被拖的路径集合（拖已选中行 → 整个选择集，否则单行）。
+- 拖动中在落点画指示：落在**目录行中段** → 高亮整行（表示"放进去"，追加到该目录末尾）；落在**页面/目录行的上 1/2** → 画一条上边线（排它前面）；**下 1/2** → 下边线（排它后面）；落在**空白** → 高亮根区域，追加到根末尾。
+- 放下时：先 `moveNodes` 到目标目录，再用 `reorderNode` 记录落点顺序（"放进去"不需要 reorder）。
+- 禁止把目录拖进自己的子树：UI 层先判断并给 toast，不要等 Manager 抛。
+- 拖动过程中不要触发行点击（点击选中与拖拽要能共存：`onClick` 里判断本次是否发生过 drag）。
+
+## F. i18n 新增键（Lead 负责写入）
+
+`workspace.newFolderName`（"新建文件夹"）、`workspace.createFolder`（新建文件夹）、`workspace.folderCreated`、`workspace.deleteFolderTitle`、`workspace.deleteFolderBody`、`workspace.dragInvalidTarget`、`workspace.selectedCount`（"已选 {{count}} 项"）、`workspace.moveMany`、`workspace.copyMany`、`workspace.deleteManyTitle`、`workspace.deleteManyBody`

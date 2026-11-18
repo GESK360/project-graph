@@ -2570,6 +2570,23 @@ workspace:
   deleteConfirmBody: |
     Hapus "{{name}}"?
     File langsung dihapus dari disk dan tidak dapat dipulihkan.
+  newFolderName: Folder Baru
+  createFolder: Folder Baru
+  folderCreated: Folder dibuat
+  renameFolder: Ganti Nama Folder
+  deleteFolderTitle: Hapus Folder
+  deleteFolderBody: |
+    Hapus folder "{{name}}"?
+    Semua halaman dan subfolder di dalamnya dihapus dari disk dan tidak dapat dipulihkan.
+  dragInvalidTarget: Folder tidak bisa dipindahkan ke dalam dirinya sendiri
+  selectedCount: "{{count}} dipilih"
+  moveMany: Pindahkan yang Dipilih
+  copyMany: Salin yang Dipilih
+  deleteManyTitle: Hapus yang Dipilih
+  deleteManyBody: |
+    Hapus {{count}} item yang dipilih?
+    File langsung dihapus dari disk dan tidak dapat dipulihkan.
+  reorderFailed: Gagal mengubah urutan
   versionsEmpty: Halaman ini belum punya versi
   restore: Pulihkan Versi Ini
   openAsCopy: Buka sebagai Salinan

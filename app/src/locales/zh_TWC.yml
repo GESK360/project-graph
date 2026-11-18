@@ -2505,6 +2505,23 @@ workspace:
   deleteConfirmBody: |
     確定要刪除「{{name}}」？
     檔案會直接喺硬碟刪走，冇得還原。
+  newFolderName: 開新資料夾
+  createFolder: 開新資料夾
+  folderCreated: 已經開咗資料夾
+  renameFolder: 改資料夾名
+  deleteFolderTitle: 刪除資料夾
+  deleteFolderBody: |
+    確定要刪除資料夾「{{name}}」？
+    入面所有頁面同子資料夾會一齊喺硬碟刪走，冇得還原。
+  dragInvalidTarget: 資料夾唔可以搬入佢自己入面
+  selectedCount: 已選 {{count}} 項
+  moveMany: 移動所選
+  copyMany: 複製所選
+  deleteManyTitle: 刪除所選項目
+  deleteManyBody: |
+    確定要刪除所選嘅 {{count}} 項？
+    檔案會直接喺硬碟刪走，冇得還原。
+  reorderFailed: 調整順序失敗
   versionsEmpty: 呢個頁面仲未有歷史版本
   restore: 還原呢個版本
   openAsCopy: 開副本

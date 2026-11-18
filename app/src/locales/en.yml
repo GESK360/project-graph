@@ -2614,6 +2614,23 @@ workspace:
   deleteConfirmBody: |
     Delete "{{name}}"?
     The file is removed from disk immediately and cannot be recovered.
+  newFolderName: New Folder
+  createFolder: New Folder
+  folderCreated: Folder created
+  renameFolder: Rename Folder
+  deleteFolderTitle: Delete Folder
+  deleteFolderBody: |
+    Delete the folder "{{name}}"?
+    Every page and subfolder inside it is removed from disk and cannot be recovered.
+  dragInvalidTarget: A folder cannot be moved inside itself
+  selectedCount: "{{count}} selected"
+  moveMany: Move Selected
+  copyMany: Copy Selected
+  deleteManyTitle: Delete Selected
+  deleteManyBody: |
+    Delete the {{count}} selected items?
+    Files are removed from disk immediately and cannot be recovered.
+  reorderFailed: Failed to reorder
   versionsEmpty: No versions for this page yet
   restore: Restore This Version
   openAsCopy: Open as Copy

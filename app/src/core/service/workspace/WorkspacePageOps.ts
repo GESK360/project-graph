@@ -77,20 +77,90 @@ export async function copyWorkspacePage(path: string, targetDir: string): Promis
   return await WorkspaceManager.copyPage(path, targetDir);
 }
 
-export async function demoteWorkspacePage(path: string): Promise<string> {
-  const opened = findOpenProject(path);
-  await closeBeforePathChange(opened);
-  const newPath = await WorkspaceManager.demotePage(path);
-  if (opened) await openWorkspacePage(newPath);
+/** 目录下（含子目录）所有已打开的页面 */
+function findOpenProjectsUnder(path: string): Project[] {
+  const target = WorkspacePaths.normalize(path);
+  return store
+    .get(tabsAtom)
+    .filter(
+      (tab): tab is Project =>
+        tab instanceof Project &&
+        !tab.closing &&
+        tab.uri.scheme === "file" &&
+        WorkspacePaths.isInside(WorkspacePaths.normalize(tab.uri.fsPath), target),
+    );
+}
+
+/** 相对父路径的尾部；父路径本身返回空串 */
+function relativePart(parent: string, path: string): string {
+  const base = WorkspacePaths.normalize(parent);
+  const target = WorkspacePaths.normalize(path);
+  return target === base ? "" : target.slice(base.length + 1);
+}
+
+/**
+ * 通用节点改路径：先把受影响的已打开工程存盘关闭，改完再按新路径重新打开，
+ * 否则旧路径的 ownership 锁会挡住新路径，目录改名后子页也会指向不存在的目录。
+ */
+async function withPathChange(path: string, change: (source: string) => Promise<string>): Promise<string> {
+  const source = WorkspacePaths.normalize(path);
+  const opened = findOpenProjectsUnder(source);
+  const self = opened.find((project) => WorkspacePaths.normalize(project.uri.fsPath) === source);
+  if (self) {
+    // 页面：只处理它自己（页面的子页目录会跟着改名，路径推算不可靠）
+    await closeBeforePathChange(self);
+    const newPath = await change(source);
+    await openWorkspacePage(newPath);
+    return newPath;
+  }
+  const nested = opened.map((project) => relativePart(source, project.uri.fsPath));
+  for (const project of opened) {
+    await closeBeforePathChange(project);
+  }
+  const newPath = await change(source);
+  for (const part of nested) {
+    await openWorkspacePage(WorkspacePaths.join(newPath, part));
+  }
   return newPath;
 }
 
-export async function promoteWorkspacePage(path: string): Promise<string> {
-  const opened = findOpenProject(path);
-  await closeBeforePathChange(opened);
-  const newPath = await WorkspaceManager.promotePage(path);
-  if (opened) await openWorkspacePage(newPath);
-  return newPath;
+/** 重命名页面或文件夹（自动判断），返回新路径 */
+export async function renameWorkspaceNode(path: string, newName: string): Promise<string> {
+  return await withPathChange(path, (source) => WorkspaceManager.renameNode(source, newName));
+}
+
+export async function moveWorkspaceNode(path: string, targetDir: string): Promise<string> {
+  return await withPathChange(path, (source) => WorkspaceManager.moveNode(source, targetDir));
+}
+
+/** 整棵目录递归删除；目录里已打开的页面先关掉，否则它们会继续往已删除的路径回写 */
+export async function deleteWorkspaceFolder(path: string): Promise<void> {
+  for (const project of findOpenProjectsUnder(path)) {
+    await TabWorkspace.close(project.id);
+  }
+  await WorkspaceManager.deleteFolder(path);
+}
+
+/** 批量移动：返回落成的新路径；中途失败时已移动的项保留（与 Manager 语义一致） */
+export async function moveWorkspaceNodes(paths: string[], targetDir: string): Promise<string[]> {
+  const moved: string[] = [];
+  for (const path of paths) {
+    moved.push(await moveWorkspaceNode(path, targetDir));
+  }
+  return moved;
+}
+
+export async function copyWorkspaceNodes(paths: string[], targetDir: string): Promise<string[]> {
+  const copied: string[] = [];
+  for (const path of paths) {
+    copied.push(await copyWorkspaceNode(path, targetDir));
+  }
+  return copied;
+}
+
+export async function copyWorkspaceNode(path: string, targetDir: string): Promise<string> {
+  await saveIfNeeded(findOpenProject(path));
+  return await WorkspaceManager.copyNode(path, targetDir);
 }
 
 /**

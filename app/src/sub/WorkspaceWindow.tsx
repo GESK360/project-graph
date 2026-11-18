@@ -2,20 +2,31 @@ import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import WorkspaceMoveCopyDialog, { type WorkspaceMoveCopyMode } from "@/components/workspace/WorkspaceMoveCopyDialog";
-import WorkspaceTree, { type WorkspacePageNode } from "@/components/workspace/WorkspaceTree";
+import WorkspaceTree, {
+  type WorkspaceDropTarget,
+  type WorkspacePageNode,
+  type WorkspaceRowClick,
+} from "@/components/workspace/WorkspaceTree";
 import WorkspaceVersionsDialog from "@/components/workspace/WorkspaceVersionsDialog";
-import { reportWorkspaceError } from "@/components/workspace/workspacePath";
+import { flattenWorkspaceTree } from "@/components/workspace/workspaceFlat";
+import { isSameWorkspacePath, reportWorkspaceError } from "@/components/workspace/workspacePath";
 import { createPageDeepLink } from "@/core/service/dataFileService/DeepLinkHandler";
 import { Settings } from "@/core/service/Settings";
-import { WorkspaceManager, type WorkspaceClipboard } from "@/core/service/workspace/WorkspaceManager";
 import {
+  WorkspaceManager,
+  WorkspacePaths,
+  type WorkspaceClipboard,
+  type WorkspaceNode,
+} from "@/core/service/workspace/WorkspaceManager";
+import {
+  copyWorkspaceNodes,
   copyWorkspacePage,
+  deleteWorkspaceFolder,
   deleteWorkspacePage,
-  demoteWorkspacePage,
+  moveWorkspaceNodes,
   moveWorkspacePage,
   openWorkspacePage,
-  promoteWorkspacePage,
-  renameWorkspacePage,
+  renameWorkspaceNode,
 } from "@/core/service/workspace/WorkspacePageOps";
 import { ComponentTab, Tab } from "@/core/Tab";
 import { dockWorkspacePanel, TabWorkspace } from "@/core/TabWorkspace";
@@ -27,12 +38,19 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import i18next from "i18next";
 import { useAtom } from "jotai";
-import { FilePlus, FolderOpen, RefreshCcw, SquareArrowOutUpRight } from "lucide-react";
-import { isValidElement, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Copy,
+  FilePlus,
+  FolderOpen,
+  FolderPlus,
+  RefreshCcw,
+  SquareArrowOutUpRight,
+  Trash2,
+  FolderInput,
+} from "lucide-react";
+import { isValidElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-
-type WorkspaceNode = Awaited<ReturnType<typeof WorkspaceManager.readTree>>[number];
 
 const COLLAPSED_KEY_PREFIX = "workspace:collapsed:";
 
@@ -47,6 +65,10 @@ function writeCollapsedDirs(root: string, dirs: string[]) {
   localStorage.setItem(COLLAPSED_KEY_PREFIX + root, JSON.stringify(dirs));
 }
 
+function isPagePath(path: string) {
+  return WorkspacePaths.normalize(path).toLowerCase().endsWith(".prg");
+}
+
 export default function WorkspaceWindow() {
   const { t } = useTranslation("workspace");
   const [activeTab] = useAtom(activeResourceTabAtom);
@@ -55,8 +77,19 @@ export default function WorkspaceWindow() {
   const [collapsedDirs, setCollapsedDirs] = useState<ReadonlySet<string>>(new Set());
   const [versionCounts, setVersionCounts] = useState<ReadonlyMap<string, number>>(new Map());
   const [clipboard, setClipboard] = useState<WorkspaceClipboard | null>(null);
-  const [moveCopyTarget, setMoveCopyTarget] = useState<WorkspacePageNode | null>(null);
+  const [selectedPaths, setSelectedPaths] = useState<ReadonlySet<string>>(new Set());
+  const [dropTarget, setDropTarget] = useState<WorkspaceDropTarget | null>(null);
+  const [moveCopyTarget, setMoveCopyTarget] = useState<{
+    paths: string[];
+    label: string;
+    mode: WorkspaceMoveCopyMode;
+  } | null>(null);
   const [versionsTarget, setVersionsTarget] = useState<WorkspacePageNode | null>(null);
+  const anchorPathRef = useRef<string | undefined>(undefined);
+  const dragPathsRef = useRef<string[]>([]);
+  const dragOccurredRef = useRef(false);
+  const suppressClickUntilRef = useRef(0);
+  const dragOverKeyRef = useRef("");
 
   const activeFsPath = activeTab && "uri" in activeTab ? activeTab.uri.fsPath : undefined;
 
@@ -65,6 +98,7 @@ export default function WorkspaceWindow() {
     if (!currentRoot) {
       setTree([]);
       setVersionCounts(new Map());
+      setSelectedPaths(new Set());
       return;
     }
     const nodes = await WorkspaceManager.readTree();
@@ -85,10 +119,27 @@ export default function WorkspaceWindow() {
     );
     setVersionCounts(counts);
     setClipboard(WorkspaceManager.clipboard);
+    // 文件被外部改动后选中的路径可能已经不存在，顺手清掉
+    const existing = new Set<string>(pages.map((page) => page.path));
+    const walkDirs = (list: WorkspaceNode[]) => {
+      for (const node of list) {
+        if (node.kind === "dir") {
+          existing.add(node.path);
+          walkDirs(node.children);
+        }
+      }
+    };
+    walkDirs(nodes);
+    setSelectedPaths((previous) => {
+      const next = new Set([...previous].filter((path) => existing.has(path)));
+      return next.size === previous.size ? previous : next;
+    });
   }, []);
 
   useEffect(() => {
     setCollapsedDirs(new Set(readCollapsedDirs(root)));
+    setSelectedPaths(new Set());
+    anchorPathRef.current = undefined;
   }, [root]);
 
   useEffect(() => {
@@ -109,6 +160,24 @@ export default function WorkspaceWindow() {
     };
   }, [refresh]);
 
+  const rows = useMemo(
+    () => (root ? flattenWorkspaceTree(tree, collapsedDirs, root) : []),
+    [tree, collapsedDirs, root],
+  );
+
+  // 折叠目录里的节点也要能判断出类型（删除/落点校验会用到），所以按整棵树收集而不是可见行
+  const kindByPath = useMemo(() => {
+    const map = new Map<string, "dir" | "page">();
+    const walk = (list: WorkspaceNode[]) => {
+      for (const node of list) {
+        map.set(node.path, node.kind);
+        if (node.kind === "dir") walk(node.children);
+      }
+    };
+    walk(tree);
+    return map;
+  }, [tree]);
+
   const toggleCollapsed = useCallback(
     (dirPath: string) => {
       if (!root) return;
@@ -123,6 +192,47 @@ export default function WorkspaceWindow() {
     [root],
   );
 
+  const clickRow = useCallback(
+    (click: WorkspaceRowClick) => {
+      const anchor = anchorPathRef.current;
+      if (click.shiftKey && anchor) {
+        const anchorIndex = rows.findIndex((row) => isSameWorkspacePath(row.node.path, anchor));
+        const currentIndex = rows.findIndex((row) => isSameWorkspacePath(row.node.path, click.path));
+        if (anchorIndex >= 0 && currentIndex >= 0) {
+          const start = Math.min(anchorIndex, currentIndex);
+          const end = Math.max(anchorIndex, currentIndex);
+          setSelectedPaths(new Set(rows.slice(start, end + 1).map((row) => row.node.path)));
+          return;
+        }
+      }
+      if (click.ctrlKey) {
+        setSelectedPaths((previous) => {
+          const next = new Set(previous);
+          if (next.has(click.path)) next.delete(click.path);
+          else next.add(click.path);
+          return next;
+        });
+        anchorPathRef.current = click.path;
+        return;
+      }
+      setSelectedPaths(new Set([click.path]));
+      anchorPathRef.current = click.path;
+    },
+    [rows],
+  );
+
+  /** 右键未选中的行时先把它变成唯一选中，菜单才会指向它 */
+  const contextRow = useCallback((path: string) => {
+    setSelectedPaths((previous) => (previous.has(path) ? previous : new Set([path])));
+    anchorPathRef.current = path;
+  }, []);
+
+  /** 右键落在多选集合内 → 作用于整个选择集；否则只作用于该行 */
+  const targetPathsFor = useCallback(
+    (path: string) => (selectedPaths.size > 1 && selectedPaths.has(path) ? [...selectedPaths] : [path]),
+    [selectedPaths],
+  );
+
   const promptNewPage = useCallback(
     async (dirPath: string) => {
       const name = await Dialog.input(t("newPage"), "", { placeholder: t("unnamedPage") });
@@ -135,9 +245,18 @@ export default function WorkspaceWindow() {
     [t],
   );
 
-  const promptRename = useCallback(
-    async (node: WorkspacePageNode) => {
-      const name = await Dialog.input(t("rename"), node.name, { defaultValue: node.name });
+  const createFolder = useCallback(
+    async (dirPath: string) => {
+      await WorkspaceManager.createFolder(dirPath, t("newFolderName"));
+      toast.success(t("folderCreated"));
+    },
+    [t],
+  );
+
+  const promptRenameNode = useCallback(
+    async (node: WorkspaceNode) => {
+      const isDir = node.kind === "dir";
+      const name = await Dialog.input(isDir ? t("renameFolder") : t("rename"), node.name, { defaultValue: node.name });
       if (name === undefined) return;
       const trimmed = name.trim();
       if (!trimmed) {
@@ -145,18 +264,53 @@ export default function WorkspaceWindow() {
         return;
       }
       if (trimmed === node.name) return;
-      await renameWorkspacePage(node.path, trimmed);
+      // 统一走 PageOps：无论页面还是目录，都会先存盘关掉受影响的标签再改路径
+      const newPath = await renameWorkspaceNode(node.path, trimmed);
+      setSelectedPaths(new Set([newPath]));
+      anchorPathRef.current = newPath;
     },
     [t],
   );
 
-  const confirmDelete = useCallback(
-    async (node: WorkspacePageNode) => {
-      const confirmed = await Dialog.confirm(t("deleteConfirmTitle"), t("deleteConfirmBody"), { destructive: true });
-      if (!confirmed) return;
-      await deleteWorkspacePage(node.path);
+  const deleteEntries = useCallback(
+    async (paths: string[]) => {
+      for (const path of paths) {
+        // 目录走 PageOps：它会先把目录里已打开的页面存盘关闭，再递归删除
+        if (kindByPath.get(path) === "dir") await deleteWorkspaceFolder(path);
+        else await deleteWorkspacePage(path);
+      }
+      setSelectedPaths(new Set());
+      anchorPathRef.current = undefined;
     },
-    [t],
+    [kindByPath],
+  );
+
+  const confirmDelete = useCallback(
+    async (node: WorkspaceNode) => {
+      const paths = targetPathsFor(node.path);
+      if (paths.length > 1) {
+        const confirmed = await Dialog.confirm(t("deleteManyTitle"), t("deleteManyBody", { count: paths.length }), {
+          destructive: true,
+        });
+        if (!confirmed) return;
+        await deleteEntries(paths);
+        return;
+      }
+      if (node.kind === "dir") {
+        const confirmed = await Dialog.confirm(t("deleteFolderTitle"), t("deleteFolderBody", { name: node.name }), {
+          destructive: true,
+        });
+        if (!confirmed) return;
+        await deleteEntries([node.path]);
+        return;
+      }
+      const confirmed = await Dialog.confirm(t("deleteConfirmTitle"), t("deleteConfirmBody", { name: node.name }), {
+        destructive: true,
+      });
+      if (!confirmed) return;
+      await deleteEntries([node.path]);
+    },
+    [deleteEntries, t, targetPathsFor],
   );
 
   const copyLink = useCallback(
@@ -167,6 +321,87 @@ export default function WorkspaceWindow() {
     [t],
   );
 
+  const cutOrCopy = useCallback(
+    (node: WorkspaceNode, mode: "cut" | "copy") => {
+      const paths = targetPathsFor(node.path);
+      if (mode === "cut") WorkspaceManager.cutMany(paths);
+      else WorkspaceManager.copyMany(paths);
+      setClipboard(WorkspaceManager.clipboard);
+    },
+    [targetPathsFor],
+  );
+
+  /** 拖完/移完把选中集换成新路径，否则选择会指向已经不存在的旧路径 */
+  const adoptMovedPaths = useCallback((moved: string[]) => {
+    if (moved.length === 0) return;
+    setSelectedPaths(new Set(moved));
+    anchorPathRef.current = moved[0];
+  }, []);
+
+  const paste = useCallback(
+    (targetDir: string) => {
+      WorkspaceManager.paste(targetDir)
+        .then(async (pasted) => {
+          adoptMovedPaths(pasted);
+          await refresh();
+        })
+        .catch(reportWorkspaceError);
+    },
+    [adoptMovedPaths, refresh],
+  );
+
+  /** 单个页面走 PageOps（要处理已打开的标签页），批量或目录走 Manager 的通用节点操作 */
+  const moveEntries = useCallback(
+    async (paths: string[], targetDir: string) => {
+      const moved =
+        paths.length === 1 && isPagePath(paths[0])
+          ? [await moveWorkspacePage(paths[0], targetDir)]
+          : await moveWorkspaceNodes(paths, targetDir);
+      adoptMovedPaths(moved);
+      return moved;
+    },
+    [adoptMovedPaths],
+  );
+
+  const copyEntries = useCallback(
+    async (paths: string[], targetDir: string) => {
+      const copied =
+        paths.length === 1 && isPagePath(paths[0])
+          ? [await copyWorkspacePage(paths[0], targetDir)]
+          : await copyWorkspaceNodes(paths, targetDir);
+      adoptMovedPaths(copied);
+      return copied;
+    },
+    [adoptMovedPaths],
+  );
+
+  const dropEntries = useCallback(
+    async (target: WorkspaceDropTarget, paths: string[]) => {
+      dragOverKeyRef.current = "";
+      const currentRoot = WorkspaceManager.root;
+      if (!currentRoot) return;
+      const targetDir = target.type === "drop" ? target.path : target.type === "root" ? currentRoot : target.dirPath;
+      // 目录不能放进自己或自己的子树，UI 先拦，省得 Manager 抛错
+      const invalid = paths.some((path) => kindByPath.get(path) === "dir" && WorkspacePaths.isInside(targetDir, path));
+      if (invalid) {
+        toast.error(t("dragInvalidTarget"));
+        return;
+      }
+      // 名字要在移动前取：重名会让落地路径带上「(2)」之类的后缀
+      const originalNames = new Set(paths.map((path) => WorkspacePaths.baseName(path)));
+      const moved = await moveEntries(paths, targetDir);
+      if (target.type === "drop") return;
+      // 落点在某个文件之前/之后、或者空白处（排到末尾）：记进 order.json，树重读后就是新顺序
+      const beforeFileName = target.type === "root" ? undefined : target.beforeFileName;
+      // 落点锚点本身就在被拖的这批里 → 相对顺序没变，不用动 order.json
+      if (beforeFileName !== undefined && originalNames.has(beforeFileName)) return;
+      for (const path of moved) {
+        await WorkspaceManager.reorderNode(path, targetDir, beforeFileName);
+      }
+    },
+    [kindByPath, moveEntries, t],
+  );
+
   const actions = useMemo(
     () => ({
       openPage: (node: WorkspacePageNode) => {
@@ -175,43 +410,37 @@ export default function WorkspaceWindow() {
       toggleDir: (node: Extract<WorkspaceNode, { kind: "dir" }>) => {
         toggleCollapsed(node.path);
       },
+      clickRow,
+      contextRow,
       newPage: (dirPath: string) => {
         promptNewPage(dirPath).catch(reportWorkspaceError);
       },
-      renamePage: (node: WorkspacePageNode) => {
-        promptRename(node).catch(reportWorkspaceError);
+      newFolder: (dirPath: string) => {
+        createFolder(dirPath).catch(reportWorkspaceError);
       },
-      deletePage: (node: WorkspacePageNode) => {
+      renameNode: (node: WorkspaceNode) => {
+        promptRenameNode(node).catch(reportWorkspaceError);
+      },
+      deleteNode: (node: WorkspaceNode) => {
         confirmDelete(node).catch(reportWorkspaceError);
       },
-      cutPage: (node: WorkspacePageNode) => {
-        WorkspaceManager.cut(node.path);
-        setClipboard(WorkspaceManager.clipboard);
+      cutNode: (node: WorkspaceNode) => {
+        cutOrCopy(node, "cut");
       },
-      copyPage: (node: WorkspacePageNode) => {
-        WorkspaceManager.copy(node.path);
-        setClipboard(WorkspaceManager.clipboard);
+      copyNode: (node: WorkspaceNode) => {
+        cutOrCopy(node, "copy");
       },
-      paste: (targetDir: string) => {
-        WorkspaceManager.paste(targetDir)
-          .then(() => refresh())
-          .catch(reportWorkspaceError);
-      },
+      paste,
       copyLink: (node: WorkspacePageNode) => {
         copyLink(node).catch(reportWorkspaceError);
       },
-      moveOrCopy: (node: WorkspacePageNode) => {
-        setMoveCopyTarget(node);
-      },
-      demote: (node: WorkspacePageNode) => {
-        demoteWorkspacePage(node.path)
-          .then(() => refresh())
-          .catch(reportWorkspaceError);
-      },
-      promote: (node: WorkspacePageNode) => {
-        promoteWorkspacePage(node.path)
-          .then(() => refresh())
-          .catch(reportWorkspaceError);
+      moveOrCopy: (node: WorkspaceNode) => {
+        const paths = targetPathsFor(node.path);
+        setMoveCopyTarget({
+          paths,
+          label: paths.length > 1 ? t("selectedCount", { count: paths.length }) : node.name,
+          mode: "move",
+        });
       },
       collapseDir: (dirPath: string) => {
         if (!root) return;
@@ -238,14 +467,64 @@ export default function WorkspaceWindow() {
       closeWorkspace: () => {
         WorkspaceManager.closeWorkspace().catch(reportWorkspaceError);
       },
+      dragStart: (paths: string[]) => {
+        dragPathsRef.current = paths;
+        dragOccurredRef.current = true;
+      },
+      dragEnd: () => {
+        dragPathsRef.current = [];
+        dragOverKeyRef.current = "";
+        setDropTarget(null);
+        // 拖拽结束后浏览器可能补一次 click，200ms 内的点击一律当拖拽处理
+        if (dragOccurredRef.current) {
+          dragOccurredRef.current = false;
+          suppressClickUntilRef.current = Date.now() + 200;
+        }
+      },
+      dragOver: (target: WorkspaceDropTarget | null) => {
+        // dragover 每秒触发几十次，同一落点不要重复 setState
+        const key = target ? `${target.type}:${"path" in target ? target.path : ""}` : "";
+        if (dragOverKeyRef.current === key) return;
+        dragOverKeyRef.current = key;
+        setDropTarget(target);
+      },
+      drop: (target: WorkspaceDropTarget, paths: string[]) => {
+        setDropTarget(null);
+        const dropped = paths.length > 0 ? paths : dragPathsRef.current;
+        dropEntries(target, dropped).catch(reportWorkspaceError);
+      },
+      shouldIgnoreClick: () => {
+        if (Date.now() < suppressClickUntilRef.current) {
+          // 只吃掉拖拽后紧跟的那一次 click，不影响之后的正常点击
+          suppressClickUntilRef.current = 0;
+          return true;
+        }
+        return false;
+      },
     }),
-    [copyLink, confirmDelete, promptNewPage, promptRename, refresh, root, toggleCollapsed],
+    [
+      clickRow,
+      confirmDelete,
+      contextRow,
+      copyLink,
+      createFolder,
+      cutOrCopy,
+      dropEntries,
+      paste,
+      promptNewPage,
+      promptRenameNode,
+      refresh,
+      root,
+      t,
+      targetPathsFor,
+      toggleCollapsed,
+    ],
   );
 
   const submitMoveCopy = async (mode: WorkspaceMoveCopyMode, targetDir: string) => {
     if (!moveCopyTarget) return;
-    if (mode === "move") await moveWorkspacePage(moveCopyTarget.path, targetDir);
-    else await copyWorkspacePage(moveCopyTarget.path, targetDir);
+    if (mode === "move") await moveEntries(moveCopyTarget.paths, targetDir);
+    else await copyEntries(moveCopyTarget.paths, targetDir);
     await refresh();
   };
 
@@ -266,14 +545,18 @@ export default function WorkspaceWindow() {
     );
   }
 
+  const selectedList = [...selectedPaths];
+  const rootName =
+    root
+      .replace(/[\\/]+$/, "")
+      .split(/[\\/]/)
+      .pop() || root;
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-1 border-b px-2 py-1.5">
         <span className="min-w-0 flex-1 truncate text-xs font-medium" title={root}>
-          {root
-            .replace(/[\\/]+$/, "")
-            .split(/[\\/]/)
-            .pop() || root}
+          {rootName}
         </span>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -282,6 +565,14 @@ export default function WorkspaceWindow() {
             </Button>
           </TooltipTrigger>
           <TooltipContent>{t("refresh")}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button size="icon" variant="ghost" className="size-6" onClick={() => actions.newFolder(root)}>
+              <FolderPlus className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{t("createFolder")}</TooltipContent>
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -301,21 +592,78 @@ export default function WorkspaceWindow() {
         </Tooltip>
       </div>
 
+      {selectedPaths.size > 1 && (
+        <div className="bg-accent/30 flex items-center gap-1 border-b px-2 py-1 text-xs">
+          <span className="text-muted-foreground min-w-0 flex-1 truncate">
+            {t("selectedCount", { count: selectedPaths.size })}
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-1.5 text-xs"
+            onClick={() =>
+              setMoveCopyTarget({
+                paths: selectedList,
+                label: t("selectedCount", { count: selectedPaths.size }),
+                mode: "move",
+              })
+            }
+          >
+            <FolderInput className="size-3.5" />
+            {t("moveMany")}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-1.5 text-xs"
+            onClick={() =>
+              setMoveCopyTarget({
+                paths: selectedList,
+                label: t("selectedCount", { count: selectedPaths.size }),
+                mode: "copy",
+              })
+            }
+          >
+            <Copy className="size-3.5" />
+            {t("copyMany")}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-destructive h-6 px-1.5 text-xs"
+            onClick={() => {
+              Dialog.confirm(t("deleteManyTitle"), t("deleteManyBody", { count: selectedPaths.size }), {
+                destructive: true,
+              })
+                .then((confirmed) => (confirmed ? deleteEntries(selectedList) : undefined))
+                .catch(reportWorkspaceError);
+            }}
+          >
+            <Trash2 className="size-3.5" />
+            {t("delete")}
+          </Button>
+        </div>
+      )}
+
       <div className="min-h-0 flex-1 overflow-auto px-1 py-1">
         <WorkspaceTree
           nodes={tree}
+          rows={rows}
           root={root}
           collapsedDirs={collapsedDirs}
           activeFsPath={activeFsPath}
           clipboard={clipboard}
           versionCounts={versionCounts}
+          selectedPaths={selectedPaths}
+          dropTarget={dropTarget}
           actions={actions}
         />
       </div>
 
       <WorkspaceMoveCopyDialog
-        pagePath={moveCopyTarget?.path ?? null}
-        pageName={moveCopyTarget?.name ?? ""}
+        paths={moveCopyTarget?.paths ?? null}
+        label={moveCopyTarget?.label ?? ""}
+        initialMode={moveCopyTarget?.mode ?? "move"}
         onClose={() => setMoveCopyTarget(null)}
         onSubmit={submitMoveCopy}
       />

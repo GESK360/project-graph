@@ -3,7 +3,18 @@ import { Project } from "@/core/Project";
 import { Settings } from "@/core/service/Settings";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { copyFile, exists, mkdir, readDir, remove, rename, watch } from "@tauri-apps/plugin-fs";
+import {
+  copyFile,
+  exists,
+  mkdir,
+  readDir,
+  readFile,
+  remove,
+  rename,
+  stat,
+  watch,
+  writeFile,
+} from "@tauri-apps/plugin-fs";
 import i18next from "i18next";
 import { toast } from "sonner";
 import { URI } from "vscode-uri";
@@ -12,11 +23,17 @@ export type WorkspaceNode =
   | { kind: "dir"; name: string; path: string; children: WorkspaceNode[] }
   | { kind: "page"; name: string; path: string }; // name 不含 .prg
 
-export type WorkspaceClipboard = { mode: "cut" | "copy"; path: string; name: string };
+export type WorkspaceClipboard = { mode: "cut" | "copy"; paths: string[] };
 
 type WorkspaceEvent = "change" | "root-change";
 
 const HISTORY_DIR = ".flux-graph/history";
+/** 自定义排序文件：key 是相对根目录的目录路径（"" 为根），value 是该目录下的文件名数组 */
+const ORDER_DIR = ".flux-graph";
+const ORDER_FILE = ".flux-graph/order.json";
+/** 文件夹重名后缀用全角括号，和用户看到的「新建文件夹（1）」一致 */
+const FOLDER_SUFFIX = (index: number) => `（${index}）`;
+const DEFAULT_FOLDER_NAME = "新建文件夹";
 /** 同一页面两次快照的最小间隔，避免自动保存把历史冲刷掉 */
 const SNAPSHOT_INTERVAL_MS = 30_000;
 const SNAPSHOT_KEEP_COUNT = 20;
@@ -64,6 +81,12 @@ export namespace WorkspacePaths {
     const normalized = normalize(path);
     const base = normalized.slice(normalized.lastIndexOf("/") + 1);
     return base.toLowerCase().endsWith(".prg") ? base.slice(0, -4) : base;
+  }
+
+  /** 文件名（含扩展名）；目录名就是目录名 */
+  export function baseName(path: string): string {
+    const normalized = normalize(path);
+    return normalized.slice(normalized.lastIndexOf("/") + 1);
   }
 
   export function isInside(path: string, parent: string): boolean {
@@ -120,7 +143,9 @@ export class WorkspaceManagerClass {
 
   /** 读根目录一级节点（递归到子目录） */
   async readTree(): Promise<WorkspaceNode[]> {
-    return await this.readDirNodes(this.requireRoot());
+    const root = this.requireRoot();
+    const order = await this.readOrder();
+    return await this.readDirNodes(root, root, order);
   }
 
   /**
@@ -155,12 +180,15 @@ export class WorkspaceManagerClass {
     } finally {
       await project.dispose();
     }
+    await this.appendOrder(dir, WorkspacePaths.baseName(target));
     this.emit("change");
     return target;
   }
 
   async deletePage(path: string): Promise<void> {
-    await remove(WorkspacePaths.normalize(path));
+    const target = WorkspacePaths.normalize(path);
+    await remove(target);
+    await this.pruneOrder([WorkspacePaths.dirname(target)]);
     this.emit("change");
   }
 
@@ -173,11 +201,13 @@ export class WorkspaceManagerClass {
     if (baseName.toLowerCase() === currentName.toLowerCase()) {
       const casingTarget = WorkspacePaths.join(WorkspacePaths.dirname(source), `${baseName}.prg`);
       await this.movePageFile(source, casingTarget);
+      await this.pruneOrder([WorkspacePaths.dirname(source)]);
       this.emit("change");
       return casingTarget;
     }
     const target = await this.uniquePath(WorkspacePaths.dirname(source), baseName);
     await this.movePageFile(source, target);
+    await this.pruneOrder([WorkspacePaths.dirname(source)]);
     this.emit("change");
     return target;
   }
@@ -193,6 +223,7 @@ export class WorkspaceManagerClass {
     await mkdir(dir, { recursive: true });
     const target = await this.uniquePath(dir, WorkspacePaths.nameOf(source));
     await this.movePageFile(source, target);
+    await this.pruneOrder([WorkspacePaths.dirname(source), dir]);
     this.emit("change");
     return target;
   }
@@ -207,56 +238,165 @@ export class WorkspaceManagerClass {
     return target;
   }
 
-  /** 降级：移到"同级前一个页面 P"对应的目录 `<dir>/P/`；没有前一个页面时抛错（UI 据此禁用） */
-  async demotePage(path: string): Promise<string> {
-    const source = WorkspacePaths.normalize(path);
-    const previous = await this.previousSiblingPage(source);
-    if (!previous) {
-      throw new Error(i18next.t("workspace.demoteUnavailable", { defaultValue: WorkspacePaths.nameOf(source) }));
-    }
-    return await this.movePage(source, this.childDirOf(previous));
+  /** dirPath 下新建空目录；name 省略时用「新建文件夹」，重名依次「新建文件夹（1）」…… */
+  async createFolder(dirPath: string, name?: string): Promise<string> {
+    this.requireRoot();
+    const dir = WorkspacePaths.normalize(dirPath);
+    const baseName =
+      name === undefined
+        ? i18next.t("workspace.newFolderName", { defaultValue: DEFAULT_FOLDER_NAME })
+        : this.sanitizeFolderName(name);
+    await mkdir(dir, { recursive: true });
+    const target = await this.uniqueFolderPath(dir, baseName);
+    await mkdir(target, { recursive: true });
+    await this.appendOrder(dir, WorkspacePaths.baseName(target));
+    this.emit("change");
+    return target;
   }
 
-  /** 升级：从 `<dir>/P/` 移回 `<dir>/`；已在根层时抛错 */
-  async promotePage(path: string): Promise<string> {
+  async renameFolder(path: string, newName: string): Promise<string> {
+    const source = WorkspacePaths.normalize(path);
+    const baseName = this.sanitizeFolderName(newName);
+    const currentName = WorkspacePaths.baseName(source);
+    if (baseName === currentName) return source;
+    const parent = WorkspacePaths.dirname(source);
+    const target =
+      baseName.toLowerCase() === currentName.toLowerCase()
+        ? WorkspacePaths.join(parent, baseName)
+        : await this.uniqueFolderPath(parent, baseName);
+    await rename(source, target);
+    await this.pruneOrder([parent]);
+    this.emit("change");
+    return target;
+  }
+
+  /** 递归删除整棵目录；UI 必须二次确认 */
+  async deleteFolder(path: string): Promise<void> {
     const root = this.requireRoot();
-    const source = WorkspacePaths.normalize(path);
-    const dir = WorkspacePaths.dirname(source);
-    if (dir === root || !WorkspacePaths.isInside(dir, root)) {
-      throw new Error(i18next.t("workspace.promoteUnavailable", { defaultValue: WorkspacePaths.nameOf(source) }));
-    }
-    return await this.movePage(source, WorkspacePaths.dirname(dir));
-  }
-
-  cut(path: string): void {
     const target = WorkspacePaths.normalize(path);
-    this.clipboard = { mode: "cut", path: target, name: WorkspacePaths.nameOf(target) };
+    // 删掉根目录（或根的上级）等于把整个工作空间端掉，直接拒绝
+    if (WorkspacePaths.isInside(root, target)) {
+      throw new Error(i18next.t("workspace.invalidName", { defaultValue: target }));
+    }
+    await remove(target, { recursive: true });
+    await this.pruneOrder([WorkspacePaths.dirname(target)]);
     this.emit("change");
   }
 
-  copy(path: string): void {
-    const target = WorkspacePaths.normalize(path);
-    this.clipboard = { mode: "copy", path: target, name: WorkspacePaths.nameOf(target) };
+  /** 通用：内部判断是目录还是页面 */
+  async renameNode(path: string, newName: string): Promise<string> {
+    const source = WorkspacePaths.normalize(path);
+    if (await this.isFolder(source)) return await this.renameFolder(source, newName);
+    return await this.renamePage(source, newName);
+  }
+
+  async moveNode(path: string, targetDir: string): Promise<string> {
+    const source = WorkspacePaths.normalize(path);
+    const dir = WorkspacePaths.normalize(targetDir);
+    const folder = await this.isFolder(source);
+    // 目录不能挪进自己的子树，页面也不能挪进承载自己子页的那个目录，否则子树会被搬进自身
+    const protectedPath = folder ? source : this.childDirOf(source);
+    if (WorkspacePaths.isInside(dir, protectedPath)) {
+      throw new Error(i18next.t("workspace.dragInvalidTarget", { defaultValue: dir }));
+    }
+    if (dir === WorkspacePaths.dirname(source)) return source;
+    await mkdir(dir, { recursive: true });
+    let target: string;
+    if (folder) {
+      target = await this.uniqueFolderPath(dir, WorkspacePaths.baseName(source));
+      await rename(source, target);
+    } else {
+      target = await this.uniquePath(dir, WorkspacePaths.nameOf(source));
+      await this.movePageFile(source, target);
+    }
+    await this.pruneOrder([WorkspacePaths.dirname(source), dir]);
+    this.emit("change");
+    return target;
+  }
+
+  async copyNode(path: string, targetDir: string): Promise<string> {
+    const source = WorkspacePaths.normalize(path);
+    const dir = WorkspacePaths.normalize(targetDir);
+    const folder = await this.isFolder(source);
+    if (folder && WorkspacePaths.isInside(dir, source)) {
+      throw new Error(i18next.t("workspace.dragInvalidTarget", { defaultValue: dir }));
+    }
+    await mkdir(dir, { recursive: true });
+    let target: string;
+    if (folder) {
+      target = await this.uniqueFolderPath(dir, WorkspacePaths.baseName(source));
+      await this.copyTree(source, target);
+    } else {
+      target = await this.uniquePath(dir, WorkspacePaths.nameOf(source));
+      await copyFile(source, target);
+    }
+    this.emit("change");
+    return target;
+  }
+
+  /** 批量：逐个处理，任一失败抛出但已完成的保留（UI 报错即可，不要回滚） */
+  async moveNodes(paths: string[], targetDir: string): Promise<string[]> {
+    const moved: string[] = [];
+    for (const path of this.withoutNested(paths)) {
+      moved.push(await this.moveNode(path, targetDir));
+    }
+    return moved;
+  }
+
+  async copyNodes(paths: string[], targetDir: string): Promise<string[]> {
+    const copied: string[] = [];
+    for (const path of this.withoutNested(paths)) {
+      copied.push(await this.copyNode(path, targetDir));
+    }
+    return copied;
+  }
+
+  cutMany(paths: string[]): void {
+    this.clipboard = { mode: "cut", paths: paths.map((path) => WorkspacePaths.normalize(path)) };
+    this.emit("change");
+  }
+
+  copyMany(paths: string[]): void {
+    this.clipboard = { mode: "copy", paths: paths.map((path) => WorkspacePaths.normalize(path)) };
     this.emit("change");
   }
 
   /** 到 targetDir；cut 走移动、copy 走复制；成功后清空剪贴板 */
-  async paste(targetDir: string): Promise<string | null> {
+  async paste(targetDir: string): Promise<string[]> {
     const clipboard = this.clipboard;
-    if (!clipboard) return null;
-    if (!(await exists(clipboard.path))) {
-      // 剪贴板里的文件已经被删/移走，粘贴没有目标，直接作废
-      this.clipboard = null;
-      this.emit("change");
-      return null;
-    }
-    const target =
-      clipboard.mode === "cut"
-        ? await this.movePage(clipboard.path, targetDir)
-        : await this.copyPage(clipboard.path, targetDir);
+    if (!clipboard) return [];
     this.clipboard = null;
+    const paths: string[] = [];
+    for (const path of clipboard.paths) {
+      // 剪贴板里的项可能已被外部删掉，先剔掉失效的，别让整批失败
+      if (await exists(path)) paths.push(path);
+    }
+    if (paths.length === 0) {
+      this.emit("change");
+      return [];
+    }
+    const pasted =
+      clipboard.mode === "cut" ? await this.moveNodes(paths, targetDir) : await this.copyNodes(paths, targetDir);
     this.emit("change");
-    return target;
+    return pasted;
+  }
+
+  /** 把 path 移到 targetDir，并排在 beforeFileName 之前（省略 = 该目录末尾）。beforeFileName 用文件名，如 "a.prg" */
+  async reorderNode(path: string, targetDir: string, beforeFileName?: string): Promise<void> {
+    const root = this.requireRoot();
+    const dir = WorkspacePaths.normalize(targetDir);
+    const moved = await this.moveNode(path, dir);
+    const fileName = WorkspacePaths.baseName(moved);
+    const order = await this.readOrder();
+    const key = this.relativeTo(root, dir);
+    // 首次记录排序时先用当前显示顺序铺底，再把被拖的项插到落点
+    const names = (order[key] ?? (await this.defaultOrderNames(dir))).filter((name) => name !== fileName);
+    const insertAt = beforeFileName ? names.indexOf(beforeFileName) : -1;
+    if (insertAt >= 0) names.splice(insertAt, 0, fileName);
+    else names.push(fileName);
+    order[key] = names;
+    await this.writeOrder(order);
+    this.emit("change");
   }
 
   /** 写历史快照：`<root>/.flux-graph/history/<相对目录>/<页面名>/<yyyyMMdd-HHmmss>.prg`，同页 30s 内不重复、每页保留 20 份 */
@@ -310,7 +450,7 @@ export class WorkspaceManagerClass {
     return root;
   }
 
-  private async readDirNodes(dirPath: string): Promise<WorkspaceNode[]> {
+  private async readDirNodes(dirPath: string, root: string, order: Record<string, string[]>): Promise<WorkspaceNode[]> {
     if (!(await exists(dirPath))) return [];
     let entries;
     try {
@@ -323,17 +463,44 @@ export class WorkspaceManagerClass {
     const dirs: WorkspaceNode[] = [];
     const pages: WorkspaceNode[] = [];
     for (const entry of entries) {
-      if (entry.name.startsWith(IGNORED_PREFIX) || IGNORED_DIR_NAMES.has(entry.name)) continue;
+      if (!isVisibleEntry(entry.name)) continue;
       const entryPath = WorkspacePaths.join(dirPath, entry.name);
       if (entry.isDirectory) {
-        dirs.push({ kind: "dir", name: entry.name, path: entryPath, children: await this.readDirNodes(entryPath) });
-      } else if (entry.isFile && entry.name.toLowerCase().endsWith(".prg")) {
+        dirs.push({
+          kind: "dir",
+          name: entry.name,
+          path: entryPath,
+          children: await this.readDirNodes(entryPath, root, order),
+        });
+      } else if (entry.isFile && isPagePath(entry.name)) {
         pages.push({ kind: "page", name: entry.name.slice(0, -4), path: entryPath });
       }
     }
-    dirs.sort((left, right) => left.name.localeCompare(right.name));
-    pages.sort((left, right) => left.name.localeCompare(right.name));
-    return [...dirs, ...pages];
+    return this.sortNodes([...dirs, ...pages], order[this.relativeTo(root, dirPath)]);
+  }
+
+  /**
+   * 默认顺序：目录在前、各自 localeCompare 升序。
+   * 该目录在 order.json 里有记录时严格按记录顺序，记录里没出现的项排到末尾按默认规则。
+   */
+  private sortNodes(nodes: WorkspaceNode[], record: string[] | undefined): WorkspaceNode[] {
+    const fallback = [...nodes].sort((left, right) => {
+      if (left.kind !== right.kind) return left.kind === "dir" ? -1 : 1;
+      return left.name.localeCompare(right.name);
+    });
+    if (!record || record.length === 0) return fallback;
+    const rank = new Map<string, number>();
+    for (const [index, name] of record.entries()) {
+      const key = name.toLowerCase();
+      if (!rank.has(key)) rank.set(key, index);
+    }
+    const rankOf = (node: WorkspaceNode) =>
+      rank.get((node.kind === "page" ? `${node.name}.prg` : node.name).toLowerCase());
+    const ordered = fallback
+      .filter((node) => rankOf(node) !== undefined)
+      .sort((left, right) => rankOf(left)! - rankOf(right)!);
+    const rest = fallback.filter((node) => rankOf(node) === undefined);
+    return [...ordered, ...rest];
   }
 
   private readonly unreadableDirs = new Set<string>();
@@ -344,19 +511,113 @@ export class WorkspaceManagerClass {
     toast.error(i18next.t("workspace.dirUnreadable", { name: dirPath, defaultValue: String(error) }));
   }
 
-  private async listPagePaths(dirPath: string): Promise<string[]> {
-    if (!(await exists(dirPath))) return [];
-    const entries = await readDir(dirPath);
-    return entries
-      .filter((entry) => entry.isFile && entry.name.toLowerCase().endsWith(".prg") && !entry.name.startsWith("."))
-      .map((entry) => WorkspacePaths.join(dirPath, entry.name))
-      .sort((left, right) => WorkspacePaths.nameOf(left).localeCompare(WorkspacePaths.nameOf(right)));
+  /** 工作空间里只有目录和 .prg 页面两类节点，stat 一次就能分辨 */
+  private async isFolder(path: string): Promise<boolean> {
+    // 节点已经被外部删掉时，让 fs 的原始错误往上抛，比编一条"根目录不存在"更准确
+    return (await stat(path)).isDirectory;
   }
 
-  private async previousSiblingPage(source: string): Promise<string | undefined> {
-    const siblings = await this.listPagePaths(WorkspacePaths.dirname(source));
-    const index = siblings.indexOf(source);
-    return index > 0 ? siblings[index - 1] : undefined;
+  /** 目录复制 = 递归复制整棵子树（子目录 + 里面的 .prg），隐藏项与 node_modules 之类照样跳过 */
+  private async copyTree(sourceDir: string, targetDir: string): Promise<void> {
+    await mkdir(targetDir, { recursive: true });
+    for (const entry of await readDir(sourceDir)) {
+      if (!isVisibleEntry(entry.name)) continue;
+      const from = WorkspacePaths.join(sourceDir, entry.name);
+      const to = WorkspacePaths.join(targetDir, entry.name);
+      if (entry.isDirectory) {
+        await this.copyTree(from, to);
+      } else if (entry.isFile && entry.name.toLowerCase().endsWith(".prg")) {
+        await copyFile(from, to);
+      }
+    }
+  }
+
+  /**
+   * 选择集里同时含父子项时只处理父项：子项会跟着父项一起走，单独再处理一次只会报"找不到"。
+   * 页面会连带搬走承载子页的同名目录，所以选中页面时那个目录也算被覆盖。
+   */
+  private withoutNested(paths: string[]): string[] {
+    const unique = [...new Set(paths.map((path) => WorkspacePaths.normalize(path)))];
+    const carried = new Set(unique.filter((path) => isPagePath(path)).map((path) => this.childDirOf(path)));
+    return unique.filter(
+      (path) => !carried.has(path) && !unique.some((other) => other !== path && WorkspacePaths.isInside(path, other)),
+    );
+  }
+
+  /** order.json 是纯缓存：读不出来（不存在/JSON 坏了）就当没有自定义排序，不能让整棵树读不出来 */
+  private async readOrder(): Promise<Record<string, string[]>> {
+    const root = this.root;
+    if (!root) return {};
+    const file = WorkspacePaths.join(root, ORDER_FILE);
+    if (!(await exists(file))) return {};
+    const text = new TextDecoder().decode(await readFile(file));
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return {};
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const order: Record<string, string[]> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!Array.isArray(value)) continue;
+      order[key] = value.filter((item): item is string => typeof item === "string");
+    }
+    return order;
+  }
+
+  private async writeOrder(order: Record<string, string[]>): Promise<void> {
+    const root = this.root;
+    if (!root) return;
+    await mkdir(WorkspacePaths.join(root, ORDER_DIR), { recursive: true });
+    const content = new TextEncoder().encode(JSON.stringify(order, null, 2));
+    await writeFile(WorkspacePaths.join(root, ORDER_FILE), content);
+  }
+
+  /** 新建出来的项追加到该目录末尾；首次记录时先按当前显示顺序铺底，否则新项会插到所有项之前 */
+  private async appendOrder(dirPath: string, fileName: string): Promise<void> {
+    const root = this.root;
+    if (!root) return;
+    const order = await this.readOrder();
+    const key = this.relativeTo(root, dirPath);
+    const current = order[key] ?? (await this.defaultOrderNames(dirPath));
+    order[key] = [...current.filter((name) => name !== fileName), fileName];
+    await this.writeOrder(order);
+  }
+
+  /** 删除/改名/移动后把 order 里对不上文件的陈旧项丢掉 */
+  private async pruneOrder(dirPaths: string[]): Promise<void> {
+    const root = this.root;
+    if (!root) return;
+    const order = await this.readOrder();
+    let dirty = false;
+    for (const dirPath of new Set(dirPaths.map((item) => this.relativeTo(root, item)))) {
+      const names = order[dirPath];
+      if (!names) continue;
+      const kept: string[] = [];
+      for (const name of names) {
+        if (await exists(WorkspacePaths.join(root, dirPath, name))) kept.push(name);
+      }
+      if (kept.length === names.length) continue;
+      dirty = true;
+      if (kept.length === 0) delete order[dirPath];
+      else order[dirPath] = kept;
+    }
+    if (dirty) await this.writeOrder(order);
+  }
+
+  /** 该目录的默认顺序：目录在前，各自 localeCompare 升序 */
+  private async defaultOrderNames(dirPath: string): Promise<string[]> {
+    if (!(await exists(dirPath))) return [];
+    const listed = (await readDir(dirPath))
+      .filter((entry) => isVisibleEntry(entry.name))
+      .filter((entry) => entry.isDirectory || (entry.isFile && entry.name.toLowerCase().endsWith(".prg")))
+      .map((entry) => ({ name: entry.name, isDir: entry.isDirectory }));
+    listed.sort((left, right) => {
+      if (left.isDir !== right.isDir) return left.isDir ? -1 : 1;
+      return left.name.localeCompare(right.name);
+    });
+    return listed.map((item) => item.name);
   }
 
   /** 页面的子页目录：与页面同级的同名目录 */
@@ -380,6 +641,11 @@ export class WorkspaceManagerClass {
   private sanitizeName(name: string): string {
     let baseName = name.trim();
     if (baseName.toLowerCase().endsWith(".prg")) baseName = baseName.slice(0, -4);
+    return this.sanitizeFolderName(baseName);
+  }
+
+  private sanitizeFolderName(name: string): string {
+    const baseName = name.trim();
     if (!baseName) throw new Error(i18next.t("workspace.nameRequired"));
     if (/[\\/:*?"<>|]/.test(baseName)) throw new Error(i18next.t("workspace.invalidName"));
     return baseName;
@@ -391,6 +657,17 @@ export class WorkspaceManagerClass {
     let counter = 2;
     while (await exists(candidate)) {
       candidate = WorkspacePaths.join(dirPath, `${name} (${counter}).prg`);
+      counter += 1;
+    }
+    return candidate;
+  }
+
+  /** 文件夹重名时依次尝试「名字（1）」「名字（2）」……（全角括号，与页面用的 " (2)" 区分） */
+  private async uniqueFolderPath(dirPath: string, name: string): Promise<string> {
+    let candidate = WorkspacePaths.join(dirPath, name);
+    let counter = 1;
+    while (await exists(candidate)) {
+      candidate = WorkspacePaths.join(dirPath, `${name}${FOLDER_SUFFIX(counter)}`);
       counter += 1;
     }
     return candidate;
@@ -476,6 +753,14 @@ export class WorkspaceManagerClass {
       this.emit("change");
     }, 300);
   }
+}
+
+function isPagePath(path: string): boolean {
+  return path.toLowerCase().endsWith(".prg");
+}
+
+function isVisibleEntry(name: string): boolean {
+  return !name.startsWith(IGNORED_PREFIX) && !IGNORED_DIR_NAMES.has(name);
 }
 
 async function openWorkspaceFolderByDialog(): Promise<string | undefined> {

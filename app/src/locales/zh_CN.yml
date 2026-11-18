@@ -2797,6 +2797,23 @@ workspace:
   deleteConfirmBody: |
     确定要删除「{{name}}」吗？
     文件会从磁盘上直接删除，且不可恢复。
+  newFolderName: 新建文件夹
+  createFolder: 新建文件夹
+  folderCreated: 已新建文件夹
+  renameFolder: 重命名文件夹
+  deleteFolderTitle: 删除文件夹
+  deleteFolderBody: |
+    确定要删除文件夹「{{name}}」吗？
+    里面的所有页面和子文件夹会一起从磁盘删除，且不可恢复。
+  dragInvalidTarget: 不能把文件夹移动到它自己里面
+  selectedCount: 已选 {{count}} 项
+  moveMany: 移动所选
+  copyMany: 复制所选
+  deleteManyTitle: 删除所选项目
+  deleteManyBody: |
+    确定要删除所选的 {{count}} 项吗？
+    文件会从磁盘上直接删除，且不可恢复。
+  reorderFailed: 调整顺序失败
   versionsEmpty: 这个页面还没有历史版本
   restore: 恢复此版本
   openAsCopy: 作为副本打开

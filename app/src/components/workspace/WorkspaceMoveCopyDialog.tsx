@@ -6,10 +6,14 @@ import { cn } from "@/utils/cn";
 import { Folder, FolderPlus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { mkdir } from "@tauri-apps/plugin-fs";
 import { reportWorkspaceError, workspaceDirOf } from "./workspacePath";
 
 export type WorkspaceMoveCopyMode = "move" | "copy";
+
+/** 工作空间里只有页面是 .prg，其余都是目录 */
+function isPageLike(path: string) {
+  return WorkspacePaths.normalize(path).toLowerCase().endsWith(".prg");
+}
 
 interface DirEntry {
   name: string;
@@ -26,13 +30,16 @@ function collectDirs(nodes: WorkspaceNode[], depth: number, into: DirEntry[]) {
 }
 
 export default function WorkspaceMoveCopyDialog({
-  pagePath,
-  pageName,
+  paths,
+  label,
+  initialMode,
   onClose,
   onSubmit,
 }: {
-  pagePath: string | null;
-  pageName: string;
+  /** 要移动/复制的节点；为空时对话框不显示 */
+  paths: string[] | null;
+  label: string;
+  initialMode: WorkspaceMoveCopyMode;
   onClose: () => void;
   onSubmit: (mode: WorkspaceMoveCopyMode, targetDir: string) => Promise<void>;
 }) {
@@ -52,30 +59,32 @@ export default function WorkspaceMoveCopyDialog({
   };
 
   useEffect(() => {
-    if (!pagePath) return;
-    setMode("move");
-    setSelected(workspaceDirOf(pagePath));
+    if (!paths) return;
+    setMode(initialMode);
+    setSelected(workspaceDirOf(paths[0]));
     setCreatingFolder(false);
     setNewFolderName("");
     refreshDirs().catch(reportWorkspaceError);
-  }, [pagePath]);
+  }, [paths, initialMode]);
 
-  if (!pagePath) return <></>;
+  if (!paths || paths.length === 0) return <></>;
 
   const root = WorkspaceManager.root;
+
+  /** 目录不能移进自己或自己的子树，这类目标直接禁掉，不用等 Manager 抛错 */
+  const isForbiddenTarget = (dirPath: string) =>
+    mode === "move" && paths.some((path) => !isPageLike(path) && WorkspacePaths.isInside(dirPath, path));
+
   const createFolder = async () => {
     if (!root) return;
     const name = newFolderName.trim();
     if (!name) return;
     const parent = selected || root;
-    const target = WorkspacePaths.join(parent, name);
-    await mkdir(target, { recursive: true });
+    const target = await WorkspaceManager.createFolder(parent, name);
     setNewFolderName("");
     setCreatingFolder(false);
     await refreshDirs();
     setSelected(target);
-    // 新目录也要出现在左边的树里
-    WorkspaceManager.emit("change");
   };
 
   const submit = async () => {
@@ -97,7 +106,7 @@ export default function WorkspaceMoveCopyDialog({
         </DialogHeader>
 
         <div className="flex items-center gap-1 text-xs">
-          <span className="text-muted-foreground">{pageName}</span>
+          <span className="text-muted-foreground max-w-40 truncate">{label}</span>
           <span className="text-muted-foreground/60">→</span>
           <span className="truncate font-medium">{selected || root}</span>
         </div>
@@ -116,10 +125,12 @@ export default function WorkspaceMoveCopyDialog({
           <div className="max-h-64 overflow-y-auto rounded-md border p-1">
             <button
               type="button"
+              disabled={isForbiddenTarget(root ?? "")}
               onClick={() => setSelected(root ?? "")}
               className={cn(
                 "hover:bg-accent/50 flex h-7 w-full items-center gap-1.5 rounded-sm px-2 text-left text-xs",
                 selected === (root ?? "") && "bg-accent/60",
+                isForbiddenTarget(root ?? "") && "opacity-40",
               )}
             >
               <Folder className="text-muted-foreground size-3.5 shrink-0" />
@@ -129,11 +140,13 @@ export default function WorkspaceMoveCopyDialog({
               <button
                 key={dir.path}
                 type="button"
+                disabled={isForbiddenTarget(dir.path)}
                 style={{ paddingLeft: 8 + dir.depth * 12 }}
                 onClick={() => setSelected(dir.path)}
                 className={cn(
                   "hover:bg-accent/50 flex h-7 w-full items-center gap-1.5 rounded-sm pr-2 text-left text-xs",
                   selected === dir.path && "bg-accent/60",
+                  isForbiddenTarget(dir.path) && "opacity-40",
                 )}
               >
                 <Folder className="text-muted-foreground size-3.5 shrink-0" />
@@ -149,7 +162,7 @@ export default function WorkspaceMoveCopyDialog({
               autoFocus
               value={newFolderName}
               onChange={(e) => setNewFolderName(e.target.value)}
-              placeholder={t("newFolder")}
+              placeholder={t("newFolderName")}
               className="h-8 text-xs"
               onKeyDown={(e) => {
                 if (e.key === "Enter") createFolder().catch(reportWorkspaceError);
@@ -163,7 +176,7 @@ export default function WorkspaceMoveCopyDialog({
         ) : (
           <Button size="sm" variant="ghost" className="self-start" onClick={() => setCreatingFolder(true)}>
             <FolderPlus />
-            {t("newFolder")}
+            {t("createFolder")}
           </Button>
         )}
 
