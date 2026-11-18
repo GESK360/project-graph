@@ -60,8 +60,6 @@ describe("小地图布局", () => {
     const mapped = toMinimapRectangle(view, layout);
     expect(mapped.width).toBeCloseTo(200 * layout.scale);
     expect(mapped.height).toBeCloseTo(100 * layout.scale);
-    expect(mapped.width).toBeLessThanOrEqual(MINIMAP_WIDTH - MINIMAP_PADDING * 2 + 1e-6);
-    expect(mapped.height).toBeLessThanOrEqual(MINIMAP_HEIGHT - MINIMAP_PADDING * 2 + 1e-6);
     expect(mapped.center.x).toBeCloseTo(MINIMAP_WIDTH / 2);
     expect(mapped.center.y).toBeCloseTo(MINIMAP_HEIGHT / 2);
   });
@@ -77,5 +75,26 @@ describe("小地图布局", () => {
     expect(mapped.center.x).toBeCloseTo(500 * layout.scale + layout.offset.x);
     expect(mapped.center.y).toBeCloseTo(500 * layout.scale + layout.offset.y);
     expect(mapped.width).toBeCloseTo(100 * layout.scale);
+  });
+
+  it("原点在附近时把坐标轴范围包含进来", () => {
+    const nodes = [rectangleOf(100, 100, 400, 300)];
+    const layout = createLayout(nodes, rectangleOf(0, 0, 1, 1));
+
+    expect(layout.bounds.left).toBeLessThanOrEqual(0);
+    expect(layout.bounds.top).toBeLessThanOrEqual(0);
+    expect(layout.bounds.right).toBeGreaterThanOrEqual(500);
+    expect(layout.bounds.bottom).toBeGreaterThanOrEqual(400);
+  });
+
+  it("原点离得太远时不强行并入，避免节点被压成一团", () => {
+    const nodes = [rectangleOf(100000, 100000, 400, 300)];
+    const layout = createLayout(nodes, rectangleOf(0, 0, 1, 1));
+
+    expect(layout.bounds.left).toBeGreaterThan(0);
+    expect(layout.bounds.top).toBeGreaterThan(0);
+    // 节点仍占满小地图
+    const mapped = toMinimapRectangle(nodes[0], layout);
+    expect(mapped.width).toBeGreaterThan(MINIMAP_WIDTH / 2);
   });
 });

@@ -18,19 +18,21 @@ declare global {
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 import { Vector } from "@graphif/data-structures";
-import { Rectangle } from "@graphif/shapes";
+import { Line, Rectangle } from "@graphif/shapes";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Project } from "@/core/Project";
-import Minimap, { createLayout, MINIMAP_HEIGHT, MINIMAP_WIDTH } from "./minimap";
+import Minimap, { collectGeometry, drawStaticLayer, drawViewLayer, MINIMAP_HEIGHT, MINIMAP_WIDTH } from "./minimap";
 
 type DrawOperation =
   | { type: "clearRect" }
-  | { type: "fillRect"; left: number; top: number; width: number; height: number }
-  | { type: "stroke"; strokeStyle: unknown }
-  | { type: "fill"; fillStyle: unknown };
+  | { type: "moveTo"; x: number; y: number }
+  | { type: "lineTo"; x: number; y: number }
+  | { type: "rect"; width: number; height: number }
+  | { type: "fill"; fillStyle: unknown }
+  | { type: "stroke"; strokeStyle: unknown };
 
-function createFakeCanvasContext() {
+function createRecordingContext() {
   const operations: DrawOperation[] = [];
   const context = {
     fillStyle: "" as unknown,
@@ -39,15 +41,20 @@ function createFakeCanvasContext() {
     setTransform: () => {},
     save: () => {},
     restore: () => {},
-    beginPath: () => {},
     clip: () => {},
-    rect: () => {},
     roundRect: () => {},
+    beginPath: () => {},
     clearRect: () => {
       operations.push({ type: "clearRect" });
     },
-    fillRect: (left: number, top: number, width: number, height: number) => {
-      operations.push({ type: "fillRect", left, top, width, height });
+    moveTo: (x: number, y: number) => {
+      operations.push({ type: "moveTo", x, y });
+    },
+    lineTo: (x: number, y: number) => {
+      operations.push({ type: "lineTo", x, y });
+    },
+    rect: (_x: number, _y: number, width: number, height: number) => {
+      operations.push({ type: "rect", width, height });
     },
     fill: () => {
       operations.push({ type: "fill", fillStyle: context.fillStyle });
@@ -63,107 +70,149 @@ function rectangleOf(left: number, top: number, width: number, height: number) {
   return new Rectangle(new Vector(left, top), new Vector(width, height));
 }
 
-function createFakeProject(nodeRectangles: Rectangle[], viewRectangle: Rectangle) {
+function lineOf(x1: number, y1: number, x2: number, y2: number) {
+  return new Line(new Vector(x1, y1), new Vector(x2, y2));
+}
+
+function createFakeProject(nodeRectangles: Rectangle[], edgeLines: Line[], viewRectangle: Rectangle) {
+  const entities = nodeRectangles.map((rectangle) => ({
+    isHiddenBySectionCollapse: false,
+    collisionBox: { getRectangle: () => rectangle },
+  }));
+  const edges = edgeLines.map((line) => ({ isHiddenBySectionCollapse: false, bodyLine: line }));
   return {
-    stage: nodeRectangles,
+    stage: [...nodeRectangles, ...edgeLines],
     stageManager: {
-      getEntities: () =>
-        nodeRectangles.map((rectangle) => ({
-          isHiddenBySectionCollapse: false,
-          collisionBox: { getRectangle: () => rectangle },
-        })),
+      getEntities: () => entities,
+      getEdges: () => edges,
     },
-    renderer: { getCoverWorldRectangle: () => viewRectangle },
-    camera: { bombMove: vi.fn() },
+    renderer: { getCoverWorldRectangle: () => viewRectangle, w: 800, h: 600 },
+    camera: { location: new Vector(0, 0), currentScale: 1, bombMove: vi.fn() },
   } as unknown as Project;
 }
 
-async function renderMinimapOnce(
-  project: Project,
-  operations: DrawOperation[],
-  beforeUnmount?: (canvas: HTMLCanvasElement) => void,
-) {
-  const canvasPrototype = window.HTMLCanvasElement.prototype;
-  const fakeCanvas = createFakeCanvasContext();
-  const getContext = vi.spyOn(canvasPrototype, "getContext").mockReturnValue(fakeCanvas.context as never);
-  const frames: FrameRequestCallback[] = [];
-  const requestAnimationFrame = vi
-    .spyOn(window, "requestAnimationFrame")
-    .mockImplementation((callback: FrameRequestCallback) => {
-      frames.push(callback);
-      return frames.length;
-    });
-  const cancelAnimationFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
-
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  await act(async () => {
-    root.render(<Minimap project={project} />);
-  });
-
-  // 让 rAF 回调同步跑一次，跑完的绘制指令全部记录在 operations 里
-  await act(async () => {
-    const frame = frames.shift();
-    frame?.(0);
-  });
-
-  operations.push(...fakeCanvas.operations);
-
-  const canvas = container.querySelector("canvas");
-  if (canvas) beforeUnmount?.(canvas);
-
-  await act(async () => {
-    root.unmount();
-  });
-  container.remove();
-
-  getContext.mockRestore();
-  requestAnimationFrame.mockRestore();
-  cancelAnimationFrame.mockRestore();
-}
-
 describe("小地图绘制", () => {
-  it("绘制节点，并在节点之上画出表示当前视野的绿色框", async () => {
-    const nodeRectangles = [rectangleOf(0, 0, 100, 100), rectangleOf(300, 300, 100, 100)];
-    const viewRectangle = rectangleOf(0, 0, 100, 100);
-    const project = createFakeProject(nodeRectangles, viewRectangle);
-    const operations: DrawOperation[] = [];
+  it("静态层依次画坐标轴、连线和节点", () => {
+    const nodes = [rectangleOf(0, 0, 100, 100), rectangleOf(300, 300, 100, 100)];
+    const edges = [lineOf(100, 100, 300, 300)];
+    const project = createFakeProject(nodes, edges, rectangleOf(0, 0, 100, 100));
+    const geometry = collectGeometry(project);
+    const { context, operations } = createRecordingContext();
 
-    await renderMinimapOnce(project, operations);
+    drawStaticLayer(context as unknown as CanvasRenderingContext2D, geometry);
 
-    const fillRectOperations = operations.filter((operation) => operation.type === "fillRect");
-    expect(fillRectOperations).toHaveLength(nodeRectangles.length);
+    expect(operations[0]).toEqual({ type: "clearRect" });
 
-    const layout = createLayout(nodeRectangles, viewRectangle);
-    for (const operation of fillRectOperations) {
-      if (operation.type !== "fillRect") continue;
-      expect(operation.left).toBeGreaterThanOrEqual(0);
-      expect(operation.top).toBeGreaterThanOrEqual(0);
-      expect(operation.left + operation.width).toBeLessThanOrEqual(MINIMAP_WIDTH);
-      expect(operation.top + operation.height).toBeLessThanOrEqual(MINIMAP_HEIGHT);
-    }
+    const strokes = operations.filter((operation) => operation.type === "stroke");
+    // 第一条 path 是 x/y 坐标轴，第二条是连线
+    expect(strokes).toHaveLength(2);
+    expect(strokes[0].type === "stroke" ? strokes[0].strokeStyle : "").toBe("rgba(148, 163, 184, 0.6)");
+    expect(strokes[1].type === "stroke" ? strokes[1].strokeStyle : "").toBe("rgba(148, 163, 184, 0.38)");
 
-    const viewOperations = operations.filter((operation) => operation.type === "stroke");
-    expect(viewOperations).toHaveLength(1);
-    const lastViewOperation = viewOperations[0];
-    if (lastViewOperation.type !== "stroke") throw new Error("unreachable");
-    expect(lastViewOperation.strokeStyle).toBe("rgba(34, 197, 94, 0.95)");
+    const fills = operations.filter((operation) => operation.type === "fill");
+    expect(fills).toHaveLength(1);
+    expect(fills[0].type === "fill" ? fills[0].fillStyle : "").toBe("rgba(148, 163, 184, 0.75)");
 
-    const clearIndex = operations.findIndex((operation) => operation.type === "clearRect");
-    const firstFillIndex = operations.findIndex((operation) => operation.type === "fillRect");
-    const strokeIndex = operations.findIndex((operation) => operation.type === "stroke");
-    expect(clearIndex).toBeLessThan(firstFillIndex);
-    expect(firstFillIndex).toBeLessThan(strokeIndex);
+    // 节点攒成一条 path，一次 fill 画完
+    const rects = operations.filter((operation) => operation.type === "rect");
+    expect(rects).toHaveLength(nodes.length);
+  });
 
-    expect(layout.scale).toBeGreaterThan(0);
+  it("坐标轴画在 x = 0 与 y = 0 上", () => {
+    const nodes = [rectangleOf(-200, -100, 400, 200)];
+    const project = createFakeProject(nodes, [], rectangleOf(0, 0, 100, 100));
+    const geometry = collectGeometry(project);
+    const { context, operations } = createRecordingContext();
+
+    drawStaticLayer(context as unknown as CanvasRenderingContext2D, geometry);
+
+    const layout = geometry.layout;
+    const expectedXAxisY = layout.offset.y;
+    const expectedYAxisX = layout.offset.x;
+    const moveTos = operations.filter((operation) => operation.type === "moveTo");
+    expect(moveTos).toHaveLength(2);
+    // x 轴：从世界左边到右边，y 恒为 0
+    expect(moveTos[0].type === "moveTo" ? moveTos[0].y : Number.NaN).toBeCloseTo(expectedXAxisY);
+    // y 轴：从世界上边到下边，x 恒为 0
+    expect(moveTos[1].type === "moveTo" ? moveTos[1].x : Number.NaN).toBeCloseTo(expectedYAxisX);
+  });
+
+  it("动态层画一个绿色视野框", () => {
+    const nodes = [rectangleOf(0, 0, 1000, 1000)];
+    const view = rectangleOf(100, 100, 200, 200);
+    const project = createFakeProject(nodes, [], view);
+    const geometry = collectGeometry(project);
+    const { context, operations } = createRecordingContext();
+
+    drawViewLayer(context as unknown as CanvasRenderingContext2D, view, geometry.layout);
+
+    expect(operations[0]).toEqual({ type: "clearRect" });
+    const strokes = operations.filter((operation) => operation.type === "stroke");
+    expect(strokes).toHaveLength(1);
+    expect(strokes[0].type === "stroke" ? strokes[0].strokeStyle : "").toBe("rgba(34, 197, 94, 0.95)");
+    const fills = operations.filter((operation) => operation.type === "fill");
+    expect(fills).toHaveLength(1);
+    expect(fills[0].type === "fill" ? fills[0].fillStyle : "").toBe("rgba(34, 197, 94, 0.12)");
+  });
+});
+
+describe("小地图组件", () => {
+  async function renderMinimap(project: Project, beforeUnmount?: (container: HTMLElement) => void) {
+    const contexts = [createRecordingContext(), createRecordingContext()];
+    let contextIndex = 0;
+    const getContext = vi
+      .spyOn(window.HTMLCanvasElement.prototype, "getContext")
+      .mockImplementation(() => contexts[Math.min(contextIndex++, 1)].context as never);
+    const frames: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback: FrameRequestCallback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+    const cancelAnimationFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<Minimap project={project} />);
+    });
+    await act(async () => {
+      frames.shift()?.(0);
+    });
+
+    beforeUnmount?.(container);
+
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    getContext.mockRestore();
+    requestAnimationFrame.mockRestore();
+    cancelAnimationFrame.mockRestore();
+    return contexts;
+  }
+
+  it("渲染出静态层与动态层两块画布，并画出内容", async () => {
+    const nodes = [rectangleOf(0, 0, 100, 100), rectangleOf(300, 300, 100, 100)];
+    const project = createFakeProject(nodes, [lineOf(100, 100, 300, 300)], rectangleOf(0, 0, 100, 100));
+
+    let canvasCount = 0;
+    const contexts = await renderMinimap(project, (container) => {
+      canvasCount = container.querySelectorAll("canvas").length;
+    });
+
+    expect(canvasCount).toBe(2);
+    expect(contexts[0].operations.some((operation) => operation.type === "fill")).toBe(true);
+    expect(contexts[1].operations.some((operation) => operation.type === "stroke")).toBe(true);
   });
 
   it("点击小地图把视野中心移动到对应世界坐标", async () => {
-    const nodeRectangles = [rectangleOf(0, 0, 200, 200), rectangleOf(600, 400, 200, 200)];
-    const viewRectangle = rectangleOf(0, 0, 100, 100);
-    const project = createFakeProject(nodeRectangles, viewRectangle);
-    const layout = createLayout(nodeRectangles, viewRectangle);
+    const nodes = [rectangleOf(0, 0, 200, 200), rectangleOf(600, 400, 200, 200)];
+    const view = rectangleOf(0, 0, 100, 100);
+    const project = createFakeProject(nodes, [], view);
+    const layout = collectGeometry(project).layout;
     const clickX = 90;
     const clickY = 60;
     const expectedWorld = new Vector(
@@ -171,8 +220,9 @@ describe("小地图绘制", () => {
       (clickY - layout.offset.y) / layout.scale,
     );
 
-    await renderMinimapOnce(project, [], (canvas) => {
-      canvas.getBoundingClientRect = () =>
+    await renderMinimap(project, (container) => {
+      const overlay = container.querySelectorAll("canvas")[1] as HTMLCanvasElement;
+      overlay.getBoundingClientRect = () =>
         ({
           left: 0,
           top: 0,
@@ -181,7 +231,7 @@ describe("小地图绘制", () => {
           width: MINIMAP_WIDTH,
           height: MINIMAP_HEIGHT,
         }) as DOMRect;
-      canvas.dispatchEvent(new MouseEvent("pointerdown", { clientX: clickX, clientY: clickY, bubbles: true }));
+      overlay.dispatchEvent(new MouseEvent("pointerdown", { clientX: clickX, clientY: clickY, bubbles: true }));
     });
 
     const bombMove = (project.camera as unknown as { bombMove: { mock: { calls: [Vector][] } } }).bombMove;
@@ -193,7 +243,7 @@ describe("小地图绘制", () => {
 
   it("关闭设置后不渲染画布", async () => {
     settingsState.showMinimap = false;
-    const project = createFakeProject([rectangleOf(0, 0, 10, 10)], rectangleOf(0, 0, 10, 10));
+    const project = createFakeProject([rectangleOf(0, 0, 10, 10)], [], rectangleOf(0, 0, 10, 10));
     const container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container);

@@ -211,7 +211,8 @@ settings:
     title: Show Minimap
     description: |
       Show a fixed-size minimap in the bottom-right corner of the canvas. The green frame marks the area covered by the current view.
-      The minimap scales itself according to the outermost nodes so you can navigate large graphs.
+      The minimap also draws the x/y axes and the connections between nodes.
+      It scales itself according to the outermost nodes so you can navigate large graphs.
       Click the minimap to move the view there.
   autoAdjustLineEndpointsByMouseTrack:
     title: Auto Adjust Line Endpoints by Mouse Track
