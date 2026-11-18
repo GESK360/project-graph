@@ -39,7 +39,9 @@ vi.mock("@tauri-apps/api/core", () => ({
       try {
         const entries = await reader.getEntries();
         const entry = entries.find((it) => it.filename === "metadata.msgpack");
-        if (!entry || typeof entry.getData !== "function") throw new Error("缺少 metadata.msgpack");
+        if (!entry || !("getData" in entry) || typeof entry.getData !== "function") {
+          throw new Error("缺少 metadata.msgpack");
+        }
         const raw = await entry.getData(new Uint8ArrayWriter());
         return Buffer.from(raw).toString("base64");
       } finally {

@@ -175,6 +175,7 @@ pub fn run() {
             cmd::fs::read_text_file,
             cmd::fs::read_file_base64,
             cmd::fs::read_prg_metadata,
+            cmd::fs::find_prg_by_name,
             cmd::fs::write_text_file,
             cmd::fs::write_file_base64,
             cmd::fs::create_folder,

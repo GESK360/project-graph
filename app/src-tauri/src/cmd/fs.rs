@@ -83,28 +83,81 @@ pub fn read_folder(path: String) -> Vec<String> {
 /// fileExts: 要读取的文件扩展名列表，例如：[".txt", ".md"]
 #[tauri::command]
 pub fn read_folder_recursive(path: String, file_exts: Vec<String>) -> Vec<String> {
+    let exts: Vec<String> = file_exts.iter().map(|ext| ext.to_lowercase()).collect();
     let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                if path.is_file() {
-                    if let Some(file_name) = path.to_str() {
-                        if file_exts.iter().any(|ext| file_name.ends_with(ext)) {
-                            files.push(file_name.to_string());
-                        }
-                    }
-                } else if path.is_dir() {
-                    let mut sub_files = read_folder_recursive(
-                        path.to_str().unwrap().to_string(),
-                        file_exts.clone(),
-                    );
-                    files.append(&mut sub_files);
-                }
+    collect_files_recursive(&path, &exts, &mut files);
+    files
+}
+
+fn collect_files_recursive(dir: &str, exts: &[String], out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        // file_type() 直接取目录项类型，避免 is_file()/is_dir() 各做一次 stat
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if file_type.is_dir() {
+            if let Some(sub) = path.to_str() {
+                collect_files_recursive(sub, exts, out);
+            }
+        } else if file_type.is_file() {
+            let Some(name) = path.to_str() else { continue };
+            let lower = name.to_lowercase();
+            if exts.iter().any(|ext| lower.ends_with(ext)) {
+                out.push(name.to_string());
             }
         }
     }
-    files
+}
+
+/// 在一批目录里找文件名匹配的 .prg，命中即停。
+///
+/// 深度链接按文件名提示反查时需要这个：完整递归可能扫到几万个无关文件，
+/// 而只要找到一个同名 .prg 就够。命中后立刻返回，剩下的目录树不再进入。
+#[tauri::command]
+pub fn find_prg_by_name(roots: Vec<String>, name: String) -> Option<String> {
+    let wanted = format!("{}.prg", name.to_lowercase());
+    for root in roots {
+        if let Some(found) = find_file_named(&root, &wanted, 0) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// 深度上限用于避免误入极深的目录，正常工作空间远达不到
+const FIND_MAX_DEPTH: usize = 16;
+
+fn find_file_named(dir: &str, lower_file_name: &str, depth: usize) -> Option<String> {
+    if depth > FIND_MAX_DEPTH {
+        return None;
+    }
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut sub_dirs: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        let Some(path_str) = path.to_str() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            sub_dirs.push(path_str.to_string());
+        } else if file_type.is_file() && path_str.to_lowercase().ends_with(lower_file_name) {
+            return Some(path_str.to_string());
+        }
+    }
+    // 同层先看完再进子目录，浅层命中优先
+    for sub in sub_dirs {
+        if let Some(found) = find_file_named(&sub, lower_file_name, depth + 1) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// 删除文件
@@ -405,6 +458,90 @@ mod tests {
         let error = extract_zip_entry_stored(path.to_str().unwrap(), "metadata.msgpack").unwrap_err();
         assert!(error.contains("metadata.msgpack"), "unexpected error: {error}");
         let _ = std::fs::remove_file(path);
+    }
+
+    fn make_tree(tag: &str, layout: &[(&str, &[u8])]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "flux-graph-tree-{}-{}",
+            std::process::id(),
+            tag
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for (relative, body) in layout {
+            let path = root.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, body).unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn finds_page_by_name_in_nested_folder() {
+        let root = make_tree(
+            "find-nested",
+            &[
+                ("top.txt", b"x"),
+                ("deep/nested/target.prg", b"hit"),
+                ("deep/other.prg", b"miss"),
+            ],
+        );
+        let found = super::find_prg_by_name(
+            vec![root.to_string_lossy().to_string()],
+            "target".to_string(),
+        );
+        let found = found.expect("should find target.prg").replace('\\', "/");
+        assert!(found.ends_with("deep/nested/target.prg"), "unexpected path: {found}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn find_by_name_distinguishes_similar_names() {
+        let root = make_tree(
+            "find-similar",
+            &[("a.prg", b"1"), ("ab.prg", b"2"), ("sub/abc.prg", b"3")],
+        );
+        let found = super::find_prg_by_name(vec![root.to_string_lossy().to_string()], "ab".to_string());
+        let found = found.expect("should find ab.prg").replace('\\', "/");
+        assert!(found.ends_with("/ab.prg"), "must not match a.prg or abc.prg: {found}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn find_by_name_prefers_shallow_match() {
+        let root = make_tree(
+            "find-shallow",
+            &[
+                ("target.prg", b"shallow"),
+                ("a/b/c/d/e/target.prg", b"deep"),
+            ],
+        );
+        let found = super::find_prg_by_name(vec![root.to_string_lossy().to_string()], "target".to_string());
+        let found = found.expect("should find target.prg").replace('\\', "/");
+        assert!(found.ends_with("/target.prg"), "unexpected path: {found}");
+        assert!(!found.contains("/a/b/c/d/e/"), "should stop at the shallow match: {found}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn find_by_name_returns_none_when_absent() {
+        let root = make_tree("find-missing", &[("only.prg", b"1")]);
+        assert!(super::find_prg_by_name(vec![root.to_string_lossy().to_string()], "nope".to_string()).is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recursive_list_filters_by_extension_case_insensitively() {
+        let root = make_tree(
+            "list-exts",
+            &[("a.prg", b"1"), ("b.PRG", b"2"), ("c.txt", b"3"), ("sub/d.prg", b"4")],
+        );
+        let mut files = super::read_folder_recursive(root.to_string_lossy().to_string(), vec![".prg".to_string()]);
+        files.sort();
+        assert_eq!(files.len(), 3, "should pick a.prg, b.PRG, sub/d.prg");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

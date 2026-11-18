@@ -236,26 +236,58 @@ async function listPrgFilesUnder(root: string): Promise<string[]> {
  * 所以两个文件同名也不会认错。
  */
 export async function findFileByDocId(docId: string, searchRoots: string[], nameHint?: string): Promise<string | null> {
-  const candidates: string[] = [];
-  for (const root of searchRoots) {
-    for (const file of await listPrgFilesUnder(root)) {
-      if (!candidates.includes(file)) candidates.push(file);
+  // 第一优先：按文件名直查。Rust 侧找到同名 .prg 就停，不遍历完整目录树。
+  // 这条路径覆盖「文件只是换了位置、名字没改」，也是绝大多数情况。
+  if (nameHint) {
+    const sameName = await findPrgByName(searchRoots, nameHint);
+    if (sameName && (await readPrgDocId(sameName)) === docId) {
+      return sameName;
     }
   }
 
-  const hinted = nameHint ? candidates.filter((file) => baseNameWithoutPrg(file) === nameHint) : [];
-
-  // 先按文件名提示并发探测，命中即返回，避免为了一次查找把所有文件都读一遍
-  for (const candidate of hinted) {
-    if ((await readPrgDocId(candidate)) === docId) {
-      return candidate;
-    }
-  }
-
-  // 全部候选并发读，按原顺序取第一个命中，保证结果稳定
+  // 兜底：文件改过名，只能靠 docId 全量比对。这一步才需要完整递归。
+  const candidates = await listPrgFilesInRoots(searchRoots);
   const results = await Promise.all(candidates.map((file) => readPrgDocId(file)));
   const hitIndex = results.findIndex((doc) => doc === docId);
   return hitIndex >= 0 ? candidates[hitIndex] : null;
+}
+
+/** 在候选目录里按文件名找 .prg，找到第一个就返回 */
+async function findPrgByName(searchRoots: string[], name: string): Promise<string | null> {
+  for (const root of searchRoots) {
+    if (!(await exists(root))) continue;
+    try {
+      const found = await invoke<string | null>("find_prg_by_name", { roots: [root], name });
+      if (found) return found;
+    } catch {
+      // 命令不可用（旧版本）时退回下面的完整扫描
+      return null;
+    }
+  }
+  return null;
+}
+
+/** 逐个根目录递归列出 .prg，并去掉被其它根目录包含的重复项 */
+async function listPrgFilesInRoots(searchRoots: string[]): Promise<string[]> {
+  // 最近文件散落在多层目录时，父目录会把子目录的内容重复扫一遍
+  // （例如 Pictures 已经包含 Pictures/1）。只保留最外层的根。
+  const normalized = searchRoots.map((root) => root.replace(/\\/g, "/").toLowerCase());
+  const outermost = searchRoots.filter((_root, index) => {
+    const self = normalized[index];
+    return !normalized.some((other, otherIndex) => otherIndex !== index && self.startsWith(other + "/"));
+  });
+
+  const seen = new Set<string>();
+  const files: string[] = [];
+  for (const root of outermost) {
+    for (const file of await listPrgFilesUnder(root)) {
+      const key = file.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      files.push(file);
+    }
+  }
+  return files;
 }
 
 async function normalizeFilePath(rawPath: string): Promise<string | null> {
@@ -430,8 +462,10 @@ async function resolvePrgPath(params: DeepLinkParams): Promise<string | null> {
 }
 
 /**
- * 候选基准目录：当前工作空间 → 历史工作空间 → 最近文件的所在目录。
+ * 候补基准目录：当前工作空间 → 历史工作空间 → 最近文件的所在目录。
  * 最后一项让没用过工作空间的人也能打开相对链接。
+ *
+ * 顺序按「最可能是基准」排列，调用方据此逐个尝试，命中即停。
  */
 async function candidateRoots(): Promise<string[]> {
   const roots = [Settings.activeWorkspaceRoot, ...Settings.workspaceRoots].filter((it) => Boolean(it)).map(joinPath);
@@ -470,6 +504,15 @@ export function resolveAgainstDir(baseDir: string, relativePath: string): string
   return drivePrefix + merged.join("/");
 }
 
+/** 等画布测出尺寸；最多等约 1 秒，超时就直接用当前状态，不阻塞用户 */
+async function waitForRendererReady(project: Project): Promise<void> {
+  const deadline = performance.now() + 1000;
+  while (performance.now() < deadline) {
+    if (project.renderer.w > 0 && project.renderer.h > 0) return;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+}
+
 export async function handleDeepLink(urls: string[]) {
   for (const url of urls) {
     if (!isProjectGraphDeepLink(url)) continue;
@@ -491,6 +534,9 @@ export async function handleDeepLink(urls: string[]) {
 
     const project = await onOpenFile(URI.file(resolvedPath), "DeepLink");
     if (project) {
+      // 标签页刚创建时画布可能还没测量尺寸。resetByRectangle 用 renderer.w/h 算缩放，
+      // 尺寸是 0 时算出来的比例无意义，等一帧让画布量完再定位。
+      await waitForRendererReady(project);
       applyCameraParams(project, params);
     }
   }
