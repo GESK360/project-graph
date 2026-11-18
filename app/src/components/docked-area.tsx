@@ -5,7 +5,6 @@ import { TabGroupNode } from "@/core/TabGroup";
 import { TabWorkspace } from "@/core/TabWorkspace";
 import { activeGroupIdAtom, activeTabAtom, store, tabDropTargetAtom, tabGroupRootAtom, tabsAtom } from "@/state";
 import { cn } from "@/utils/cn";
-import { isMac } from "@/utils/platform";
 import { useAtomValue } from "jotai";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -213,10 +212,9 @@ export default function DockedArea({
         <div
           data-pg-window-top-tabs={atWindowTop ? "" : undefined}
           className={cn(
-            "pointer-events-none relative z-10 flex shrink-0 items-center",
+            "pointer-events-none relative z-10 flex shrink-0 flex-col",
             atWindowTop &&
-              "[&_[data-pg-tab-bar]]:cursor-inherit pointer-events-auto h-[calc(2rem*var(--pg-ui-scale,1))] cursor-grab active:cursor-grabbing data-[pg-tabs-separate-row]:h-auto data-[pg-tabs-separate-row]:pt-[calc(2rem*var(--pg-ui-scale,1))] sm:h-[calc(3.5rem*var(--pg-ui-scale,1))] sm:data-[pg-tabs-separate-row]:pt-[calc(3.5rem*var(--pg-ui-scale,1))]",
-            atWindowTop && isMac && "sm:pt-[calc(1.5rem*var(--pg-ui-scale,1))]",
+              "group [&_[data-pg-tab-bar]]:cursor-inherit pointer-events-auto h-[var(--pg-titlebar-band-h)] cursor-grab active:cursor-grabbing data-[pg-tabs-separate-row]:h-auto",
           )}
           onMouseDown={(event) => {
             if (atWindowTop && !(event.target as Element).closest("[data-pg-docked-tab-id]")) {
@@ -224,19 +222,27 @@ export default function DockedArea({
             }
           }}
         >
-          <div
-            data-pg-tab-bar-drop-zone
-            className="cursor-inherit min-w-0 flex-1"
-            style={{ zoom: "var(--pg-ui-scale, 1)" }}
-          >
-            <ProjectTabs
-              groupId={node.id}
-              tabs={groupTabs}
-              activeTab={activeTab}
-              onTabClick={onTabClick}
-              onTabClose={onTabClose}
-              isClassroomMode={isClassroomMode}
+          {atWindowTop && (
+            <div
+              aria-hidden="true"
+              className="h-[var(--pg-titlebar-offset-h)] shrink-0 group-data-[pg-tabs-separate-row]:h-[var(--pg-titlebar-band-h)]"
             />
+          )}
+          <div className={cn("flex min-w-0 items-center", atWindowTop && "h-[var(--pg-titlebar-tab-row-h)] shrink-0")}>
+            <div
+              data-pg-tab-bar-drop-zone
+              className="cursor-inherit min-w-0 flex-1"
+              style={{ zoom: "var(--pg-ui-scale, 1)" }}
+            >
+              <ProjectTabs
+                groupId={node.id}
+                tabs={groupTabs}
+                activeTab={activeTab}
+                onTabClick={onTabClick}
+                onTabClose={onTabClose}
+                isClassroomMode={isClassroomMode}
+              />
+            </div>
           </div>
         </div>
         <div

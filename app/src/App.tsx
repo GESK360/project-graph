@@ -1,3 +1,4 @@
+import appIcon from "@/assets/icon.png";
 import MyContextMenuContent from "@/components/context-menu-content";
 import FloatingTabs from "@/components/floating-tabs";
 import PieMenu from "@/components/pie-menu";
@@ -5,6 +6,7 @@ import ThemeModeSwitch from "@/components/theme-mode-switch";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Dialog } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Project, ProjectState } from "@/core/Project";
 import { isResourceTab, Tab } from "@/core/Tab";
 import { TabWorkspace } from "@/core/TabWorkspace";
@@ -16,6 +18,7 @@ import { globalShortcutManager } from "@/core/service/controlService/shortcutKey
 import {
   activeResourceTabAtom,
   activeTabAtom,
+  commandPaletteVisibleAtom,
   isClassroomModeAtom,
   isClickThroughEnabledAtom,
   isWindowAlwaysOnTopAtom,
@@ -29,7 +32,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { arch, platform, version } from "@tauri-apps/plugin-os";
 import { restoreStateCurrent, saveWindowState, StateFlags } from "@tauri-apps/plugin-window-state";
 import { useAtom } from "jotai";
-import { Copy, Minus, Pin, PinOff, Square, X } from "lucide-react";
+import { Copy, Minus, Pin, PinOff, Search, Square, X } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -345,7 +348,24 @@ export default function App() {
           "has-[[data-pg-settings-view]]:bg-background/[0.9516] relative flex h-full w-full flex-col overflow-clip sm:gap-2",
           !isMac && "rounded-lg",
         )}
-        style={{ "--pg-ui-scale": uiScalePercent / 100 } as React.CSSProperties}
+        style={
+          {
+            "--pg-ui-scale": uiScalePercent / 100,
+            /** 标题栏第一行（标签页）高度 */
+            "--pg-titlebar-row-h": "2.25rem",
+            /** 两行之间的间距 */
+            "--pg-titlebar-gap": "0.25rem",
+            /** macOS 原生红绿灯占用的顶部高度 */
+            "--pg-titlebar-offset-top": isMac ? "1.5rem" : "0rem",
+            /** 标题栏整体高度 = 两行 + 行距 + 顶部让位 */
+            "--pg-titlebar-total-h":
+              "calc(var(--pg-titlebar-row-h) * 2 + var(--pg-titlebar-gap) + var(--pg-titlebar-offset-top))",
+            /** 下面三个是给不跟随 UI 缩放的 DockedArea 用的换算值 */
+            "--pg-titlebar-offset-h": "calc(var(--pg-titlebar-offset-top) * var(--pg-ui-scale))",
+            "--pg-titlebar-band-h": "calc(var(--pg-titlebar-total-h) * var(--pg-ui-scale))",
+            "--pg-titlebar-tab-row-h": "calc(var(--pg-titlebar-row-h) * var(--pg-ui-scale))",
+          } as React.CSSProperties
+        }
         onMouseDownCapture={(event) => {
           if (!isMac || event.button !== 0) return;
           const navigation = event.currentTarget.querySelector("#pg-titlebar-navigation");
@@ -398,53 +418,61 @@ export default function App() {
 
         {/* Zoomed UI layer - 缩放所有 DOM UI 元素，不缩放 Canvas 画布 */}
         <div style={zoomStyle} className="pointer-events-none relative z-10 flex h-full w-full flex-col">
-          {/* 菜单 | 标签页 | ...移动窗口区域... | 窗口控制按钮 */}
+          {/* 第一行：应用标识 | 标签页 | 窗口控制；第二行：功能区（菜单） */}
           <div
             data-pg-titlebar
             className={cn(
-              "z-10 grid h-8 shrink-0 grid-cols-[minmax(0,max-content)_minmax(0,1fr)_max-content] items-center gap-2 px-1 py-1 transition-opacity hover:opacity-100 sm:h-14 sm:gap-4 sm:px-3 sm:py-2",
-              isMac &&
-                "has-[[data-pg-titlebar-menu]:empty]:grid-cols-[minmax(0,1fr)_max-content] has-[[data-pg-titlebar-menu]:empty]:pl-0 sm:pt-6 sm:pb-0",
+              "z-10 flex shrink-0 flex-col gap-[var(--pg-titlebar-gap)] px-1 pt-[var(--pg-titlebar-offset-top)] transition-opacity hover:opacity-100 sm:px-3",
               isClassroomMode && "opacity-0",
             )}
+            style={{ height: "var(--pg-titlebar-total-h)" }}
           >
-            <div
-              className={cn(
-                "scrollbar-hide pointer-events-auto flex h-full min-w-0 cursor-grab items-center overflow-x-auto rounded-full active:cursor-grabbing",
-                isMac && "has-[[data-pg-titlebar-menu]:empty]:hidden",
-              )}
-              onMouseDown={(event) => {
-                if (event.target === event.currentTarget) handleTitleBarMouseDown(event);
-              }}
-            >
+            {/* 第一行：标签页 */}
+            <div className="flex h-[var(--pg-titlebar-row-h)] min-w-0 shrink-0 items-center gap-2 sm:gap-3">
               <div
-                data-pg-titlebar-menu
-                className="pointer-events-none flex h-full w-max shrink-0 items-center gap-1 *:pointer-events-auto"
+                className="pointer-events-auto flex h-full shrink-0 cursor-grab items-center gap-1.5 pr-1 pl-1 active:cursor-grabbing"
                 style={isMac ? { paddingLeft: "calc(100px / var(--pg-ui-scale))" } : undefined}
+                onMouseDown={handleTitleBarMouseDown}
               >
-                <GlobalMenu />
+                <img src={appIcon} alt="Flux Graph" className="size-6 rounded-md" draggable={false} />
+                <span className="text-sm font-semibold tracking-tight whitespace-nowrap">Flux Graph</span>
+              </div>
+              <div data-pg-titlebar-tab-space className="h-full min-w-0 flex-1" />
+              <div
+                className="pointer-events-auto flex h-full min-w-0 shrink-0 cursor-grab items-center justify-end active:cursor-grabbing"
+                onMouseDown={(event) => {
+                  if (event.target === event.currentTarget) handleTitleBarMouseDown(event);
+                }}
+              >
+                <div className="bg-background pointer-events-auto flex h-full shrink-0 items-center gap-2 rounded-full px-2 shadow-xs">
+                  <div className="hidden sm:block">
+                    <ThemeModeSwitch />
+                  </div>
+                  {!isMac && <WindowButtons />}
+                </div>
               </div>
             </div>
-            <div className="flex h-full min-w-0 items-center gap-2 sm:gap-4">
-              <div data-pg-titlebar-tab-space className="h-full min-w-0 flex-1" />
+            {/* 第二行：功能区 */}
+            <div className="flex h-[var(--pg-titlebar-row-h)] min-w-0 shrink-0 items-center gap-2 sm:gap-3">
+              <div
+                className="scrollbar-hide pointer-events-auto flex h-full min-w-0 flex-1 cursor-grab items-center overflow-x-auto rounded-full active:cursor-grabbing"
+                onMouseDown={(event) => {
+                  if (event.target === event.currentTarget) handleTitleBarMouseDown(event);
+                }}
+              >
+                <div
+                  data-pg-titlebar-menu
+                  className="pointer-events-none flex h-full w-max shrink-0 items-center gap-1 *:pointer-events-auto"
+                >
+                  <GlobalMenu />
+                </div>
+              </div>
               <div
                 id="pg-titlebar-navigation"
                 className="scrollbar-hide pointer-events-auto flex h-full max-w-[60%] min-w-0 shrink-0 cursor-grab items-center overflow-x-auto rounded-full empty:hidden active:cursor-grabbing"
                 onMouseDown={handleTitleBarMouseDown}
               />
-            </div>
-            <div
-              className="pointer-events-auto flex h-full min-w-0 cursor-grab items-center justify-end active:cursor-grabbing"
-              onMouseDown={(event) => {
-                if (event.target === event.currentTarget) handleTitleBarMouseDown(event);
-              }}
-            >
-              <div className="bg-background pointer-events-auto flex h-full shrink-0 items-center gap-2 rounded-full px-2 shadow-xs">
-                <div className="hidden sm:block">
-                  <ThemeModeSwitch />
-                </div>
-                {!isMac && <WindowButtons />}
-              </div>
+              <TitlebarSearchButton />
             </div>
           </div>
 
@@ -544,7 +572,33 @@ function WindowResizeHandles() {
 }
 
 /**
- * 窗口右上角的最小化，最大化，关闭等按钮
+ * 标题栏第二行右侧的搜索入口，点击打开命令面板（等同 Ctrl+K）。
+ */
+function TitlebarSearchButton() {
+  const [visible, setVisible] = useAtom(commandPaletteVisibleAtom);
+  return (
+    <div className="pointer-events-auto flex h-full shrink-0 items-center">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground h-7 gap-1.5 rounded-full px-2.5 text-xs"
+            aria-label="搜索功能"
+            onClick={() => setVisible(!visible)}
+          >
+            <Search className="size-3.5" />
+            <span className="hidden sm:inline">搜索功能</span>
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">搜索命令、快捷键或最近文件</TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
+
+/**
+ * 窗口右上角的最小化，最大化，关闭按钮
  */
 function WindowButtons() {
   const { t } = useTranslation("windowControls");
