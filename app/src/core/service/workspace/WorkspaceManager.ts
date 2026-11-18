@@ -25,6 +25,9 @@ export type WorkspaceNode =
 
 export type WorkspaceClipboard = { mode: "cut" | "copy"; paths: string[] };
 
+/** 与 Settings.workspaceSortMode 一一对应；custom 之外的模式都由界面禁用拖拽与上移下移 */
+export type WorkspaceSortMode = "custom" | "name" | "createdAt" | "modifiedAt";
+
 type WorkspaceEvent = "change" | "root-change";
 
 const HISTORY_DIR = ".flux-graph/history";
@@ -144,8 +147,10 @@ export class WorkspaceManagerClass {
   /** 读根目录一级节点（递归到子目录） */
   async readTree(): Promise<WorkspaceNode[]> {
     const root = this.requireRoot();
-    const order = await this.readOrder();
-    return await this.readDirNodes(root, root, order);
+    const mode = Settings.workspaceSortMode;
+    // 只有自定义排序才需要 order.json；其它模式按名字/时间排，读进来也用不上
+    const order = mode === "custom" ? await this.readOrder() : {};
+    return await this.readDirNodes(root, root, order, mode);
   }
 
   /**
@@ -399,6 +404,16 @@ export class WorkspaceManagerClass {
     this.emit("change");
   }
 
+  /** 同级内与上一项交换位置；已是同级第一项时抛错（UI 据此禁用） */
+  async moveUp(path: string): Promise<void> {
+    await this.swapSibling(path, -1);
+  }
+
+  /** 同级内与下一项交换位置；已是同级最后一项时抛错（UI 据此禁用） */
+  async moveDown(path: string): Promise<void> {
+    await this.swapSibling(path, 1);
+  }
+
   /** 写历史快照：`<root>/.flux-graph/history/<相对目录>/<页面名>/<yyyyMMdd-HHmmss>.prg`，同页 30s 内不重复、每页保留 20 份 */
   async snapshotPage(path: string): Promise<void> {
     await this.writeSnapshot(path, false);
@@ -450,7 +465,12 @@ export class WorkspaceManagerClass {
     return root;
   }
 
-  private async readDirNodes(dirPath: string, root: string, order: Record<string, string[]>): Promise<WorkspaceNode[]> {
+  private async readDirNodes(
+    dirPath: string,
+    root: string,
+    order: Record<string, string[]>,
+    mode: WorkspaceSortMode,
+  ): Promise<WorkspaceNode[]> {
     if (!(await exists(dirPath))) return [];
     let entries;
     try {
@@ -470,20 +490,31 @@ export class WorkspaceManagerClass {
           kind: "dir",
           name: entry.name,
           path: entryPath,
-          children: await this.readDirNodes(entryPath, root, order),
+          children: await this.readDirNodes(entryPath, root, order, mode),
         });
       } else if (entry.isFile && isPagePath(entry.name)) {
         pages.push({ kind: "page", name: entry.name.slice(0, -4), path: entryPath });
       }
     }
-    return this.sortNodes([...dirs, ...pages], order[this.relativeTo(root, dirPath)]);
+    return await this.sortNodes([...dirs, ...pages], order[this.relativeTo(root, dirPath)], mode);
   }
 
   /**
    * 默认顺序：目录在前、各自 localeCompare 升序。
    * 该目录在 order.json 里有记录时严格按记录顺序，记录里没出现的项排到末尾按默认规则。
+   * name / createdAt / modifiedAt 三种模式走用户选的排序，跟 order.json 无关（界面此时禁用拖拽）。
    */
-  private sortNodes(nodes: WorkspaceNode[], record: string[] | undefined): WorkspaceNode[] {
+  private async sortNodes(
+    nodes: WorkspaceNode[],
+    record: string[] | undefined,
+    mode: WorkspaceSortMode,
+  ): Promise<WorkspaceNode[]> {
+    if (mode === "name") {
+      return [...nodes].sort((left, right) => left.name.localeCompare(right.name));
+    }
+    if (mode === "createdAt" || mode === "modifiedAt") {
+      return await this.sortNodesByTime(nodes, mode);
+    }
     const fallback = [...nodes].sort((left, right) => {
       if (left.kind !== right.kind) return left.kind === "dir" ? -1 : 1;
       return left.name.localeCompare(right.name);
@@ -501,6 +532,23 @@ export class WorkspaceManagerClass {
       .sort((left, right) => rankOf(left)! - rankOf(right)!);
     const rest = fallback.filter((node) => rankOf(node) === undefined);
     return [...ordered, ...rest];
+  }
+
+  /**
+   * 时间排序：同级混排、最新的在前。目录和页面都要 stat 一次取时间，
+   * 所以只有日期模式才付这份 IO；一项只 stat 一次。
+   * stat 失败或平台不给时间（null）时按名字兜底，不能让一个坏项把整棵目录弄空。
+   */
+  private async sortNodesByTime(nodes: WorkspaceNode[], mode: "createdAt" | "modifiedAt"): Promise<WorkspaceNode[]> {
+    const times = await Promise.all(nodes.map(async (node) => await readNodeTime(node.path, mode)));
+    const entries = nodes.map((node, index) => ({ node, time: times[index] }));
+    entries.sort((left, right) => {
+      const byName = () => left.node.name.localeCompare(right.node.name);
+      if (left.time === undefined) return right.time === undefined ? byName() : 1;
+      if (right.time === undefined) return -1;
+      return right.time - left.time || byName();
+    });
+    return entries.map((entry) => entry.node);
   }
 
   private readonly unreadableDirs = new Set<string>();
@@ -583,6 +631,42 @@ export class WorkspaceManagerClass {
     const current = order[key] ?? (await this.defaultOrderNames(dirPath));
     order[key] = [...current.filter((name) => name !== fileName), fileName];
     await this.writeOrder(order);
+  }
+
+  /**
+   * 同级内与相邻项交换（上移 = offset -1，下移 = +1）。
+   * 目录和页面在同一个数组里，只换数组位置、不跨层级；越界直接抛错，让 UI 禁用并提示。
+   */
+  private async swapSibling(path: string, offset: -1 | 1): Promise<void> {
+    const root = this.requireRoot();
+    if (Settings.workspaceSortMode !== "custom") {
+      throw new Error(i18next.t("workspace.sortLockedHint"));
+    }
+    const target = WorkspacePaths.normalize(path);
+    const dir = WorkspacePaths.dirname(target);
+    const fileName = WorkspacePaths.baseName(target);
+    const key = this.relativeTo(root, dir);
+    const order = await this.readOrder();
+    const defaults = await this.defaultOrderNames(dir);
+    const existing = new Set(defaults);
+    // order 里可能存着已被删掉/改名的项，先跟磁盘现状对齐，否则会跟一个看不见的项交换、看起来没反应
+    const names = (order[key] ?? defaults).filter((name) => existing.has(name));
+    const seen = new Set(names);
+    for (const name of defaults) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      names.push(name);
+    }
+    const index = names.indexOf(fileName);
+    const neighbor = index + offset;
+    if (index < 0 || neighbor < 0 || neighbor >= names.length) {
+      throw new Error(i18next.t("workspace.reorderFailed", { defaultValue: fileName }));
+    }
+    names[index] = names[neighbor];
+    names[neighbor] = fileName;
+    order[key] = names;
+    await this.writeOrder(order);
+    this.emit("change");
   }
 
   /** 删除/改名/移动后把 order 里对不上文件的陈旧项丢掉 */
@@ -761,6 +845,21 @@ function isPagePath(path: string): boolean {
 
 function isVisibleEntry(name: string): boolean {
   return !name.startsWith(IGNORED_PREFIX) && !IGNORED_DIR_NAMES.has(name);
+}
+
+/**
+ * 取节点时间（毫秒）。日期排序下每个目录项都要 stat 一次，这属于常态开销；
+ * 拿不到时间（刚被外部删掉、平台不提供 birthtime）时返回 undefined 让调用方按名字兜底，
+ * 一个坏项不该把整棵目录树变成空的。
+ */
+async function readNodeTime(path: string, mode: "createdAt" | "modifiedAt"): Promise<number | undefined> {
+  try {
+    const info = await stat(path);
+    const time = mode === "createdAt" ? info.birthtime : info.mtime;
+    return time ? time.getTime() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function openWorkspaceFolderByDialog(): Promise<string | undefined> {

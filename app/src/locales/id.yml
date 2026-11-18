@@ -2593,6 +2593,15 @@ workspace:
     Hapus {{count}} item yang dipilih?
     File langsung dihapus dari disk dan tidak dapat dipulihkan.
   reorderFailed: Gagal mengubah urutan
+  sortBy: Urutkan
+  sortCustom: Tidak Ada
+  sortName: Menurut Abjad
+  sortCreatedAt: Tanggal Dibuat
+  sortModifiedAt: Tanggal Diubah
+  moveUp: Naikkan
+  moveDown: Turunkan
+  sortLockedHint: Pilih "Tidak Ada" agar urutan bisa diatur manual
+  dragHint: Tarik untuk mengatur urutan, lepas ke folder untuk memindahkan ke dalamnya
   versionsEmpty: Halaman ini belum punya versi
   restore: Pulihkan Versi Ini
   openAsCopy: Buka sebagai Salinan

@@ -2817,6 +2817,15 @@ workspace:
     确定要删除所选的 {{count}} 项吗？
     文件会从磁盘上直接删除，且不可恢复。
   reorderFailed: 调整顺序失败
+  sortBy: 排序
+  sortCustom: 无
+  sortName: 按字母顺序
+  sortCreatedAt: 创建日期
+  sortModifiedAt: 修改日期
+  moveUp: 上移
+  moveDown: 下移
+  sortLockedHint: 切换到「无」才能手动调整顺序
+  dragHint: 拖动可排序，拖到文件夹上可放进去
   versionsEmpty: 这个页面还没有历史版本
   restore: 恢复此版本
   openAsCopy: 作为副本打开

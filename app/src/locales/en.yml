@@ -2637,6 +2637,15 @@ workspace:
     Delete the {{count}} selected items?
     Files are removed from disk immediately and cannot be recovered.
   reorderFailed: Failed to reorder
+  sortBy: Sort
+  sortCustom: None
+  sortName: Alphabetical Order
+  sortCreatedAt: Creation Date
+  sortModifiedAt: Modification Date
+  moveUp: Move Up
+  moveDown: Move Down
+  sortLockedHint: Switch sorting to "None" to reorder manually
+  dragHint: Drag to reorder, drop onto a folder to move inside
   versionsEmpty: No versions for this page yet
   restore: Restore This Version
   openAsCopy: Open as Copy

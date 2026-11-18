@@ -128,6 +128,9 @@ export const settingsSchema = z.object({
   workspaceRoots: z.array(z.string()).default([]),
   activeWorkspaceRoot: z.string().default(""),
   workspaceVersionHistory: z.boolean().default(true),
+  workspaceSortMode: z
+    .union([z.literal("custom"), z.literal("name"), z.literal("createdAt"), z.literal("modifiedAt")])
+    .default("custom"),
   enableDragEdgeRotateStructure: z.boolean().default(true),
   enableCtrlWheelRotateStructure: z.boolean().default(false),
   aiApiBaseUrl: projectToolSettingSchemas.aiApiBaseUrl,

@@ -2528,6 +2528,15 @@ workspace:
     確定要刪除所選嘅 {{count}} 項？
     檔案會直接喺硬碟刪走，冇得還原。
   reorderFailed: 調整順序失敗
+  sortBy: 排序
+  sortCustom: 無
+  sortName: 按字母順序
+  sortCreatedAt: 建立日期
+  sortModifiedAt: 修改日期
+  moveUp: 上移
+  moveDown: 下移
+  sortLockedHint: 轉做「無」先可以手動調順序
+  dragHint: 拖得動嚟排序，拖去資料夾上面可以放埋入去
   versionsEmpty: 呢個頁面仲未有歷史版本
   restore: 還原呢個版本
   openAsCopy: 開副本

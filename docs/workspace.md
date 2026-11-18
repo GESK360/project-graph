@@ -235,3 +235,66 @@ async reorderNode(path: string, targetDir: string, beforeFileName?: string): Pro
 ## F. i18n 新增键（Lead 负责写入）
 
 `workspace.newFolderName`（"新建文件夹"）、`workspace.createFolder`（新建文件夹）、`workspace.folderCreated`、`workspace.deleteFolderTitle`、`workspace.deleteFolderBody`、`workspace.dragInvalidTarget`、`workspace.selectedCount`（"已选 {{count}} 项"）、`workspace.moveMany`、`workspace.copyMany`、`workspace.deleteManyTitle`、`workspace.deleteManyBody`
+
+---
+
+# 追加契约（2026-11-18 第三轮）
+
+## 0. 背景：HTML5 拖拽在本项目不可用（已证实）
+
+`app/src-tauri/src/custom_drag_drop.rs` 在 Windows 上用 `RegisterDragDrop(hwnd, …)` 接管了**整个窗口的 OLE 拖放**（这是"从资源管理器拖 .prg 进画布"依赖的通道）。WebView2 的 HTML5 `draggable` / `dragstart` 因此在应用内完全不触发——这就是"鼠标拖动没有生效"的根因。
+
+**结论**：树内拖拽一律改用 **pointer 事件自研**，不要再用 `draggable` / `dataTransfer`，也不要改动 `custom_drag_drop.rs`（动了就废掉外部拖文件进画布）。
+
+## G. Pointer 拖拽（替代 HTML5 拖拽）
+
+- 行元素上 `onPointerDown`：记录 `{ path, startX, startY, pointerId }`，**不要** preventDefault（要保持点击能力）。
+- 在 `window` 上挂 `pointermove` / `pointerup`（按下时挂、松手时摘；组件卸载也要摘）。
+- 位移超过 **4px** 才进入"拖拽中"状态；在此之前松手 = 普通点击（保留现有的单击/Ctrl/Shift 语义）。
+- 进入拖拽后：
+  - 给 `document.body` 加 `cursor: grabbing`，拖拽层渲染一个跟随鼠标的幽灵标签（被拖的项名 / "N 项"）。
+  - 用 `document.elementFromPoint(x, y)` 找最近的 `[data-pg-workspace-row]`（行元素上带该属性 + `data-pg-workspace-path`），算落点；找不到行 = 落在空白 → `{ type: "root" }`。
+  - 落点规则保持不变：目录行**中段**（上下各 25% 之外的中间区域）→ `drop`；行的**上 1/4** → `before`；**下 1/4** → `after`；空白 → `root`。
+  - 落点用和现在一样的视觉：整行高亮 / 上边线 / 下边线 / 根区高亮。
+- `pointerup`：若在拖拽中则执行 drop，并**吃掉紧随其后的 click**（用 `Date.now()` 时间戳窗口，200ms 足够）；否则按普通点击处理。
+- 拖拽中 `event.preventDefault()` 防止选中文本；松手后恢复正常。
+
+## H. 排序模式（顶部下拉按钮）
+
+设置项（Lead 写入 Settings.tsx）：
+
+```ts
+workspaceSortMode: z.union([
+  z.literal("custom"),
+  z.literal("name"),
+  z.literal("createdAt"),
+  z.literal("modifiedAt"),
+]).default("custom");
+```
+
+- `custom`：用户自定义顺序（`order.json`），即截图里的「无」。
+- `name`：同级**混排**按 `localeCompare` 升序（目录和页面混在一起排，跟 Obsidian 一致）。
+- `createdAt` / `modifiedAt`：同级混排按时间**降序**（最新的在前）。目录的时间取目录自身的 `stat`；`stat` 拿不到时间（null）时按名字兜底。
+- 非 `custom` 模式下：**禁用**拖拽排序与上移/下移（UI 置灰 + tooltip 提示「切换到『无』才能手动排序」）。
+
+界面：文件树顶部一行，在工作空间名右侧加一个"排序"下拉按钮（图标 `ArrowUpDown`），菜单四项（Radio 样式，当前项打勾）：
+
+```
+无(N)            按字母顺序(A)        创建日期(C)        修改日期(M)
+```
+
+## I. 上移 / 下移（右键菜单）
+
+```ts
+/** 同级内与相邻项交换位置；与首/末项交换时抛错（UI 据此禁用） */
+async moveUp(path: string): Promise<void>;
+async moveDown(path: string): Promise<void>;
+```
+
+- 只在 `workspaceSortMode === "custom"` 下允许；内部若发现不是 custom，直接抛错。
+- 顺序数组取 `order[key] ?? defaultOrderNames(dir)`，把自身与上一个/下一个**同级项**交换后写回。目录与页面在同一个数组里，**不跨级**。
+- 已是同级第一项时 `moveUp` 不可用，最后一项时 `moveDown` 不可用（UI 置灰）。
+
+## J. 需要 Lead 写入的 i18n 键
+
+`workspace.sortBy`（排序）、`workspace.sortCustom`（无）、`workspace.sortName`（按字母顺序）、`workspace.sortCreatedAt`（创建日期）、`workspace.sortModifiedAt`（修改日期）、`workspace.moveUp`（上移）、`workspace.moveDown`（下移）、`workspace.sortLockedHint`（切换到「无」才能手动排序）、`workspace.dragHint`（拖动排序 / 放入文件夹）

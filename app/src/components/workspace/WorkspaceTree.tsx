@@ -8,6 +8,8 @@ import {
 import type { WorkspaceClipboard, WorkspaceNode } from "@/core/service/workspace/WorkspaceManager";
 import { cn } from "@/utils/cn";
 import {
+  ArrowDown,
+  ArrowUp,
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
@@ -26,7 +28,9 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import type { DragEvent, MouseEvent as ReactMouseEvent } from "react";
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import type { WorkspaceFlatRow } from "./workspaceFlat";
 import { fileNameOf } from "./workspaceFlat";
@@ -58,6 +62,8 @@ export interface WorkspaceTreeActions {
   newFolder: (dirPath: string) => void;
   renameNode: (node: WorkspaceNode) => void;
   deleteNode: (node: WorkspaceNode) => void;
+  moveUp: (path: string) => void;
+  moveDown: (path: string) => void;
   cutNode: (node: WorkspaceNode) => void;
   copyNode: (node: WorkspaceNode) => void;
   paste: (targetDir: string) => void;
@@ -86,6 +92,8 @@ interface TreeState {
   versionCounts: ReadonlyMap<string, number>;
   selectedPaths: ReadonlySet<string>;
   dropTarget: WorkspaceDropTarget | null;
+  /** 手动排序模式（Settings.workspaceSortMode === "custom"）；关掉时拖拽与上移/下移全部禁用 */
+  manualOrder: boolean;
   actions: WorkspaceTreeActions;
 }
 
@@ -95,6 +103,37 @@ export interface WorkspaceTreeProps extends TreeState {
 }
 
 const INDENT = 12;
+/** 位移超过这个距离才算拖拽，之前松手都按普通点击处理 */
+const DRAG_START_DISTANCE = 4;
+/** 目录行上下各留 25% 给"排到前面/后面"，中间 50% 是"放进去" */
+const DIR_DROP_EDGE = 0.25;
+
+interface DragSession {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  paths: string[];
+  label: string;
+  dragging: boolean;
+  target: WorkspaceDropTarget | null;
+}
+
+interface DragGhost {
+  x: number;
+  y: number;
+  label: string;
+}
+
+interface PointerDrag {
+  ghost: DragGhost | null;
+  start: (event: ReactPointerEvent<HTMLButtonElement>, row: WorkspaceFlatRow) => void;
+}
+
+interface RowProps {
+  row: WorkspaceFlatRow;
+  actions: WorkspaceTreeActions;
+  drag: PointerDrag;
+}
 
 /** 折叠子页折叠的是与页面同名的那一级目录（A/A.prg 与 A/ 并列的约定） */
 function findChildrenDir(nodes: WorkspaceNode[], name: string) {
@@ -110,18 +149,7 @@ function isCutPath(clipboard: WorkspaceClipboard | null, path: string) {
   return clipboard?.mode === "cut" && clipboard.paths.some((item) => isSameWorkspacePath(item, path));
 }
 
-function readDraggedPaths(event: DragEvent): string[] {
-  const raw = event.dataTransfer.getData("text/plain");
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-/** 落点指示：目录行中段整行高亮表示"放进去"，上下半段画边线表示"排到前/后" */
+/** 落点指示：目录行中段整行高亮表示"放进去"，上下段画边线表示"排到前/后" */
 function rowDropClass(dropTarget: WorkspaceDropTarget | null, path: string) {
   if (!dropTarget) return undefined;
   if (dropTarget.type === "drop" && isSameWorkspacePath(dropTarget.path, path)) {
@@ -135,11 +163,19 @@ function rowDropClass(dropTarget: WorkspaceDropTarget | null, path: string) {
   return undefined;
 }
 
-/** 光标在行的上下半段：上半排前、下半排后；目录行中段表示放进去 */
-function dropTargetForRow(event: DragEvent<HTMLButtonElement>, row: WorkspaceFlatRow): WorkspaceDropTarget {
-  const rect = event.currentTarget.getBoundingClientRect();
-  const ratio = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0.5;
-  if (row.node.kind === "dir" && ratio > 1 / 3 && ratio < 2 / 3) {
+/**
+ * 用 elementFromPoint 命中行元素算落点：HTML5 的 dragover 在本项目完全不触发
+ * （custom_drag_drop.rs 用 RegisterDragDrop 接管了窗口的 OLE 拖放），所以只能自己算。
+ */
+function dropTargetAtPoint(x: number, y: number, rows: WorkspaceFlatRow[]): WorkspaceDropTarget {
+  const element = document.elementFromPoint(x, y);
+  const rowElement = element?.closest("[data-pg-workspace-row]");
+  const rowPath = rowElement instanceof HTMLElement ? rowElement.dataset.pgWorkspacePath : undefined;
+  const row = rowPath === undefined ? undefined : rows.find((item) => isSameWorkspacePath(item.node.path, rowPath));
+  if (!(rowElement instanceof HTMLElement) || !row) return { type: "root" };
+  const rect = rowElement.getBoundingClientRect();
+  const ratio = rect.height > 0 ? (y - rect.top) / rect.height : 0.5;
+  if (row.node.kind === "dir" && ratio > DIR_DROP_EDGE && ratio < 1 - DIR_DROP_EDGE) {
     return { type: "drop", path: row.node.path };
   }
   if (ratio < 0.5) {
@@ -154,40 +190,97 @@ function dropTargetForRow(event: DragEvent<HTMLButtonElement>, row: WorkspaceFla
   };
 }
 
-function writeDragData(
-  event: DragEvent<HTMLButtonElement>,
-  path: string,
+function usePointerDrag(
+  enabled: boolean,
+  rows: WorkspaceFlatRow[],
   selectedPaths: ReadonlySet<string>,
   actions: WorkspaceTreeActions,
-) {
-  // 拖已选中的行 = 拖整个选择集；拖未选中的行 = 只拖它自己
-  const paths = selectedPaths.has(path) ? [...selectedPaths] : [path];
-  event.dataTransfer.effectAllowed = "move";
-  event.dataTransfer.setData("text/plain", JSON.stringify(paths));
-  actions.dragStart(paths);
-}
+): PointerDrag {
+  const { t } = useTranslation("workspace");
+  const [ghost, setGhost] = useState<DragGhost | null>(null);
+  const sessionRef = useRef<DragSession | null>(null);
+  const detachRef = useRef<(() => void) | null>(null);
+  const rowsRef = useRef(rows);
 
-function handleDragOver(event: DragEvent, target: WorkspaceDropTarget, actions: WorkspaceTreeActions) {
-  // 不 preventDefault 浏览器就不认这里是合法落点，drop 也不会触发
-  event.preventDefault();
-  event.stopPropagation();
-  event.dataTransfer.dropEffect = "move";
-  actions.dragOver(target);
-}
+  useEffect(() => {
+    rowsRef.current = rows;
+  }, [rows]);
 
-/** 光标离开这一行（且没进它的子元素）时清掉落点，不然行高亮会留在上一次经过的行上 */
-function handleDragLeave(event: DragEvent<HTMLButtonElement>, actions: WorkspaceTreeActions) {
-  const next = event.relatedTarget;
-  if (next instanceof Node && event.currentTarget.contains(next)) return;
-  actions.dragOver(null);
-}
+  useEffect(() => {
+    return () => {
+      detachRef.current?.();
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, []);
 
-function handleDrop(event: DragEvent, target: WorkspaceDropTarget, actions: WorkspaceTreeActions) {
-  event.preventDefault();
-  event.stopPropagation();
-  const paths = readDraggedPaths(event);
-  if (paths.length === 0) return;
-  actions.drop(target, paths);
+  const start = (event: ReactPointerEvent<HTMLButtonElement>, row: WorkspaceFlatRow) => {
+    if (!enabled || event.button !== 0 || sessionRef.current) return;
+    const rowElement = event.currentTarget;
+    // 拖已选中的行 = 拖整个选择集；拖未选中的行 = 只拖它自己
+    const paths = selectedPaths.has(row.node.path) ? [...selectedPaths] : [row.node.path];
+    const session: DragSession = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      paths,
+      label: paths.length > 1 ? t("selectedCount", { count: paths.length }) : row.node.name,
+      dragging: false,
+      target: null,
+    };
+    sessionRef.current = session;
+    // 捕获指针，鼠标拖到窗口外再松手也能收到 pointerup，不会卡在拖拽态
+    rowElement.setPointerCapture(event.pointerId);
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      const current = sessionRef.current;
+      if (!current) return;
+      if (!current.dragging) {
+        if (Math.hypot(moveEvent.clientX - current.startX, moveEvent.clientY - current.startY) <= DRAG_START_DISTANCE) {
+          return;
+        }
+        current.dragging = true;
+        // 拖拽中要吃掉默认行为：否则会把行里的文字选中，光标也不是"抓起"的样子
+        document.body.style.cursor = "grabbing";
+        document.body.style.userSelect = "none";
+        window.getSelection()?.removeAllRanges();
+        actions.dragStart(current.paths);
+      }
+      moveEvent.preventDefault();
+      setGhost({ x: moveEvent.clientX, y: moveEvent.clientY, label: current.label });
+      const target = dropTargetAtPoint(moveEvent.clientX, moveEvent.clientY, rowsRef.current);
+      current.target = target;
+      actions.dragOver(target);
+    };
+
+    const detach = () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+      if (rowElement.hasPointerCapture(session.pointerId)) rowElement.releasePointerCapture(session.pointerId);
+      if (detachRef.current === detach) detachRef.current = null;
+    };
+
+    const onPointerUp = () => {
+      const current = sessionRef.current;
+      sessionRef.current = null;
+      detach();
+      if (!current?.dragging) return;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setGhost(null);
+      actions.dragEnd();
+      if (current.target) actions.drop(current.target, current.paths);
+      else actions.dragOver(null);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+    detachRef.current = detach;
+  };
+
+  return { ghost, start };
 }
 
 function toRowClick(path: string, event: ReactMouseEvent): WorkspaceRowClick {
@@ -196,25 +289,32 @@ function toRowClick(path: string, event: ReactMouseEvent): WorkspaceRowClick {
 
 export default function WorkspaceTree({ nodes, rows, actions, ...state }: WorkspaceTreeProps) {
   const { t } = useTranslation("workspace");
+  const drag = usePointerDrag(state.manualOrder, rows, state.selectedPaths, actions);
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div
-          className="flex min-h-full min-w-full flex-col pb-2"
-          onDragOver={(event) => handleDragOver(event, { type: "root" }, actions)}
-          onDrop={(event) => handleDrop(event, { type: "root" }, actions)}
-        >
+        <div className="flex min-h-full min-w-full flex-col pb-2">
           {rows.length === 0 && nodes.length === 0 && (
             <div className="text-muted-foreground px-3 py-6 text-center text-xs leading-relaxed">{t("emptyHint")}</div>
           )}
           {rows.map((row) =>
             row.node.kind === "dir" ? (
-              <DirRow key={row.node.path} row={row} {...state} actions={actions} />
+              <DirRow key={row.node.path} row={row} {...state} actions={actions} drag={drag} />
             ) : (
-              <PageRow key={row.node.path} row={row} {...state} actions={actions} />
+              <PageRow key={row.node.path} row={row} {...state} actions={actions} drag={drag} />
             ),
           )}
-          <RootDropZone active={state.dropTarget?.type === "root"} actions={actions} />
+          <RootDropZone active={state.dropTarget?.type === "root"} />
+          {drag.ghost &&
+            createPortal(
+              <div
+                className="bg-popover text-popover-foreground pointer-events-none fixed z-[1000] max-w-56 truncate rounded border px-2 py-1 text-xs shadow-md"
+                style={{ left: drag.ghost.x + 10, top: drag.ghost.y + 10 }}
+              >
+                {drag.ghost.label}
+              </div>,
+              document.body,
+            )}
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent>
@@ -244,7 +344,35 @@ export default function WorkspaceTree({ nodes, rows, actions, ...state }: Worksp
   );
 }
 
-function DirRow({ row, actions, ...state }: TreeState & { row: WorkspaceFlatRow; actions: WorkspaceTreeActions }) {
+/** 上移/下移：非手动排序模式或已在同级首/末项时置灰 */
+function MoveItems({
+  row,
+  actions,
+  manualOrder,
+  disabled,
+}: Pick<RowProps, "row" | "actions"> & { manualOrder: boolean; disabled: boolean }) {
+  const { t } = useTranslation("workspace");
+  return (
+    <>
+      <ContextMenuItem
+        disabled={!manualOrder || disabled || row.indexInSiblings === 0}
+        onSelect={() => actions.moveUp(row.node.path)}
+      >
+        <ArrowUp />
+        {t("moveUp")}
+      </ContextMenuItem>
+      <ContextMenuItem
+        disabled={!manualOrder || disabled || row.indexInSiblings >= row.siblings.length - 1}
+        onSelect={() => actions.moveDown(row.node.path)}
+      >
+        <ArrowDown />
+        {t("moveDown")}
+      </ContextMenuItem>
+    </>
+  );
+}
+
+function DirRow({ row, actions, drag, ...state }: TreeState & RowProps) {
   const { t } = useTranslation("workspace");
   const node = row.node as WorkspaceDirNode;
   const collapsed = state.collapsedDirs.has(node.path);
@@ -255,7 +383,8 @@ function DirRow({ row, actions, ...state }: TreeState & { row: WorkspaceFlatRow;
       <ContextMenuTrigger asChild>
         <button
           type="button"
-          draggable
+          data-pg-workspace-row=""
+          data-pg-workspace-path={node.path}
           style={{ paddingLeft: 4 + row.depth * INDENT }}
           className={cn(
             "hover:bg-accent/50 flex h-6 w-full items-center gap-1 rounded-sm pr-2 text-left text-xs",
@@ -263,6 +392,7 @@ function DirRow({ row, actions, ...state }: TreeState & { row: WorkspaceFlatRow;
             isCutPath(state.clipboard, node.path) && "opacity-50",
             rowDropClass(state.dropTarget, node.path),
           )}
+          onPointerDown={(event) => drag.start(event, row)}
           onClick={(event) => {
             if (actions.shouldIgnoreClick()) return;
             const click = toRowClick(node.path, event);
@@ -274,14 +404,6 @@ function DirRow({ row, actions, ...state }: TreeState & { row: WorkspaceFlatRow;
             event.stopPropagation();
             actions.contextRow(node.path);
           }}
-          onDragStart={(event) => {
-            event.stopPropagation();
-            writeDragData(event, node.path, state.selectedPaths, actions);
-          }}
-          onDragEnd={() => actions.dragEnd()}
-          onDragOver={(event) => handleDragOver(event, dropTargetForRow(event, row), actions)}
-          onDragLeave={(event) => handleDragLeave(event, actions)}
-          onDrop={(event) => handleDrop(event, dropTargetForRow(event, row), actions)}
         >
           {collapsed ? (
             <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />
@@ -301,6 +423,7 @@ function DirRow({ row, actions, ...state }: TreeState & { row: WorkspaceFlatRow;
           <Trash2 />
           {t("delete")}
         </ContextMenuItem>
+        <MoveItems row={row} actions={actions} manualOrder={state.manualOrder} disabled={batch} />
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => actions.cutNode(node)}>
           <Scissors />
@@ -332,7 +455,7 @@ function DirRow({ row, actions, ...state }: TreeState & { row: WorkspaceFlatRow;
   );
 }
 
-function PageRow({ row, actions, ...state }: TreeState & { row: WorkspaceFlatRow; actions: WorkspaceTreeActions }) {
+function PageRow({ row, actions, drag, ...state }: TreeState & RowProps) {
   const { t } = useTranslation("workspace");
   const node = row.node as WorkspacePageNode;
   const isActive = state.activeFsPath !== undefined && isSameWorkspacePath(node.path, state.activeFsPath);
@@ -344,7 +467,8 @@ function PageRow({ row, actions, ...state }: TreeState & { row: WorkspaceFlatRow
       <ContextMenuTrigger asChild>
         <button
           type="button"
-          draggable
+          data-pg-workspace-row=""
+          data-pg-workspace-path={node.path}
           style={{ paddingLeft: 4 + row.depth * INDENT + 18 }}
           className={cn(
             "hover:bg-accent/50 flex h-6 w-full items-center gap-1.5 rounded-sm pr-2 text-left text-xs",
@@ -353,6 +477,7 @@ function PageRow({ row, actions, ...state }: TreeState & { row: WorkspaceFlatRow
             isCutPath(state.clipboard, node.path) && "opacity-50",
             rowDropClass(state.dropTarget, node.path),
           )}
+          onPointerDown={(event) => drag.start(event, row)}
           onClick={(event) => {
             if (actions.shouldIgnoreClick()) return;
             const click = toRowClick(node.path, event);
@@ -363,14 +488,6 @@ function PageRow({ row, actions, ...state }: TreeState & { row: WorkspaceFlatRow
             event.stopPropagation();
             actions.contextRow(node.path);
           }}
-          onDragStart={(event) => {
-            event.stopPropagation();
-            writeDragData(event, node.path, state.selectedPaths, actions);
-          }}
-          onDragEnd={() => actions.dragEnd()}
-          onDragOver={(event) => handleDragOver(event, dropTargetForRow(event, row), actions)}
-          onDragLeave={(event) => handleDragLeave(event, actions)}
-          onDrop={(event) => handleDrop(event, dropTargetForRow(event, row), actions)}
         >
           <FileText className="text-muted-foreground size-3.5 shrink-0" />
           <span className="truncate">{node.name}</span>
@@ -393,6 +510,7 @@ function PageRow({ row, actions, ...state }: TreeState & { row: WorkspaceFlatRow
           <Trash2 />
           {t("delete")}
         </ContextMenuItem>
+        <MoveItems row={row} actions={actions} manualOrder={state.manualOrder} disabled={batch} />
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => actions.cutNode(node)}>
           <Scissors />
@@ -440,16 +558,14 @@ function PageRow({ row, actions, ...state }: TreeState & { row: WorkspaceFlatRow
   );
 }
 
-/** 树下方留白：落在这里 = 排到根末尾 */
-function RootDropZone({ active, actions }: { active: boolean; actions: WorkspaceTreeActions }) {
+/** 树下方留白：落在空白 = 排到根末尾 */
+function RootDropZone({ active }: { active: boolean }) {
   return (
     <div
       className={cn(
         "min-h-16 w-full flex-1 rounded-sm border border-transparent",
         active && "border-primary/60 bg-primary/10",
       )}
-      onDragOver={(event) => handleDragOver(event, { type: "root" }, actions)}
-      onDrop={(event) => handleDrop(event, { type: "root" }, actions)}
     />
   );
 }

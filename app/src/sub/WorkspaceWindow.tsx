@@ -1,5 +1,12 @@
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import WorkspaceMoveCopyDialog, { type WorkspaceMoveCopyMode } from "@/components/workspace/WorkspaceMoveCopyDialog";
 import WorkspaceTree, {
@@ -39,6 +46,7 @@ import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import i18next from "i18next";
 import { useAtom } from "jotai";
 import {
+  ArrowUpDown,
   Copy,
   FilePlus,
   FolderOpen,
@@ -73,6 +81,7 @@ export default function WorkspaceWindow() {
   const { t } = useTranslation("workspace");
   const [activeTab] = useAtom(activeResourceTabAtom);
   const [root] = Settings.use("activeWorkspaceRoot");
+  const [sortMode, setSortMode] = Settings.use("workspaceSortMode");
   const [tree, setTree] = useState<WorkspaceNode[]>([]);
   const [collapsedDirs, setCollapsedDirs] = useState<ReadonlySet<string>>(new Set());
   const [versionCounts, setVersionCounts] = useState<ReadonlyMap<string, number>>(new Map());
@@ -424,6 +433,12 @@ export default function WorkspaceWindow() {
       deleteNode: (node: WorkspaceNode) => {
         confirmDelete(node).catch(reportWorkspaceError);
       },
+      moveUp: (path: string) => {
+        WorkspaceManager.moveUp(path).catch(reportWorkspaceError);
+      },
+      moveDown: (path: string) => {
+        WorkspaceManager.moveDown(path).catch(reportWorkspaceError);
+      },
       cutNode: (node: WorkspaceNode) => {
         cutOrCopy(node, "cut");
       },
@@ -558,6 +573,33 @@ export default function WorkspaceWindow() {
         <span className="min-w-0 flex-1 truncate text-xs font-medium" title={root}>
           {rootName}
         </span>
+        <DropdownMenu>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <Button size="icon" variant="ghost" className="size-6">
+                  <ArrowUpDown className="size-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent>{sortMode === "custom" ? t("dragHint") : t("sortLockedHint")}</TooltipContent>
+          </Tooltip>
+          <DropdownMenuContent align="start">
+            <DropdownMenuRadioGroup
+              value={sortMode}
+              onValueChange={(value) => {
+                setSortMode(value as typeof sortMode);
+                // 树是按 Settings 里的模式排的，换模式后要重新读一遍
+                refresh().catch(reportWorkspaceError);
+              }}
+            >
+              <DropdownMenuRadioItem value="custom">{t("sortCustom")}</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="name">{t("sortName")}</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="createdAt">{t("sortCreatedAt")}</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="modifiedAt">{t("sortModifiedAt")}</DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <Tooltip>
           <TooltipTrigger asChild>
             <Button size="icon" variant="ghost" className="size-6" onClick={() => actions.refresh()}>
@@ -656,6 +698,7 @@ export default function WorkspaceWindow() {
           versionCounts={versionCounts}
           selectedPaths={selectedPaths}
           dropTarget={dropTarget}
+          manualOrder={sortMode === "custom"}
           actions={actions}
         />
       </div>
