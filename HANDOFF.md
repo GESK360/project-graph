@@ -1,13 +1,15 @@
 # Flux Graph 交接文档
 
 > 给下一个对话窗口用的。读完这份就能接手，不用重新摸索。
-> 最后更新：2026-11-17 21:42（Asia/Shanghai）
+> 最后更新：2026-11-18 10:25（Asia/Shanghai）
 
 ---
 
 ## 0. 一句话现状
 
-Flux Graph 是 **GESK360 对 graphif/project-graph 的 fork**，已经把「节点链接」这条链路从扩展插件重做进了软件本体（Rust），并在 Windows 上编译、打包、发版完成。当前 `master` 干净，没有未提交改动。
+Flux Graph 是 **GESK360 对 graphif/project-graph 的 fork**，已经把「节点链接」这条链路从扩展插件重做进了软件本体（Rust），并在 Windows 上编译、打包、发版完成。
+
+节点链接现已支持两种：**绝对路径**（原「复制节点链接」，已改名）与**相对路径**（新增，文件移动/改名后仍可用）。当前 `master` 干净。
 
 ---
 
@@ -131,6 +133,48 @@ let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd
 - `app/index.html` 的 `<title>`
 - `plugins.deep-link.desktop.schemes` = `["prg", "flux"]`
 
+### 3.6 节点链接：相对路径（2026-11-18 新增）
+
+**需求**：绝对链接在 .prg 被移动或改名后就失效，需要一个能扛住移动/改名的链接；原有复制链接保留但改名为「复制节点绝对路径链接」，新的放它右侧，叫「复制节点相对路径链接」。
+
+**关键判断**：纯相对路径只能扛住「整个文件夹一起搬」，**扛不住单个文件改名**——因为相对路径里就带着文件名。所以相对链接里额外写了两项：
+
+| 参数     | 作用                                                         |
+| -------- | ------------------------------------------------------------ |
+| `path`   | 相对路径（相对工作空间根目录，同一工作空间内跨子目录也成立） |
+| `doc`    | **文档身份 docId**，存在 .prg 的 metadata 里，永不随路径变化 |
+| `name`   | 文件名提示，只用于加速查找，最终以 docId 为准                |
+| `target` | 节点 uuid                                                    |
+
+**解析顺序**（`resolvePrgPath`）：
+
+1. 绝对路径存在 → 直接用（兼容老链接）
+2. 相对路径按候选基准目录换算（当前工作空间 → 历史工作空间 → 最近文件所在目录），命中即用 → **扛住整个文件夹搬家**
+3. 都不行 → 按 `doc` 在工作空间/最近目录里递归找 .prg，读每个文件的 `metadata.msgpack` 比对 → **扛住文件移动和改名**
+
+**节点定位**：`applyCameraParams` 改用 `project.stageManager.get(uuid)`，按 uuid 定位，与节点文本内容、位置、类型变化无关。
+
+**docId 生命周期**：
+
+- `PrgMetadata` 新增可选字段 `docId`（`app/src/types/metadata.tsx`）
+- `Project.docId` getter（`app/src/core/Project.tsx:379`）首次访问时生成 `crypto.randomUUID()` 并写进 metadata
+- 保存时 `getFileContent()` 里 `void this.docId` 触发补全，随 `metadata.msgpack` 落盘
+- `Project.docIdNeedsSave` 标记新生成但未落盘；相对链接动作遇到它会提示「请保存一次本工程」（没落盘的 docId 救不了改名）
+- **工作空间改名用的是文件系统 `rename`**（`WorkspaceManager.ts:633`），文件内容不变，所以 docId 天然保持不变——这是整个方案成立的前提
+
+**踩过的坑**：
+
+- `PathString.getRelativePath` 是「文件 → 文件」语义（会把最后一段当文件名砍掉），基准是目录时算出来是错的。这次单独实现了 `relativePathFromDir` / `resolveAgainstDir` 一对互逆函数（均从 `DeepLinkHandler.ts` 导出，有测试）
+- 相对路径统一带 `./` 或 `../` 前缀，避免被当成模糊文件名
+- 跨盘符无法表达相对路径，`relativePathFromDir` 返回 `null`，动作里会提示
+
+**测试**（`pnpm exec vitest run src/core/service/dataFileService/`，19 passed）：
+
+- `DeepLinkPath.test.ts`（12 例）：相对路径换算与还原、正反斜杠、盘符大小写、跨盘符、互逆性
+- `DeepLinkDocId.test.ts`（5 例）：用真实临时目录 + 真实 zip，验证**改名后**、**移到子目录后**仍能按 docId 找回，以及同名文件精确区分
+
+**注意**：测试文件里必须 `vi.mock` 掉 `@/core/service/Settings`、`RecentFileManager`、`GlobalMenu`、`@tauri-apps/plugin-fs`、`@tauri-apps/api/core`、`sonner`，否则 import 链会拉起真实的 Tauri runtime 报错。另外测试要 `// @vitest-environment jsdom`。
+
 ---
 
 ## 4. 已实测 / 未实测（别把未测当已测）
@@ -168,6 +212,8 @@ let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd
 | 想改什么                        | 去哪个文件                                                                                    |
 | ------------------------------- | --------------------------------------------------------------------------------------------- |
 | 深链接格式 / 解析 / 定位        | `app/src/core/service/dataFileService/DeepLinkHandler.ts`                                     |
+| 相对路径换算 / docId 反查       | 同上（`relativePathFromDir` / `resolveAgainstDir` / `findFileByDocId` / `readPrgDocId`）      |
+| .prg 元数据字段                 | `app/src/types/metadata.tsx`、`app/src/core/Project.tsx`（`docId` getter）                    |
 | 深链接启动流程、onOpenUrl       | `app/src/main.tsx` → `loadStartFile()`                                                        |
 | 单实例转发、窗口置前、双击 .prg | `app/src-tauri/src/lib.rs`                                                                    |
 | 快捷键动作（含复制节点链接）    | `app/src/core/service/controlService/shortcutKeysEngine/shortcutKeysRegister.tsx`             |
@@ -219,6 +265,8 @@ gh release create flux-vX.Y.Z --repo GESK360/project-graph --target master --tit
 - exe 名仍是 `project-graph.exe`。要改成 `flux-graph.exe` 得同时动 Cargo crate 名、`app/scripts/prepare-bundle.js` 的 `SECONDARY_BINS`、`app/scripts/materialize-cli.ts`、`app/src/cli/project-graph-production.ts` 里写死的 `project-graph-ownership-helper` 路径常量，以及 `project_runtime_bridge.rs:414`。收益不抵风险。
 - `bundle.updater` 的 endpoint 仍指向上游 release 服务器。`checkUpdate()`（`app/src/utils/updater.tsx`）在代码里**没有任何调用点**，所以不会自动更新覆盖 fork。真要接自动更新得换 endpoint 并配签名密钥。
 - 冷启动（软件未运行）点链接走上游原有流程，不经过插件。
+- 相对链接的 docId 反查要**逐个读 .prg 的 metadata**，工作空间文件很多时首次失效查找会慢（有 name 提示会好一些）。没做索引缓存。
+- 相对链接只在工作空间或最近文件所在目录范围内反查，不扫全盘；把文件移到完全无关且不在最近文件里的目录就找不回来。
 
 用户提过的下一步（原话留档）：
 
