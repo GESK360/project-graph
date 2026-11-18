@@ -345,6 +345,7 @@ export const settingsSchema = z.object({
           { type: "item", id: "undo", icon: "Undo" },
           { type: "item", id: "changeTagBySelected", icon: "Tag" },
           { type: "item", id: "copySelectedEntityPrgDeepLink", icon: "Link" },
+          { type: "item", id: "copySelectedEntityPrgRelativeLink", icon: "FolderSymlink" },
         ],
       },
       {
@@ -719,6 +720,7 @@ export const settingsSchema = z.object({
                 children: [
                   { type: "item", id: "exportCurrentViewPrgDeepLink", icon: "View" },
                   { type: "item", id: "exportSelectedEntityPrgDeepLink", icon: "MousePointer2" },
+                  { type: "item", id: "copySelectedEntityPrgRelativeLink", icon: "FolderSymlink" },
                   { type: "item", id: "copySelectedEntityPrgDeepLink", icon: "Link" },
                   { type: "item", id: "exportCurrentFilePrgDeepLink", icon: "Link" },
                 ],

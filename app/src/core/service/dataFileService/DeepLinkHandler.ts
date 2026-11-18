@@ -1,16 +1,26 @@
 import { RecentFileManager } from "./RecentFileManager";
 import { onOpenFile } from "../GlobalMenu";
 import { URI } from "vscode-uri";
-import { exists } from "@tauri-apps/plugin-fs";
+import { exists, readFile } from "@tauri-apps/plugin-fs";
+import { Decoder } from "@msgpack/msgpack";
+import { Uint8ArrayReader, Uint8ArrayWriter, ZipReader } from "@zip.js/zip.js";
+import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { Project } from "@/core/Project";
+import { Settings } from "@/core/service/Settings";
 
 interface DeepLinkParams {
   path: string;
   location?: { x: number; y: number };
   zoom?: number;
   target?: string;
+  /** 文档身份，用于文件被移动/改名后重新定位 */
+  doc?: string;
+  /** 文档的显示名（不含扩展名），仅在按 doc 反查时用作提示 */
+  name?: string;
 }
+
+export type EntityLinkMode = "absolute" | "relative";
 
 /**
  * 同一条链接可能被投递两次：热启动时 deep-link 插件既会触发 deep-link://new-url 事件，
@@ -38,6 +48,12 @@ export function isProjectGraphDeepLink(input: string) {
 function buildProjectGraphUrl(params: DeepLinkParams) {
   const queryEntries: string[] = [];
   queryEntries.push(`path=${encodeReadableQueryValue(params.path)}`);
+  if (params.doc) {
+    queryEntries.push(`doc=${encodeReadableQueryValue(params.doc)}`);
+  }
+  if (params.name) {
+    queryEntries.push(`name=${encodeReadableQueryValue(params.name)}`);
+  }
   if (params.target) {
     queryEntries.push(`target=${encodeReadableQueryValue(params.target)}`);
   }
@@ -88,6 +104,10 @@ export function createCurrentViewDeepLink(project: Project) {
   });
 }
 
+/**
+ * 复制节点绝对路径链接：path 写死当前文件的绝对路径。
+ * 文件一旦被移动或改名，链接就会指向不存在的位置。
+ */
 export function createSelectedEntityDeepLink(project: Project) {
   const selectedEntities = project.stageManager.getSelectedEntities();
   if (selectedEntities.length !== 1) return null;
@@ -95,6 +115,123 @@ export function createSelectedEntityDeepLink(project: Project) {
     path: project.uri.fsPath,
     target: selectedEntities[0].uuid,
   });
+}
+
+/**
+ * 复制节点相对路径链接。
+ *
+ * 单纯写相对路径只能扛住"整个文件夹一起搬"，扛不住文件改名——改名后相对路径里的
+ * 文件名也变了。所以这里同时写出 doc（文档身份）和 name（当前文件名）：
+ * 解析时先用 path 相对定位，定位不到就按 doc 在附近目录里反查同名/同身份的 .prg。
+ *
+ * @param baseDir 相对路径的基准目录。工作空间内传工作空间根目录，
+ *   这样同一个工作空间内的链接在任意子目录之间都成立。
+ */
+export function createSelectedEntityRelativeLink(project: Project, baseDir: string) {
+  const selectedEntities = project.stageManager.getSelectedEntities();
+  if (selectedEntities.length !== 1) return null;
+  const absolutePath = project.uri.fsPath;
+  const relative = relativePathFromDir(baseDir, absolutePath);
+  if (!relative) return null;
+  return buildProjectGraphUrl({
+    path: relative,
+    doc: project.docId,
+    name: baseNameWithoutPrg(absolutePath),
+    target: selectedEntities[0].uuid,
+  });
+}
+
+/** 把路径拆成「盘符 + 各级目录」，Windows 盘符统一小写，方便跨盘判断 */
+function splitPathParts(path: string): { drive: string; parts: string[] } {
+  const normalized = path.replace(/\\/g, "/");
+  const driveMatch = normalized.match(/^([a-zA-Z]:)\//);
+  const drive = driveMatch ? driveMatch[1].toLowerCase() : "";
+  const rest = driveMatch ? normalized.slice(driveMatch[0].length) : normalized;
+  return { drive, parts: rest.split("/").filter((part) => part !== "" && part !== ".") };
+}
+
+function baseNameWithoutPrg(path: string) {
+  const base = path.replace(/\\/g, "/").split("/").pop() ?? "";
+  return base.replace(/\.prg$/i, "");
+}
+
+/**
+ * 目录 → 文件的相对路径，统一用正斜杠。
+ * PathString.getRelativePath 是按「文件 → 文件」写的（会砍掉最后一段当文件名），
+ * 基准是目录时不能直接用，所以这里单独实现。
+ * 跨盘符无法表达相对路径，返回 null。
+ */
+export function relativePathFromDir(baseDir: string, targetPath: string): string | null {
+  const base = splitPathParts(baseDir);
+  const target = splitPathParts(targetPath);
+  if (base.drive !== target.drive) return null;
+
+  let common = 0;
+  while (common < base.parts.length && common < target.parts.length && base.parts[common] === target.parts[common]) {
+    common++;
+  }
+
+  const up = new Array(base.parts.length - common).fill("..") as string[];
+  const down = target.parts.slice(common);
+  const segments = [...up, ...down];
+  if (segments.length === 0) return null;
+  // 同一目录下的文件也要带 ./ 前缀，避免被当成相对「当前目录」的模糊名
+  return segments[0] === ".." ? segments.join("/") : "./" + segments.join("/");
+}
+
+/** 读取一个 .prg 的 metadata，只解 zip 里的 metadata.msgpack，不加载整个工程 */
+export async function readPrgDocId(fsPath: string): Promise<string | undefined> {
+  try {
+    const content = await readFile(fsPath);
+    const reader = new ZipReader(new Uint8ArrayReader(content));
+    try {
+      const entries = await reader.getEntries();
+      const entry = entries.find((it) => it.filename === "metadata.msgpack");
+      if (!entry || !("getData" in entry) || typeof entry.getData !== "function") return undefined;
+      const raw = await entry.getData(new Uint8ArrayWriter());
+      const metadata = new Decoder().decode(raw) as { docId?: string } | undefined;
+      return metadata?.docId;
+    } finally {
+      await reader.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+/** 在若干根目录里递归找 .prg，返回全部路径 */
+async function listPrgFilesUnder(root: string): Promise<string[]> {
+  if (!(await exists(root))) return [];
+  try {
+    return await invoke<string[]>("read_folder_recursive", { path: root, fileExts: [".prg"] });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 按文档身份反查文件。用于链接里的相对路径已失效（文件被移动或改名）的情况。
+ *
+ * 只在工作空间/最近文件所在目录这些「附近」范围里找，不扫全盘。
+ * 先试文件名与链接里 name 一致的候选（改名后这个提示会失效，属正常退化），
+ * 再逐个读 metadata。name 只是加速用的提示，最终以 docId 为准，
+ * 所以两个文件同名也不会认错。
+ */
+export async function findFileByDocId(docId: string, searchRoots: string[], nameHint?: string): Promise<string | null> {
+  const candidates: string[] = [];
+  for (const root of searchRoots) {
+    for (const file of await listPrgFilesUnder(root)) {
+      if (!candidates.includes(file)) candidates.push(file);
+    }
+  }
+
+  const hinted = nameHint ? candidates.filter((file) => baseNameWithoutPrg(file) === nameHint) : [];
+  for (const candidate of [...hinted, ...candidates]) {
+    if ((await readPrgDocId(candidate)) === docId) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 async function normalizeFilePath(rawPath: string): Promise<string | null> {
@@ -162,6 +299,16 @@ function parseProjectGraphUrl(url: string): DeepLinkParams | null {
       : parsed.pathname);
   const result: DeepLinkParams = { path: rawPath };
 
+  const doc = params.get("doc");
+  if (doc) {
+    result.doc = doc;
+  }
+
+  const name = params.get("name");
+  if (name) {
+    result.name = name;
+  }
+
   const target = params.get("target");
   if (target) {
     result.target = target;
@@ -192,13 +339,14 @@ function parseProjectGraphUrl(url: string): DeepLinkParams | null {
 
 function applyCameraParams(project: Project, params: DeepLinkParams) {
   if (params.target) {
-    const entity = project.stageManager.getEntities().find((e) => e.uuid === params.target);
+    // 按 uuid 定位，与节点的文本内容、位置、类型变化无关
+    const entity = project.stageManager.get(params.target);
     if (entity) {
       const rect = entity.collisionBox.getRectangle();
       project.camera.resetByRectangle(rect);
       return;
     }
-    toast.warning("未找到 UUID 为 " + params.target + " 的实体");
+    toast.warning("未找到 UUID 为 " + params.target + " 的实体，可能该节点已被删除");
     return;
   }
 
@@ -218,6 +366,83 @@ function applyCameraParams(project: Project, params: DeepLinkParams) {
   }
 }
 
+/**
+ * 解析链接里指向的 .prg。
+ *
+ * 顺序很重要：
+ * 1. 绝对路径存在 → 直接用（老的绝对链接、以及相对链接里基准目录恰好对上的情况）
+ * 2. 相对路径 → 按候选基准目录逐个换算成绝对路径
+ * 3. 都不行 → 用 doc 身份在附近目录里反查（扛住文件被移动/改名）
+ */
+async function resolvePrgPath(params: DeepLinkParams): Promise<string | null> {
+  const isRelative = !params.path.startsWith("/") && !/^[A-Za-z]:/.test(params.path);
+
+  if (!isRelative) {
+    // 绝对路径（老链接）：存在就用，不存在时仍有 doc 可救
+    const direct = await normalizeFilePath(params.path);
+    if (direct) return direct;
+    return params.doc ? await findFileByDocId(params.doc, await candidateRoots(), params.name) : null;
+  }
+
+  const roots = await candidateRoots();
+
+  // 相对路径按每个候选基准目录换算，命中即用。
+  // 这一步能扛住「整个文件夹搬走」——只要相对位置没变就还能对上。
+  for (const root of roots) {
+    const candidate = resolveAgainstDir(root, params.path);
+    if (candidate && (await exists(candidate))) return candidate;
+  }
+
+  // 相对路径失效（文件被移动或改名）→ 按文档身份反查，这是改名后仍可用的关键
+  if (params.doc) {
+    const byDoc = await findFileByDocId(params.doc, roots, params.name);
+    if (byDoc) return byDoc;
+  }
+
+  return null;
+}
+
+/**
+ * 候选基准目录：当前工作空间 → 历史工作空间 → 最近文件的所在目录。
+ * 最后一项让没用过工作空间的人也能打开相对链接。
+ */
+async function candidateRoots(): Promise<string[]> {
+  const roots = [Settings.activeWorkspaceRoot, ...Settings.workspaceRoots].filter((it) => Boolean(it)).map(joinPath);
+
+  const recentFiles = await RecentFileManager.getRecentFiles();
+  for (const file of recentFiles) {
+    const dir = joinPath(file.uri.fsPath.replace(/[\\/][^\\/]*$/, ""));
+    if (dir && !roots.includes(dir)) roots.push(dir);
+  }
+  return roots;
+}
+
+function joinPath(path: string) {
+  const normalized = path.replace(/\\/g, "/");
+  return normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized;
+}
+
+/** 目录 + 相对路径 → 绝对路径；跨盘符等无法解析时返回 null */
+export function resolveAgainstDir(baseDir: string, relativePath: string): string | null {
+  const base = splitPathParts(baseDir);
+  const segments = relativePath
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((part) => part !== "" && part !== ".");
+  const merged = [...base.parts];
+  for (const segment of segments) {
+    if (segment === "..") {
+      if (merged.length === 0) return null;
+      merged.pop();
+    } else {
+      merged.push(segment);
+    }
+  }
+  if (merged.length === 0) return null;
+  const drivePrefix = base.drive ? base.drive + "/" : "/";
+  return drivePrefix + merged.join("/");
+}
+
 export async function handleDeepLink(urls: string[]) {
   for (const url of urls) {
     if (!isProjectGraphDeepLink(url)) continue;
@@ -231,7 +456,7 @@ export async function handleDeepLink(urls: string[]) {
       continue;
     }
 
-    const resolvedPath = await normalizeFilePath(params.path);
+    const resolvedPath = await resolvePrgPath(params);
     if (!resolvedPath) {
       toast.error("文件不存在: " + params.path);
       continue;

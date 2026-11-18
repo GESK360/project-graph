@@ -2047,8 +2047,11 @@ keyBinds:
       Can be pasted in editors that support Mermaid
       Default shortcut note: shift e where e stands for Export, n stands for Network, m stands for Mermaid
   copySelectedEntityPrgDeepLink:
-    title: Copy Node Link
-    description: Copy the prg protocol link of the selected object to the clipboard
+    title: Copy Node Absolute Path Link
+    description: Copy the prg protocol link of the selected object to the clipboard, using the absolute path of the project file
+  copySelectedEntityPrgRelativeLink:
+    title: Copy Node Relative Path Link
+    description: Copy a relative-path link to the selected object, still working after the project file is moved or renamed
   
 effects:
   RectangleLittleNoteEffect:
@@ -2358,8 +2361,11 @@ controlSettingsGroup:
     title: Export Selected Object prg Link
     description: Export a prg protocol link targeting the currently selected object
   copySelectedEntityPrgDeepLink:
-    title: Copy Node Link
-    description: Copy the prg protocol link of the selected object to the clipboard
+    title: Copy Node Absolute Path Link
+    description: Copy the prg protocol link of the selected object to the clipboard, using the absolute path of the project file
+  copySelectedEntityPrgRelativeLink:
+    title: Copy Node Relative Path Link
+    description: Copy a relative-path link to the selected object, still working after the project file is moved or renamed
   exportCurrentFilePrgDeepLink:
     title: Export Current File prg Link
     description: Export a prg protocol link for the current file

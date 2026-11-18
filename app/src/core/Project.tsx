@@ -343,6 +343,7 @@ export class Project extends Tab {
     try {
       this.isSaving = true;
       await this.fs.write(this.uri, await this.getFileContent(options));
+      this.docIdNeedsSave = false;
       this.projectState = ProjectState.Saved;
     } finally {
       this.isSaving = false;
@@ -358,6 +359,7 @@ export class Project extends Tab {
       this.isSaving = true;
       const content = await this.getFileContent(options);
       await this.projectOwnership.saveAs(targetUri, () => fileSystemProvider.write(targetUri, content));
+      this.docIdNeedsSave = false;
       this.projectState = ProjectState.Saved;
     } finally {
       this.isSaving = false;
@@ -370,9 +372,30 @@ export class Project extends Tab {
   public readme?: string;
   public wasUpgraded = false;
 
+  /**
+   * 文档身份。老文件没有 docId，第一次被保存时补一个并随 metadata 写回，
+   * 之后永久复用，节点相对链接依赖它在文件移动/改名后重新找到本文件。
+   */
+  get docId(): string {
+    const existing = this.metadata.docId;
+    if (existing) return existing;
+    const created = crypto.randomUUID();
+    this.metadata = { ...this.metadata, docId: created };
+    this.docIdNeedsSave = true;
+    return created;
+  }
+
+  /**
+   * docId 是本次新生成、还没写进文件。
+   * 相对链接靠 docId 扛住改名，没落盘的话改名后反查会失败，所以复制时要提示用户保存。
+   */
+  public docIdNeedsSave = false;
+
   // 备份也要用到这个
   async getFileContent(options: { includeThumbnail?: boolean } = {}) {
     const includeThumbnail = options.includeThumbnail !== false;
+    // 触发一次 docId，保证老文件在被保存时补上身份并随 metadata 落盘
+    void this.docId;
     const serializedStage = serialize(this.stage);
     const encodedStage = this.encoder.encode(serializedStage);
     const uwriter = new Uint8ArrayWriter();

@@ -179,6 +179,7 @@ settings:
       autoSave: 自動保存
       autoBackup: 自動備份
       autoImport: 自動導入
+      workspace: 工作空間
     control:
       title: 控制
       mouse: 鼠標
@@ -657,6 +658,21 @@ settings:
     title: 開啟自動保存間隔（秒）
     description: |
       注意：目前計時時間僅在軟件窗口激活時計時，軟件最小化後不會計時。
+  autoSaveOnSwitch:
+    title: 切換頁面時自動保存
+    description: |
+      從工作空間文件樹切換到另一個頁面時，自動保存當前頁面
+      只對已保存到磁盤的工程生效，草稿與協作工程不受影響
+  workspaceVersionHistory:
+    title: 記錄工作空間頁面版本
+    description: |
+      保存頁面時在工作空間的 .flux-graph/history 目錄留一份快照
+      可在文件樹的“顯示頁面版本”裡查看與恢復
+  activeWorkspaceRoot:
+    title: 當前工作空間目錄
+    description: |
+      工作空間文件樹使用的根目錄
+      一般通過“文件 → 打開工作空間”設置，也可手動填寫絕對路徑
   clearHistoryWhenManualSave:
     title: 使用快捷鍵手動保存時，自動清空歷史記錄
     description: |
@@ -1545,6 +1561,18 @@ keyBinds:
     description: |
       在系統文件管理器中打開當前工程文件所在的文件夾
       當前文件為草稿時不可用
+  openWorkspace:
+    title: 打開工作空間
+    description: |
+      選擇一個本地文件夾作為工作空間，左側文件樹會展示其中的 prg 文件
+      工作空間裡的新建、刪除、重命名會直接作用到磁盤上的文件
+  closeWorkspace:
+    title: 關閉工作空間
+    description: |
+      關閉當前工作空間，左側文件樹清空，不會刪除任何文件
+  toggleWorkspacePanel:
+    title: 顯示/隱藏工作空間面板
+    description: 切換左側工作空間文件樹的顯示狀態
   undo:
     title: 撤銷
     description: 撤銷上一次操作
@@ -2517,6 +2545,12 @@ keyBinds:
   exportSelectedEntityPrgDeepLink:
     title: 導出當前選中物體的prg協議鏈接（有bug）
     description: 導出帶有當前選中物體定位信息的 prg 協議鏈接，目前有已知問題
+  copySelectedEntityPrgDeepLink:
+    title: 複製節點絕對路徑鏈接
+    description: 將當前選中物體對應的 prg 協議鏈接複製到剪貼板，鏈接裡寫的是工程文件的絕對路徑
+  copySelectedEntityPrgRelativeLink:
+    title: 複製節點相對路徑鏈接
+    description: 複製指向當前選中物體的相對路徑鏈接，工程文件移動或改名後仍可用
   exportCurrentFilePrgDeepLink:
     title: 導出當前文件的prg協議鏈接
     description: 導出當前文件的 prg 協議鏈接
@@ -2733,6 +2767,72 @@ keyBinds:
 
 sounds:
   soundEnabled: 音效開關
+
+workspace:
+  title: 工作空間
+  openFolder: 打開文件夾
+  emptyHint: |
+    還沒有打開工作空間
+    選擇一個文件夾，裡面的 prg 文件會顯示在這裡
+  newPage: 新建頁面
+  rename: 重命名
+  delete: 刪除
+  cut: 剪切
+  copy: 複製
+  paste: 粘貼
+  copyLink: 複製指向頁面的鏈接
+  moveOrCopy: 移動或複製…
+  demote: 降級子頁
+  promote: 升級子頁
+  collapse: 摺疊子頁
+  showVersions: 顯示頁面版本
+  refresh: 刷新
+  revealInExplorer: 在資源管理器中顯示
+  closeWorkspace: 關閉工作空間
+  move: 移動
+  copyMode: 複製
+  targetFolder: 目標文件夾
+  newFolder: 新建文件夾…
+  confirm: 確定
+  cancel: 取消
+  unnamedPage: 未命名頁面
+  deleteConfirmTitle: 刪除頁面
+  deleteConfirmBody: |
+    確定要刪除「{{name}}」嗎？
+    文件會從磁盤上直接刪除，且不可恢復。
+  newFolderName: 新建文件夾
+  createFolder: 新建文件夾
+  folderCreated: 已新建文件夾
+  renameFolder: 重命名文件夾
+  deleteFolderTitle: 刪除文件夾
+  deleteFolderBody: |
+    確定要刪除文件夾「{{name}}」嗎？
+    裡面的所有頁面和子文件夾會一起從磁盤刪除，且不可恢復。
+  dragInvalidTarget: 不能把文件夾移動到它自己裡面
+  selectedCount: 已選 {{count}} 項
+  moveMany: 移動所選
+  copyMany: 複製所選
+  deleteManyTitle: 刪除所選項目
+  deleteManyBody: |
+    確定要刪除所選的 {{count}} 項嗎？
+    文件會從磁盤上直接刪除，且不可恢復。
+  reorderFailed: 調整順序失敗
+  versionsEmpty: 這個頁面還沒有歷史版本
+  restore: 恢復此版本
+  openAsCopy: 作為副本打開
+  versionRestored: 已恢復到所選版本
+  linkCopied: 已複製頁面鏈接
+  pageCreated: 已新建頁面
+  nameRequired: 請輸入頁面名稱
+  invalidName: '文件名不能包含以下字符：\ / : * ? " < > |'
+  demoteUnavailable: 上一個頁面不存在，無法降級
+  promoteUnavailable: 該頁面已在根層級，無法升級
+  dirUnreadable: 無法讀取目錄：{{name}}
+  watchUnavailable: 工作空間變動監聽不可用，需要手動刷新
+  autoSaveFailed: 自動保存失敗
+  versionSnapshotFailed: 歷史版本快照寫入失敗
+  notAWorkspace: 所選文件夾不可用
+  rootMissing: 工作空間目錄已不存在
 
 common:
   editModeHint:

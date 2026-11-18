@@ -1582,8 +1582,11 @@ controlSettingsGroup:
     title: Ekspor Tautan prg Objek Terpilih
     description: Ekspor tautan protokol prg yang menargetkan objek yang sedang dipilih
   copySelectedEntityPrgDeepLink:
-    title: Salin Tautan Node
-    description: Salin tautan protokol prg objek terpilih ke clipboard
+    title: Salin Tautan Node (Jalur Absolut)
+    description: Salin tautan protokol prg objek terpilih ke clipboard menggunakan jalur absolut berkas proyek
+  copySelectedEntityPrgRelativeLink:
+    title: Salin Tautan Node (Jalur Relatif)
+    description: Salin tautan jalur relatif ke objek terpilih, tetap berfungsi setelah berkas proyek dipindah atau diganti nama
   exportCurrentFilePrgDeepLink:
     title: Ekspor Tautan prg File Saat Ini
     description: Ekspor tautan protokol prg untuk file saat ini
@@ -2532,8 +2535,11 @@ keyBinds:
       Dapat ditempel di editor yang mendukung Mermaid
       Catatan tombol pintas default: shift e di mana e singkatan dari Export (ekspor), n singkatan dari Network (jaringan), m singkatan dari Mermaid
   copySelectedEntityPrgDeepLink:
-    title: Salin Tautan Node
-    description: Salin tautan protokol prg objek terpilih ke clipboard
+    title: Salin Tautan Node (Jalur Absolut)
+    description: Salin tautan protokol prg objek terpilih ke clipboard menggunakan jalur absolut berkas proyek
+  copySelectedEntityPrgRelativeLink:
+    title: Salin Tautan Node (Jalur Relatif)
+    description: Salin tautan jalur relatif ke objek terpilih, tetap berfungsi setelah berkas proyek dipindah atau diganti nama
 
 sounds:
   soundEnabled: Sakelar Suara

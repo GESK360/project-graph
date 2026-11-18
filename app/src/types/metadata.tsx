@@ -23,6 +23,13 @@ export interface PrgMetadata {
   version: string;
 
   /**
+   * 文档身份，首次保存时生成，此后永久不变。
+   * 节点相对链接靠它在文件被移动或改名后仍能找到原文档，
+   * 因此这里不随路径变化，也不随内容变化。
+   */
+  docId?: string;
+
+  /**
    * 扩展（插件）元数据，如果是插件类型的prg则包含此字段
    */
   extension?: ExtensionMetadata;

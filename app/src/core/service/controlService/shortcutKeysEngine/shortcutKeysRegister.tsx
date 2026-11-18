@@ -148,6 +148,7 @@ import {
   Focus,
   Folder,
   FolderClock,
+  FolderSymlink,
   FolderCog,
   FolderOpen,
   FolderPlus,
@@ -253,6 +254,7 @@ import {
   createCurrentFileDeepLink,
   createCurrentViewDeepLink,
   createSelectedEntityDeepLink,
+  createSelectedEntityRelativeLink,
 } from "../../dataFileService/DeepLinkHandler";
 import { RecentFileManager } from "../../dataFileService/RecentFileManager";
 import { generateKeyboardLayout } from "../../dataGenerateService/generateFromFolderEngine/GenerateFromFolderEngine";
@@ -1544,7 +1546,48 @@ export const allKeyBinds: KeyBindItem[] = [
       const url = createSelectedEntityDeepLink(project);
       if (!url) return;
       writeText(url);
-      toast.success("已复制节点链接");
+      toast.success("已复制节点绝对路径链接");
+    },
+  },
+  {
+    id: "copySelectedEntityPrgRelativeLink",
+    defaultKey: "",
+    icon: FolderSymlink,
+    when: whenHasProject,
+    onPress: async (project) => {
+      if (!project) {
+        toast.warning("请先打开工程文件");
+        return;
+      }
+      if (project.isDraft) {
+        await showDraftCannotExportDeepLinkDialog();
+        return;
+      }
+      const selectedEntities = project.stageManager.getSelectedEntities();
+      if (selectedEntities.length === 0) {
+        toast.warning("请先选中一个物体");
+        return;
+      }
+      if (selectedEntities.length > 1) {
+        toast.warning("只能复制一个选中物体的链接");
+        return;
+      }
+      // 基准目录优先用工作空间根目录：这样同一工作空间内不同子目录之间也能互相跳转。
+      // 没开工作空间时退回工程文件所在目录，相对路径依然成立（只是换成以本文件为原点）。
+      const baseDir = Settings.activeWorkspaceRoot || project.uri.fsPath.replace(/[\\/][^\\/]*$/, "");
+      if (!baseDir) {
+        toast.warning("无法确定相对路径的基准目录");
+        return;
+      }
+      const url = createSelectedEntityRelativeLink(project, baseDir);
+      if (!url) return;
+      writeText(url);
+      if (project.docIdNeedsSave) {
+        // docId 还没落盘：此时改名会让链接失去唯一的重新定位依据
+        toast.warning("已复制节点相对路径链接，请保存一次本工程，链接才能在文件改名后继续有效");
+        return;
+      }
+      toast.success("已复制节点相对路径链接");
     },
   },
   {
