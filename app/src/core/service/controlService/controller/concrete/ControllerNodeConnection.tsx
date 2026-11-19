@@ -78,6 +78,7 @@ export class ControllerNodeConnectionClass extends ControllerClass {
   private _lastRightMousePressLocation: Vector = new Vector(0, 0);
 
   private _isUsing: boolean = false;
+  private selectedDragTargets: ConnectableEntity[] = [];
   public get isUsing(): boolean {
     return this._isUsing;
   }
@@ -130,6 +131,7 @@ export class ControllerNodeConnectionClass extends ControllerClass {
 
     // 选中这个质点
     this.project.stageManager.clearSelectAll();
+    this.selectedDragTargets = [];
     // connectPoint.isSelected = true;
   }
 
@@ -221,7 +223,7 @@ export class ControllerNodeConnectionClass extends ControllerClass {
     /**
      * 有两种情况：
      * 1. 从框选的节点开始右键拖拽连线，此时需要触发多重连接
-     * 2. 从没有框选的节点开始右键拖拽连线，此时不需要触发多重连接
+     * 2. 从未选中的节点开始拖拽，只在拖到选中节点时批量连接目标
      * ┌───┐┌───┐       ┌───┐┌───┐
      * │┌─┐││┌─┐│ ┌─┐   │┌─┐││┌─┐│ ┌─┐
      * │└─┘││└─┘│ └─┘   │└─┘││└─┘│ └┬┘
@@ -233,6 +235,7 @@ export class ControllerNodeConnectionClass extends ControllerClass {
      * 右边的方法还是有用的，减少了一步提前框选的操作。
      */
     if (this.connectFromEntities.includes(clickedConnectableEntity)) {
+      this.selectedDragTargets = [];
       // 多重连接
       for (const node of this.project.stageManager.getConnectableEntity()) {
         if (node.isSelected) {
@@ -247,8 +250,7 @@ export class ControllerNodeConnectionClass extends ControllerClass {
         }
       }
     } else {
-      // 不触发多重连接
-      // 只触发一次连接
+      this.selectedDragTargets = this.connectFromEntities;
       this.connectFromEntities = [clickedConnectableEntity];
       // 特效
       this.project.effects.addEffect(
@@ -382,35 +384,22 @@ export class ControllerNodeConnectionClass extends ControllerClass {
 
     // 如果开启了根据鼠标轨迹自动调整端点位置的功能，则获取方向信息
     if (Settings.autoAdjustLineEndpointsByMouseTrack) {
-      [sourceDirection, targetDirection] = this.getConnectDirectionByMouseTrack();
+      this.mouseLocations.push(releaseWorldLocation);
+      [sourceDirection, targetDirection] = this.getConnectDirectionByMouseTrack(releaseTargetEntity);
     }
 
     // 结束连线
     if (releaseTargetEntity !== null) {
-      if (releaseTargetEntity.isSelected) {
-        // 如果鼠标释放的节点上是已经选中的节点
-        // 区分是拖拽松开连线还是点击松开连线
-        if (releaseWorldLocation.distance(this._lastRightMousePressLocation) < 5) {
-          // 距离过近，说明是点击事件，不触发连接，让右键菜单触发
-        } else {
-          // 距离足够远，说明是拖拽事件，完成连线
-          if (this.connectToEntity) {
-            this.dragMultiConnect(this.connectToEntity, sourceDirection, targetDirection);
-          }
+      if (releaseWorldLocation.distance(this._lastRightMousePressLocation) < 5) {
+        if (!releaseTargetEntity.isSelected) {
+          this.clickMultiConnect(releaseWorldLocation);
         }
       } else {
-        // 在目标节点上弹起
-
-        // 区分是拖拽松开连线还是点击松开连线
-        if (releaseWorldLocation.distance(this._lastRightMousePressLocation) < 5) {
-          // 距离过近，说明是点击事件，而不是拖拽事件
-          // 这个可能歪打误撞地被用户触发
-          this.clickMultiConnect(releaseWorldLocation);
+        const targets = this.selectedDragTargets.filter((entity) => entity.isSelected);
+        if (targets.length > 1 && targets.includes(releaseTargetEntity)) {
+          this.dragConnectToSelectedEntities(targets, sourceDirection, targetDirection);
         } else {
-          // 鼠标在待连接节点上抬起
-          if (this.connectToEntity) {
-            this.dragMultiConnect(this.connectToEntity, sourceDirection, targetDirection);
-          }
+          this.dragMultiConnect(releaseTargetEntity, sourceDirection, targetDirection);
         }
       }
     } else {
@@ -460,7 +449,9 @@ export class ControllerNodeConnectionClass extends ControllerClass {
    * // 根据点状数组生成折线段
    * @returns
    */
-  private getConnectDirectionByMouseTrack(): [Direction | null, Direction | null] {
+  private getConnectDirectionByMouseTrack(
+    targetEntity: ConnectableEntity | null = this.connectToEntity,
+  ): [Direction | null, Direction | null] {
     const lines = [];
     for (let i = 0; i < this.mouseLocations.length - 1; i++) {
       const start = this.mouseLocations[i];
@@ -510,10 +501,10 @@ export class ControllerNodeConnectionClass extends ControllerClass {
         }
       }
       // 寻找目标端点位置
-      if (this.connectToEntity) {
-        const toRect = this.connectToEntity.collisionBox
+      if (targetEntity) {
+        const toRect = targetEntity.collisionBox
           .getRectangle()
-          .expandFromCenter(this.connectToEntity instanceof Section ? 15 : 0);
+          .expandFromCenter(targetEntity instanceof Section ? 15 : 0);
         // 起点不在矩形内、且线段与矩形边界有交点（即从外部穿入，包括终点刚好在边框上的情况）
         if (!toRect.isPointIn(line.start) && toRect.isCollideWithLine(line)) {
           // 找到了入来的一小段线段
@@ -612,6 +603,7 @@ export class ControllerNodeConnectionClass extends ControllerClass {
     this.connectFromEntities = [];
     this.connectToEntity = null;
     this._isUsing = false;
+    this.selectedDragTargets = [];
     this._startImageLocation.clear();
     this._endImageLocation = null;
     this._hoverImageLocation = null;
@@ -673,6 +665,30 @@ export class ControllerNodeConnectionClass extends ControllerClass {
       return this._hoverImageLocation.clone();
     }
     return this.directionToRate(this._previewTargetDirection);
+  }
+
+  private dragConnectToSelectedEntities(
+    targets: ConnectableEntity[],
+    sourceDirection: Direction | null,
+    targetDirection: Direction | null,
+  ) {
+    const source = this.connectFromEntities[0];
+    const sourceRate = this.directionToRate(sourceDirection);
+    const targetRate = this.directionToRate(targetDirection);
+    const sourceRectRate: [number, number] = [sourceRate.x, sourceRate.y];
+    const targetRectRate: [number, number] = [targetRate.x, targetRate.y];
+    const isCrEdge = this.project.controller.pressingKeySet.has("c");
+
+    for (const target of targets) {
+      if (isCrEdge) {
+        this.project.nodeConnector.addCrEdge(source, target);
+      } else {
+        this.project.nodeConnector.connectConnectableEntity(source, target, "", targetRectRate, sourceRectRate);
+      }
+      this.addConnectEffect(source, target, sourceRate, targetRate);
+    }
+
+    this.project.historyManager.recordStep();
   }
 
   private dragMultiConnect(
