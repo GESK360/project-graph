@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Slider } from "./ui/slider";
 import { Input } from "./ui/input";
 import { useTranslation } from "react-i18next";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { cn } from "@/utils/cn";
 import { Fragment } from "react";
 import { useAtom } from "jotai";
@@ -19,16 +19,23 @@ import { isClassroomModeAtom } from "@/state";
 import { HandwritingTools } from "./handwriting-tools";
 import { Pencil } from "lucide-react";
 
+const toggleIconClass = "opacity-50 transition-opacity hover:opacity-100 focus-visible:opacity-100";
+
+function QuickSettingRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger>
+        <div className="flex w-fit shrink-0 items-center gap-1">{children}</div>
+      </TooltipTrigger>
+      <TooltipContent side="left">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 /**
  * Boolean 类型的快捷设置项
  */
-function BooleanQuickSettingControl({
-  settingKey,
-  isHovered,
-}: {
-  settingKey: keyof typeof settingsSchema.shape;
-  isHovered: boolean;
-}) {
+function BooleanQuickSettingControl({ settingKey }: { settingKey: keyof typeof settingsSchema.shape }) {
   const [value, setValue] = useState<boolean>(Settings[settingKey] as boolean);
 
   useEffect(() => {
@@ -46,25 +53,13 @@ function BooleanQuickSettingControl({
     }
   };
 
-  return (
-    <div
-      className={cn("overflow-hidden transition-all duration-200", isHovered ? "w-10 opacity-100" : "w-0 opacity-0")}
-    >
-      <Switch checked={value} onCheckedChange={handleToggle} />
-    </div>
-  );
+  return <Switch checked={value} onCheckedChange={handleToggle} />;
 }
 
 /**
  * Enum 类型的快捷设置项（下拉菜单）
  */
-function EnumQuickSettingControl({
-  settingKey,
-  isHovered,
-}: {
-  settingKey: keyof typeof settingsSchema.shape;
-  isHovered: boolean;
-}) {
+function EnumQuickSettingControl({ settingKey }: { settingKey: keyof typeof settingsSchema.shape }) {
   const { t } = useTranslation("settings");
   const [value, setValue] = useState<string>(Settings[settingKey] as string);
   const options = QuickSettingsManager.getEnumOptions(settingKey as string);
@@ -83,35 +78,25 @@ function EnumQuickSettingControl({
   };
 
   return (
-    <div
-      className={cn("overflow-hidden transition-all duration-200", isHovered ? "w-28 opacity-100" : "w-0 opacity-0")}
-    >
-      <Select value={value} onValueChange={handleChange}>
-        <SelectTrigger size="sm" className="h-7 w-28 text-xs">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map((opt) => (
-            <SelectItem key={opt} value={opt} className="text-xs">
-              {t(`${settingKey as string}.options.${opt}`, { defaultValue: opt })}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
+    <Select value={value} onValueChange={handleChange}>
+      <SelectTrigger size="sm" className="h-7 w-28 text-xs">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {options.map((opt) => (
+          <SelectItem key={opt} value={opt} className="text-xs">
+            {t(`${settingKey as string}.options.${opt}`, { defaultValue: opt })}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
 /**
  * Number 类型的快捷设置项（滑块 或 数字输入框）
  */
-function NumberQuickSettingControl({
-  settingKey,
-  isHovered,
-}: {
-  settingKey: keyof typeof settingsSchema.shape;
-  isHovered: boolean;
-}) {
+function NumberQuickSettingControl({ settingKey }: { settingKey: keyof typeof settingsSchema.shape }) {
   const [value, setValue] = useState<number>(Settings[settingKey] as number);
   const { min, max, step, hasRange } = QuickSettingsManager.getNumberRange(settingKey as string);
 
@@ -132,52 +117,38 @@ function NumberQuickSettingControl({
     // 有范围：展示 Slider + 数值 badge
     const displayValue = step >= 1 ? String(value) : value.toFixed(2);
     return (
-      <div className={cn("transition-all duration-200", isHovered ? "max-w-36 opacity-100" : "max-w-0 opacity-0")}>
-        <div className="flex w-36 items-center gap-1.5 py-1 pr-1">
-          <Slider
-            value={[value]}
-            onValueChange={([v]) => handleChange(v)}
-            min={min}
-            max={max}
-            step={step}
-            className="w-24 flex-shrink-0"
-          />
-          <span className="text-muted-foreground w-10 flex-shrink-0 text-right text-xs tabular-nums">
-            {displayValue}
-          </span>
-        </div>
+      <div className="flex min-w-36 items-center gap-1.5 py-1 pr-1">
+        <Slider
+          value={[value]}
+          onValueChange={([v]) => handleChange(v)}
+          min={min}
+          max={max}
+          step={step}
+          className="w-24 shrink-0"
+        />
+        <span className="text-muted-foreground flex-1 text-right text-xs tabular-nums">{displayValue}</span>
       </div>
     );
   }
 
   // 无范围：展示数字输入框
   return (
-    <div
-      className={cn("overflow-hidden transition-all duration-200", isHovered ? "w-20 opacity-100" : "w-0 opacity-0")}
-    >
-      <Input
-        type="number"
-        value={value}
-        onChange={(e) => {
-          const parsed = e.target.valueAsNumber;
-          if (!Number.isNaN(parsed)) handleChange(parsed);
-        }}
-        className="h-7 w-20 text-xs"
-      />
-    </div>
+    <Input
+      type="number"
+      value={value}
+      onChange={(e) => {
+        const parsed = e.target.valueAsNumber;
+        if (!Number.isNaN(parsed)) handleChange(parsed);
+      }}
+      className="h-7 w-20 text-xs"
+    />
   );
 }
 
 /**
  * 单个快捷设置项按钮
  */
-function QuickSettingButton({
-  settingKey,
-  isHovered,
-}: {
-  settingKey: keyof typeof settingsSchema.shape;
-  isHovered: boolean;
-}) {
+function QuickSettingButton({ settingKey }: { settingKey: keyof typeof settingsSchema.shape }) {
   const { t } = useTranslation("settings");
   const [showDialog, setShowDialog] = useState(false);
   const settingType = QuickSettingsManager.getSettingType(settingKey as string);
@@ -204,26 +175,19 @@ function QuickSettingButton({
   // 图标 opacity：boolean 用 on/off 状态；enum/number 始终半透明
   const iconOpacityClass =
     settingType === "boolean"
-      ? cn("opacity-50 transition-opacity hover:opacity-100", boolValue && "opacity-100")
+      ? cn(toggleIconClass, boolValue && "opacity-100")
       : "opacity-70 transition-opacity hover:opacity-100";
 
   return (
     <>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <div className="flex items-center gap-1.5">
-            <Button className={iconOpacityClass} variant="ghost" size="icon" onClick={() => setShowDialog(true)}>
-              <Icon />
-            </Button>
-
-            {/* 根据类型展示不同控件 */}
-            {settingType === "boolean" && <BooleanQuickSettingControl settingKey={settingKey} isHovered={isHovered} />}
-            {settingType === "enum" && <EnumQuickSettingControl settingKey={settingKey} isHovered={isHovered} />}
-            {settingType === "number" && <NumberQuickSettingControl settingKey={settingKey} isHovered={isHovered} />}
-          </div>
-        </TooltipTrigger>
-        <TooltipContent side="left">{title}</TooltipContent>
-      </Tooltip>
+      <QuickSettingRow label={title}>
+        <Button className={iconOpacityClass} variant="ghost" size="icon" onClick={() => setShowDialog(true)}>
+          <Icon />
+        </Button>
+        {settingType === "boolean" && <BooleanQuickSettingControl settingKey={settingKey} />}
+        {settingType === "enum" && <EnumQuickSettingControl settingKey={settingKey} />}
+        {settingType === "number" && <NumberQuickSettingControl settingKey={settingKey} />}
+      </QuickSettingRow>
 
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
         <DialogContent>
@@ -252,10 +216,11 @@ export default function RightToolbar({
   showQuickSettingsToolbar: boolean;
 }) {
   const [quickSettings, setQuickSettings] = useState<QuickSettingsManager.QuickSettingItem[]>([]);
-  const [isHovered, setIsHovered] = useState(false);
   const [isClassroomMode] = useAtom(isClassroomModeAtom);
   const [isHandwritingEnabled, setIsHandwritingEnabled] = useState(Settings.mouseLeftMode === "draw");
   const { t } = useTranslation("handwritingTools");
+  const drawingLabel = t("title");
+  const setDrawingMode = (enabled: boolean) => project.controller.setHandwritingMode(enabled);
 
   useEffect(() => Settings.watch("mouseLeftMode", (mode) => setIsHandwritingEnabled(mode === "draw")), []);
 
@@ -288,27 +253,32 @@ export default function RightToolbar({
       )}
     >
       <Toolbar
-        className="bg-popover/95 supports-backdrop-blur:bg-popover/80 border-border/50 max-h-[calc(100vh-1rem)] flex-col gap-0 overflow-y-auto rounded-lg border px-1 py-1.5 shadow-xl backdrop-blur-md"
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
+        orientation="vertical"
+        className="bg-popover/95 supports-backdrop-blur:bg-popover/80 border-border/50 max-h-[calc(100dvh-5.25rem)] flex-col items-stretch gap-0 overflow-y-auto rounded-lg border px-1 py-1.5 shadow-xl backdrop-blur-md [scrollbar-width:thin]"
       >
-        <div className="flex h-9 w-full items-center justify-between gap-2 px-1">
-          <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
-            <Pencil className="size-4" />
-            {t("title")}
-          </span>
-          <Switch
-            aria-label={t("title")}
-            checked={isHandwritingEnabled}
-            onCheckedChange={(enabled) => project.controller.setHandwritingMode(enabled)}
-          />
-        </div>
-        {isHandwritingEnabled && <HandwritingTools project={project} />}
+        <QuickSettingRow label={drawingLabel}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn(toggleIconClass, isHandwritingEnabled && "opacity-100")}
+            aria-label={drawingLabel}
+            aria-pressed={isHandwritingEnabled}
+            onClick={() => setDrawingMode(!isHandwritingEnabled)}
+          >
+            <Pencil />
+          </Button>
+          <Switch aria-label={drawingLabel} checked={isHandwritingEnabled} onCheckedChange={setDrawingMode} />
+        </QuickSettingRow>
+        {isHandwritingEnabled && (
+          <div className="shrink-0 self-center">
+            <HandwritingTools project={project} />
+          </div>
+        )}
         {showQuickSettingsToolbar && quickSettings.length > 0 && (
           <>
-            <div className="bg-border my-1 h-px w-full" />
+            <div className="bg-border my-1 h-px w-full shrink-0" />
             {quickSettings.map((item) => (
-              <QuickSettingButton key={item.settingKey as string} settingKey={item.settingKey} isHovered={isHovered} />
+              <QuickSettingButton key={item.settingKey} settingKey={item.settingKey} />
             ))}
           </>
         )}

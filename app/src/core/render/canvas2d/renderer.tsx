@@ -1,6 +1,7 @@
 import { Project, service } from "@/core/Project";
 import { Settings } from "@/core/service/Settings";
 import { MouseLocation } from "@/core/service/controlService/MouseLocation";
+import { getMindMapPort, mindMapPorts } from "@/core/service/controlService/controller/concrete/MindMapDrag";
 import { KeyBindsUI } from "@/core/service/controlService/shortcutKeysEngine/KeyBindsUI";
 import { StageObject } from "@/core/stage/stageObject/abstract/StageObject";
 import { ArcEdge } from "@/core/stage/stageObject/association/ArcEdge";
@@ -170,6 +171,7 @@ export class Renderer {
     this.renderSelectingRectangle();
     this.renderCuttingLine();
     this.renderConnectingLine();
+    this.renderMindMapDrag();
     this.renderKeyboardOnly();
     this.rendererLayerMovingLine();
     this.project.searchContentHighlightRenderer.render(this.frameIndex);
@@ -415,6 +417,62 @@ export class Renderer {
   }
 
   /** 手动连接线 */
+  private renderMindMapDrag() {
+    const preview = this.project.controller.entityClickSelectAndMove.mindMapDragPreview;
+    if (!preview) return;
+
+    const ctx = this.project.canvas.ctx;
+    const viewOffset = preview.offset.multiply(this.project.camera.currentScale);
+    ctx.save();
+    ctx.translate(viewOffset.x, viewOffset.y);
+    ctx.globalAlpha *= 0.4;
+    this.project.entityRenderer.renderEntity(preview.node);
+    ctx.restore();
+
+    if (!preview.contact) return;
+    const { node: parent, side } = preview.contact;
+    const port = mindMapPorts[side];
+    const start = this.transformWorld2View(getMindMapPort(parent.collisionBox.getRectangle(), port.source));
+    const end = this.transformWorld2View(
+      getMindMapPort(preview.node.collisionBox.getRectangle(), port.target).add(preview.offset),
+    );
+    const difference = end.subtract(start);
+    const forwardDistance = difference.x * port.outward.x + difference.y * port.outward.y;
+    const arrowTip = start.add(port.outward.multiply(24));
+    const arrowBase = arrowTip.subtract(port.outward.multiply(7));
+    const wing = new Vector(-port.outward.y, port.outward.x).multiply(4);
+    const arrowLeft = arrowBase.add(wing);
+    const arrowRight = arrowBase.subtract(wing);
+    const accent = this.project.stageStyleManager.currentStyle.CollideBoxSelected.toString();
+
+    ctx.save();
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = accent;
+    ctx.fillStyle = accent;
+    ctx.beginPath();
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(arrowTip.x, arrowTip.y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(arrowTip.x, arrowTip.y);
+    ctx.lineTo(arrowLeft.x, arrowLeft.y);
+    ctx.lineTo(arrowRight.x, arrowRight.y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(start.x, start.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    if (forwardDistance >= 0 && difference.magnitude() > 5) {
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(end.x, end.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   private renderConnectingLine() {
     if (this.project.controller.nodeConnection.isUsing) {
       const mouseLocation = this.transformView2World(MouseLocation.vector());

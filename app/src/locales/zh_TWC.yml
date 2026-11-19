@@ -1,5 +1,5 @@
 handwritingTools:
-  title: 手寫模式
+  title: 繪圖
   penLabel: 畫筆 {{index}}
   penSettings: 畫筆設定
   color: 顏色

@@ -685,6 +685,7 @@ export const shortcutKeysGroups: ShortcutKeysGroup[] = [
     title: "moveEntity",
     icon: <Move />,
     keys: [
+      "dragToConnectMindMap",
       "moveUpSelectedEntities",
       "moveDownSelectedEntities",
       "moveLeftSelectedEntities",

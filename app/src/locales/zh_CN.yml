@@ -1,5 +1,5 @@
 handwritingTools:
-  title: 手写模式
+  title: 绘图
   penLabel: 画笔 {{index}}
   penSettings: 画笔设置
   color: 颜色
@@ -1908,6 +1908,9 @@ keyBinds:
   selectAdditionalRight:
     title: 附加选中右侧节点
     description: 按下后，附加选中右侧节点
+  dragToConnectMindMap:
+    title: 拖拽节点并连接分支
+    description: 拖动时按住此键，靠近目标节点的边缘预览连线，松开鼠标替换原有入线并整理分支。
   moveUpSelectedEntities:
     title: 向上移动所有选中的实体
     description: |

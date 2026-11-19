@@ -1,6 +1,8 @@
 import { Project, service } from "@/core/Project";
+import type { MindMapSide } from "@/core/service/controlService/controller/concrete/MindMapDrag";
 import { ConnectableEntity } from "@/core/stage/stageObject/abstract/ConnectableEntity";
 import { Edge } from "@/core/stage/stageObject/association/Edge";
+import { LineEdge } from "@/core/stage/stageObject/association/LineEdge";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import { Vector } from "@graphif/data-structures";
 import { Rectangle, Line } from "@graphif/shapes";
@@ -611,7 +613,7 @@ export class AutoLayoutFastTree {
    * 快速树形布局
    * @param rootNode
    */
-  public autoLayoutFastTreeMode(rootNode: ConnectableEntity) {
+  public autoLayoutFastTreeMode(rootNode: ConnectableEntity, unanchoredDirection?: MindMapSide) {
     // 树形结构的根节点 矩形左上角位置固定不动
     const rootLeftTopLocation = rootNode.collisionBox.getRectangle().leftTop.clone();
 
@@ -619,12 +621,21 @@ export class AutoLayoutFastTree {
       // 获取出边时跳过虚线边，虚线边不参与树形格式化布局
       const outEdges = this.project.graphMethods
         .getOutgoingEdges(node)
-        .filter((edge) => !("lineType" in edge && (edge as { lineType: string }).lineType === "dashed"));
-      const outRightEdges = outEdges.filter((edge) => edge.isLeftToRight());
-      const outLeftEdges = outEdges.filter((edge) => edge.isRightToLeft());
-      const outTopEdges = outEdges.filter((edge) => edge.isBottomToTop());
-      const outBottomEdges = outEdges.filter((edge) => edge.isTopToBottom());
-      const outUnknownEdges = outEdges.filter((edge) => edge.isUnknownDirection());
+        .filter((edge) => !("lineType" in edge && (edge as { lineType: string }).lineType === "dashed"))
+        .filter((edge) => !unanchoredDirection || edge instanceof LineEdge);
+      const outRightEdges = outEdges.filter(
+        (edge) => edge.isLeftToRight() || (unanchoredDirection === "right" && edge.isUnknownDirection()),
+      );
+      const outLeftEdges = outEdges.filter(
+        (edge) => edge.isRightToLeft() || (unanchoredDirection === "left" && edge.isUnknownDirection()),
+      );
+      const outTopEdges = outEdges.filter(
+        (edge) => edge.isBottomToTop() || (unanchoredDirection === "top" && edge.isUnknownDirection()),
+      );
+      const outBottomEdges = outEdges.filter(
+        (edge) => edge.isTopToBottom() || (unanchoredDirection === "bottom" && edge.isUnknownDirection()),
+      );
+      const outUnknownEdges = unanchoredDirection ? [] : outEdges.filter((edge) => edge.isUnknownDirection());
       // 非标准连线：端点是混合轴向（如右侧发出+上侧接收），不属于四个标准方向也不是默认中心
       // 对于非标准连线，只保持父子节点的相对位置不变，但仍对其子树进行递归格式化
       const outNonStandardEdges = outEdges.filter((edge) => edge.isNonStandardDirection());

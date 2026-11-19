@@ -1,5 +1,5 @@
 handwritingTools:
-  title: Handwriting
+  title: Drawing
   penLabel: Pen {{index}}
   penSettings: Pen settings
   color: Color
@@ -1792,6 +1792,9 @@ keyBinds:
     title: Create Text Node to the Right of Selected Node
     description: |
       When pressed, a text node will be created to the right of the currently selected node.
+  dragToConnectMindMap:
+    title: Drag to attach a branch
+    description: Hold this shortcut while dragging a node. Approach the target's edge to preview the connection, then release to replace the node's incoming edges and arrange the branch.
   moveUpSelectedEntities:
     title: Move Selected Entities Up
     description: |

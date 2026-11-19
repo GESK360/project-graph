@@ -1076,6 +1076,15 @@ export const allKeyBinds: KeyBindItem[] = [
 
   /*------- 移动选中实体 -------*/
   {
+    id: "dragToConnectMindMap",
+    defaultKey: "z",
+    icon: Network,
+    isContinuous: true,
+    // 只有鼠标拖拽可以触发此手势，键盘事件本身不执行命令。
+    when: () => false,
+    onPress: () => {},
+  },
+  {
     id: "moveUpSelectedEntities",
     defaultKey: "C-arrowup",
     icon: ArrowUp,
