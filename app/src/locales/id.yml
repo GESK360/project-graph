@@ -1,3 +1,37 @@
+handwritingTools:
+  title: Tulisan tangan
+  penLabel: Pena {{index}}
+  penSettings: Pengaturan pena
+  color: Warna
+  customColor: Warna khusus
+  colors:
+    charcoal: Abu-abu gelap
+    red: Merah
+    orange: Oranye
+    yellow: Kuning
+    green: Hijau
+    cyan: Sian
+    blue: Biru
+    purple: Ungu
+    pink: Merah muda
+    white: Putih
+  width: Ketebalan goresan
+  customWidth: Ketebalan khusus
+  widthPixels: "{{width}} px"
+  clonePen: Gandakan pena
+  deletePen: Hapus pena
+  keepOnePen: Sisakan setidaknya satu pena
+  eraser: Penghapus
+  eraserSettings: Pengaturan penghapus
+  shape: Bentuk penghapus
+  eraserType: Jenis penghapus
+  strokeEraser: Penghapus goresan
+  pointEraser: Penghapus titik
+  circle: Lingkaran
+  square: Persegi
+  clearStrokes: Hapus semua goresan
+  clearStrokesConfirmTitle: Hapus semua goresan?
+  clearStrokesConfirmBody: Semua goresan tulisan tangan di kanvas ini akan dihapus. Tindakan ini dapat dibatalkan.
 findWindow:
   useRegex: Gunakan ekspresi reguler
   invalidRegex: Ekspresi reguler tidak valid
@@ -224,6 +258,9 @@ settings:
     description: |
       Mencegah interaksi kanvas mengubah isi proyek agar tidak terjadi perubahan yang tidak disengaja pada layar sentuh.
       Navigasi kamera, pemilihan objek, dan pemilihan kotak tetap tersedia.
+  enablePenPressure:
+    title: Aktifkan tekanan pena
+    description: Jika aktif, tekanan pena mengatur ketebalan goresan. Jika nonaktif, ketebalan tetap. Kurva tekanan mengatur responsnya.
   hideCursorInPenMode:
     title: Sembunyikan Kursor dalam Mode Kuas
     description: "Saat diaktifkan, kursor mouse akan disembunyikan saat menggambar dengan kuas"

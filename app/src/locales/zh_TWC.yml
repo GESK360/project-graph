@@ -1,3 +1,37 @@
+handwritingTools:
+  title: 手寫模式
+  penLabel: 畫筆 {{index}}
+  penSettings: 畫筆設定
+  color: 顏色
+  customColor: 自訂顏色
+  colors:
+    charcoal: 深灰
+    red: 紅色
+    orange: 橘色
+    yellow: 黃色
+    green: 綠色
+    cyan: 青色
+    blue: 藍色
+    purple: 紫色
+    pink: 粉紅色
+    white: 白色
+  width: 筆跡粗細
+  customWidth: 自訂粗細
+  widthPixels: "{{width}} px"
+  clonePen: 複製畫筆
+  deletePen: 刪除畫筆
+  keepOnePen: 至少保留一支畫筆
+  eraser: 橡皮擦
+  eraserSettings: 橡皮擦設定
+  shape: 橡皮擦形狀
+  eraserType: 橡皮擦類型
+  strokeEraser: 筆劃橡皮擦
+  pointEraser: 點狀橡皮擦
+  circle: 圓形
+  square: 方形
+  clearStrokes: 清除所有筆跡
+  clearStrokesConfirmTitle: 清除所有筆跡？
+  clearStrokesConfirmBody: 此操作會刪除目前畫布中的全部手寫筆跡，可透過復原還原。
 findWindow:
   useRegex: 使用正規表示式
   invalidRegex: 正規表示式無效
@@ -281,6 +315,9 @@ settings:
     description: '開啟後禁止透過畫布互動修改專案內容，避免觸控誤操作。
 
       仍可移動和縮放視野、選取及框選物件。'
+  enablePenPressure:
+    title: 啟用筆壓
+    description: 開啟後，數位筆壓力會控制筆跡粗細；關閉後以固定粗細書寫。筆壓曲線可調整壓力反應。
   hideCursorInPenMode:
     title: 畫筆模式下隱藏游標
     description: "開啟後，在使用畫筆繪製時會隱藏滑鼠游標"

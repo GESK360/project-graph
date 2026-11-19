@@ -49,6 +49,10 @@ export class PenStroke extends Entity {
     this.updateCollisionBoxBySegmentList();
   }
 
+  replaceSegments(segments: PenStrokeSegment[]) {
+    this.segments = segments;
+    this.updateCollisionBoxBySegmentList();
+  }
   private updateCollisionBoxBySegmentList() {
     this.collisionBox.shapes = [];
     for (let i = 1; i < this.segments.length; i++) {
@@ -62,6 +66,8 @@ export class PenStroke extends Entity {
   public segments: PenStrokeSegment[] = [];
   @serializable
   public color: Color = Color.Transparent;
+  @serializable
+  public width: number = 5;
 
   public getPath(): Vector[] {
     return this.segments.map((it) => it.location);
@@ -69,12 +75,13 @@ export class PenStroke extends Entity {
 
   constructor(
     protected readonly project: Project,
-    { uuid = crypto.randomUUID() as string, segments = [] as PenStrokeSegment[], color = Color.White },
+    { uuid = crypto.randomUUID() as string, segments = [] as PenStrokeSegment[], color = Color.White, width = 5 },
   ) {
     super();
     this.uuid = uuid;
     this.segments = segments;
     this.color = color;
+    this.width = width;
     this.updateCollisionBoxBySegmentList();
   }
 

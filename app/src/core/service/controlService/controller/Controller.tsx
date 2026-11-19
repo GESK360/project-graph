@@ -75,6 +75,9 @@ export class Controller {
   readonly lastSelectedEdgeUUID: Set<string> = new Set();
 
   private readonly input: ControllerInput;
+  private autoStylusDrawMode = false;
+  private settingModeFromPointer = false;
+  private readonly unwatchMouseLeftMode: () => void;
   private readonly controllers: ControllerClass[] = [];
   private isCameraPointerGesture = false;
 
@@ -127,6 +130,31 @@ export class Controller {
    * 初始化函数在页面挂在的时候调用，将事件绑定到Canvas上
    * @param this.project.canvas.element
    */
+  private updateModeForPointer(event: PointerEvent) {
+    if (Settings.viewerMode) return;
+    if (event.pointerType === "pen") {
+      this.autoStylusDrawMode = true;
+      if (Settings.mouseLeftMode !== "draw") {
+        this.settingModeFromPointer = true;
+        Settings.mouseLeftMode = "draw";
+        this.settingModeFromPointer = false;
+      }
+    } else if (event.pointerType === "mouse" && this.autoStylusDrawMode) {
+      this.autoStylusDrawMode = false;
+      this.settingModeFromPointer = true;
+      Settings.mouseLeftMode = "selectAndMove";
+      this.settingModeFromPointer = false;
+      this.setCursorName(CursorNameEnum.Default);
+    }
+  }
+
+  public setHandwritingMode(enabled: boolean) {
+    this.autoStylusDrawMode = false;
+    this.settingModeFromPointer = true;
+    Settings.mouseLeftMode = enabled ? "draw" : "selectAndMove";
+    this.settingModeFromPointer = false;
+  }
+
   constructor(private readonly project: Project) {
     // 所有的具体的功能逻辑封装成控制器对象
     // 当有新功能时新建控制器对象，并在这里初始化
@@ -140,8 +168,12 @@ export class Controller {
         this[id as keyof this] = inst;
         this.controllers.push(inst);
       });
+    this.unwatchMouseLeftMode = Settings.watch("mouseLeftMode", () => {
+      if (!this.settingModeFromPointer) this.autoStylusDrawMode = false;
+    });
     this.input = new ControllerInput(project.canvas.element, (x, y) => project.canvas.clientToView(x, y), {
       down: (event) => {
+        this.updateModeForPointer(event);
         this.mousedown(event);
         this.camera.mousedown(event);
         this.isCameraPointerGesture = this.camera.isUsingMouseGrabMove;
@@ -151,6 +183,7 @@ export class Controller {
           });
       },
       move: (event) => {
+        this.updateModeForPointer(event);
         this.resetCountdownTimer();
         if (this.isCameraPointerGesture) this.camera.mousemove(event);
         else this.dispatch((c) => c.mousemove(event));
@@ -196,6 +229,7 @@ export class Controller {
     });
   }
   dispose() {
+    this.unwatchMouseLeftMode();
     this.input.dispose();
     for (const controller of this.controllers) controller.dispose();
     this.controllers.length = 0;

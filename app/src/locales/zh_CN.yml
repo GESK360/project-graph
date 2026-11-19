@@ -1,3 +1,37 @@
+handwritingTools:
+  title: 手写模式
+  penLabel: 画笔 {{index}}
+  penSettings: 画笔设置
+  color: 颜色
+  customColor: 自定义颜色
+  colors:
+    charcoal: 深灰
+    red: 红色
+    orange: 橙色
+    yellow: 黄色
+    green: 绿色
+    cyan: 青色
+    blue: 蓝色
+    purple: 紫色
+    pink: 粉色
+    white: 白色
+  width: 笔迹粗细
+  customWidth: 自定义粗细
+  widthPixels: "{{width}} px"
+  clonePen: 克隆画笔
+  deletePen: 删除画笔
+  keepOnePen: 至少保留一支画笔
+  eraser: 橡皮
+  eraserSettings: 橡皮设置
+  shape: 橡皮形状
+  eraserType: 橡皮类型
+  strokeEraser: 笔划橡皮擦
+  pointEraser: 点状橡皮擦
+  circle: 圆形
+  square: 方形
+  clearStrokes: 清除所有笔迹
+  clearStrokesConfirmTitle: 清除所有笔迹？
+  clearStrokesConfirmBody: 此操作会删除当前画布中的全部手写笔迹，可通过撤销恢复。
 windowControls:
   alwaysOnTop: 窗口置顶
 
@@ -245,6 +279,9 @@ settings:
     description: |
       开启后禁止通过画布交互修改项目内容，避免触屏误操作。
       仍可移动和缩放视野、选择及框选对象。
+  enablePenPressure:
+    title: 启用压感
+    description: 开启后，数位笔压力会控制笔迹粗细；关闭后以固定粗细书写。压感曲线可调整压力响应。
   hideCursorInPenMode:
     title: 画笔模式下隐藏鼠标
     description: "开启后，在使用画笔绘制时会隐藏鼠标指针"

@@ -15,6 +15,21 @@ export interface ControllerInputHandlers {
   cancel(location: Vector): void;
 }
 
+export function getPointerSamples(event: PointerEvent): PointerEvent[] {
+  const samples = event.getCoalescedEvents?.() ?? [];
+  const events = samples.length > 0 ? [...samples] : [];
+  const lastSample = events.at(-1);
+  if (
+    !lastSample ||
+    lastSample.clientX !== event.clientX ||
+    lastSample.clientY !== event.clientY ||
+    lastSample.pressure !== event.pressure
+  ) {
+    events.push(event);
+  }
+  return events;
+}
+
 /** DOM 输入只在这里归一化，业务控制器接收画布坐标。 */
 export class ControllerInput {
   private press: { id: number; button: number; location: Vector; dragged: boolean } | null = null;
@@ -42,11 +57,14 @@ export class ControllerInput {
         ? this.clientToView(event.deltaX, event.deltaY).subtract(this.clientToView(0, 0))
         : null;
     return new Proxy(event, {
-      get(target, property) {
+      get: (target, property) => {
         if (property === "clientX") return point.x;
         if (property === "clientY") return point.y;
         if (delta && property === "deltaX") return delta.x;
         if (delta && property === "deltaY") return delta.y;
+        if (property === "getCoalescedEvents" && "getCoalescedEvents" in target) {
+          return () => target.getCoalescedEvents().map((sample) => this.viewEvent(sample));
+        }
         const value = Reflect.get(target, property, target);
         return typeof value === "function" ? value.bind(target) : value;
       },
@@ -101,7 +119,7 @@ export class ControllerInput {
     if (event.pointerType === "touch") return;
     if (this.press && this.press.id !== event.pointerId) return;
     if (this.consumeMouseChord(event)) return;
-    if (this.press && event.buttons === 0) {
+    if (this.press && event.buttons === 0 && !(event.pointerType === "pen" && event.pressure > 0)) {
       this.cancel();
       return;
     }

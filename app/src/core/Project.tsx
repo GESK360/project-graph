@@ -528,7 +528,7 @@ export class Project extends Tab {
         return (
           <div className="absolute inset-0 overflow-hidden">
             <div className="absolute inset-0 overflow-hidden" ref={this.containerRef}></div>
-            {this.state.showQuickSettingsToolbar && <RightToolbar />}
+            <RightToolbar project={self} showQuickSettingsToolbar={this.state.showQuickSettingsToolbar} />
             <Minimap project={self} />
           </div>
         );
@@ -541,7 +541,7 @@ export class Project extends Tab {
     return (
       <div className="absolute inset-0 overflow-hidden">
         <div className="absolute inset-0 overflow-hidden" ref={this.containerRef}></div>
-        {Settings.showQuickSettingsToolbar && <RightToolbar />}
+        <RightToolbar project={this} showQuickSettingsToolbar={Settings.showQuickSettingsToolbar} />
         <Minimap project={this} />
       </div>
     );

@@ -237,6 +237,16 @@ export default function MyContextMenuContent() {
     );
   };
 
+  const updateActivePenColor = (color: Color) => {
+    if (Settings.handwritingActiveTool === "eraser") return;
+    const activeTool = Settings.handwritingActiveTool;
+    const activePen = Settings.handwritingPens.find((pen) => pen.id === activeTool);
+    if (!activePen) return;
+    const visibleColor = color.a === 0 ? p.stageStyleManager.currentStyle.StageObjectBorder : color;
+    Settings.handwritingPens = Settings.handwritingPens.map((pen) =>
+      pen.id === activeTool ? { ...pen, color: visibleColor.toHexStringWithoutAlpha().toUpperCase() } : pen,
+    );
+  };
   const renderSetPenStrokeColor = (itemConfig: ContextMenuConfigItem) => {
     return (
       <Sub key={itemConfig.id}>
@@ -245,7 +255,12 @@ export default function MyContextMenuContent() {
           {getItemTitle(itemConfig.id, itemConfig.label)}
         </SubTrigger>
         <SubContent>
-          <Item onClick={() => (Settings.autoFillPenStrokeColor = Color.Transparent.toArray())}>
+          <Item
+            onClick={() => {
+              Settings.autoFillPenStrokeColor = Color.Transparent.toArray();
+              updateActivePenColor(Color.Transparent);
+            }}
+          >
             {getIcon("resetPenStrokeColor", "Slash")}
             {t("resetColor")}
           </Item>
@@ -260,10 +275,12 @@ export default function MyContextMenuContent() {
                     if (!Settings.colorPanelMouseEnterPreview) return;
                     p.controller.resetCountdownTimer();
                     Settings.autoFillPenStrokeColor = color.toArray();
+                    updateActivePenColor(color);
                   }}
                   onClick={() => {
                     p.controller.resetCountdownTimer();
                     Settings.autoFillPenStrokeColor = color.toArray();
+                    updateActivePenColor(color);
                   }}
                 />
               ) : (

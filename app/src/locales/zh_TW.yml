@@ -1,3 +1,37 @@
+handwritingTools:
+  title: 手寫模式
+  penLabel: 畫筆 {{index}}
+  penSettings: 畫筆設置
+  color: 顏色
+  customColor: 自定義顏色
+  colors:
+    charcoal: 深灰
+    red: 紅色
+    orange: 橙色
+    yellow: 黃色
+    green: 綠色
+    cyan: 青色
+    blue: 藍色
+    purple: 紫色
+    pink: 粉色
+    white: 白色
+  width: 筆跡粗細
+  customWidth: 自定義粗細
+  widthPixels: "{{width}} px"
+  clonePen: 克隆畫筆
+  deletePen: 刪除畫筆
+  keepOnePen: 至少保留一支畫筆
+  eraser: 橡皮
+  eraserSettings: 橡皮設置
+  shape: 橡皮形狀
+  eraserType: 橡皮類型
+  strokeEraser: 筆劃橡皮擦
+  pointEraser: 點狀橡皮擦
+  circle: 圓形
+  square: 方形
+  clearStrokes: 清除所有筆跡
+  clearStrokesConfirmTitle: 清除所有筆跡？
+  clearStrokesConfirmBody: 此操作會刪除當前畫布中的全部手寫筆跡，可通過撤銷恢復。
 windowControls:
   alwaysOnTop: 窗口置頂
 
@@ -245,6 +279,9 @@ settings:
     description: |
       開啟後禁止通過畫布交互修改項目內容，避免觸屏誤操作。
       仍可移動和縮放視野、選擇及框選對象。
+  enablePenPressure:
+    title: 啟用壓感
+    description: 開啟後，數位筆壓力會控制筆跡粗細；關閉後以固定粗細書寫。壓感曲線可調整壓力響應。
   hideCursorInPenMode:
     title: 畫筆模式下隱藏鼠標
     description: "開啟後，在使用畫筆繪製時會隱藏鼠標指針"
@@ -275,6 +312,7 @@ settings:
     title: 顯示小地圖
     description: |
       在畫布右下角顯示尺寸固定的小地圖，綠色框表示當前視野覆蓋的範圍。
+      小地圖上會畫出 x/y 座標軸與節點之間的連線，便於判斷方位和結構。
       小地圖會按最外側的節點自動調整顯示比例，便於在大圖中定位。
       點擊小地圖可以把視野移動到對應位置。
   autoAdjustLineEndpointsByMouseTrack:

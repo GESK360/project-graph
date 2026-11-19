@@ -100,7 +100,7 @@ export class ControllerPenStrokeControlClass extends ControllerClass {
     const newWidth = Math.round(lastWidth + change);
 
     // 限制宽度范围
-    this.project.controller.penStrokeDrawing.currentStrokeWidth = Math.max(1, Math.min(newWidth, 1000));
+    this.project.controller.penStrokeDrawing.setCurrentStrokeWidth(newWidth);
 
     // 记录上一次位置
     this.lastAdjustWidthLocation = currentWorldLocation.clone();

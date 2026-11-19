@@ -254,6 +254,20 @@ export const settingsSchema = z.object({
   autoFillNodeColorEnable: z.boolean().default(true),
   autoFillPenStrokeColor: z.tuple([z.number(), z.number(), z.number(), z.number()]).default([0, 0, 0, 0]),
   autoFillPenStrokeColorEnable: z.boolean().default(true),
+  handwritingPens: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        color: z.string().regex(/^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/),
+        width: z.number().min(1).max(50),
+      }),
+    )
+    .min(1)
+    .default([{ id: "pen-1", color: "#2563EB", width: 5 }]),
+  handwritingActiveTool: z.string().default("pen-1"),
+  handwritingEraserSize: z.number().int().min(4).max(80).default(24),
+  handwritingEraserShape: z.union([z.literal("circle"), z.literal("square")]).default("circle"),
+  handwritingEraserType: z.union([z.literal("stroke"), z.literal("point")]).default("stroke"),
   colorPanelMouseEnterPreview: z.boolean().default(false),
   autoFillEdgeColor: z.tuple([z.number(), z.number(), z.number(), z.number()]).default([0, 0, 0, 0]),
   autoOpenPath: z.string().default(""), // 废弃
@@ -597,6 +611,7 @@ export const settingsSchema = z.object({
   extensionSettings: z.record(z.string(), z.record(z.string(), z.unknown())).default({}),
   defaultFontFamily: projectToolSettingSchemas.defaultFontFamily,
   hideCursorInPenMode: z.boolean().default(false),
+  enablePenPressure: z.boolean().default(true),
   penPressureCurve: z
     .union([
       z.literal("fixed"),
@@ -991,6 +1006,12 @@ for (const [rawKey, rawValue] of Object.entries(rawSettings)) {
   pendingSettingsLoadErrorValues.set(rawKey, rawValue);
 }
 
+if (rawSettings.handwritingPens === undefined && savedSettings.autoFillPenStrokeColor[3] > 0) {
+  const [red, green, blue, alpha] = savedSettings.autoFillPenStrokeColor;
+  const toHex = (value: number) => Math.round(value).toString(16).padStart(2, "0");
+  savedSettings.handwritingPens[0].color =
+    `#${toHex(red)}${toHex(green)}${toHex(blue)}${toHex(alpha * 255)}`.toUpperCase();
+}
 if (rawSettings.windowBackgroundAlpha === 0.28) {
   savedSettings.windowBackgroundAlpha = 0.72;
   await store.set("windowBackgroundAlpha", 0.72);

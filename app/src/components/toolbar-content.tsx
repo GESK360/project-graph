@@ -97,36 +97,48 @@ const DrawingColorLine: React.FC = () => {
   const [currentDrawColor, setCurrentDrawColor] = useState<Color>(Color.Transparent);
 
   useEffect(() => {
-    ColorManager.getUserEntityFillColors().then((colors) => {
-      setUserColorList(colors);
-    });
-    setCurrentDrawColor(new Color(...Settings.autoFillPenStrokeColor));
+    const refreshCurrentColor = () => {
+      const activePen =
+        Settings.handwritingPens.find((pen) => pen.id === Settings.handwritingActiveTool) ??
+        Settings.handwritingPens[0];
+      setCurrentDrawColor(activePen ? Color.fromCss(activePen.color) : new Color(...Settings.autoFillPenStrokeColor));
+    };
+    ColorManager.getUserEntityFillColors().then(setUserColorList);
+    const unwatchPens = Settings.watch("handwritingPens", refreshCurrentColor);
+    const unwatchTool = Settings.watch("handwritingActiveTool", refreshCurrentColor);
+    refreshCurrentColor();
+    return () => {
+      unwatchPens();
+      unwatchTool();
+    };
   }, []);
 
   const handleChangeColor = (color: Color) => {
     Settings.autoFillPenStrokeColor = color.toArray();
+    Settings.autoFillPenStrokeColorEnable = true;
+    const activeTool = Settings.handwritingActiveTool;
+    const activePenId = activeTool === "eraser" ? Settings.handwritingPens[0]?.id : activeTool;
+    if (activePenId) {
+      Settings.handwritingPens = Settings.handwritingPens.map((pen) =>
+        pen.id === activePenId ? { ...pen, color: color.toHexStringWithoutAlpha().toUpperCase() } : pen,
+      );
+    }
     setCurrentDrawColor(color.clone());
   };
 
   return (
     <div className="flex max-w-64 overflow-x-auto">
-      {userColorList.map((color) => {
-        return (
-          <div
-            className={cn(
-              "outline-accent-foreground size-4 cursor-pointer hover:outline-3 hover:-outline-offset-3",
-              currentDrawColor.equals(color) && "outline-2 -outline-offset-2",
-            )}
-            key={color.toString()}
-            style={{
-              backgroundColor: `rgba(${color.r}, ${color.g}, ${color.b}, ${color.a})`,
-            }}
-            onClick={() => {
-              handleChangeColor(color);
-            }}
-          />
-        );
-      })}
+      {userColorList.map((color) => (
+        <div
+          className={cn(
+            "outline-accent-foreground size-4 cursor-pointer hover:outline-3 hover:-outline-offset-3",
+            currentDrawColor.equals(color) && "outline-2 -outline-offset-2",
+          )}
+          key={color.toString()}
+          style={{ backgroundColor: `rgba(${color.r}, ${color.g}, ${color.b}, ${color.a})` }}
+          onClick={() => handleChangeColor(color)}
+        />
+      ))}
     </div>
   );
 };

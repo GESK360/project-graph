@@ -1,4 +1,5 @@
 import { Settings, settingsSchema } from "@/core/service/Settings";
+import type { Project } from "@/core/Project";
 import { QuickSettingsManager } from "@/core/service/QuickSettingsManager";
 import { settingsIcons } from "@/core/service/SettingsIcons";
 import { Button } from "./ui/button";
@@ -15,6 +16,8 @@ import { cn } from "@/utils/cn";
 import { Fragment } from "react";
 import { useAtom } from "jotai";
 import { isClassroomModeAtom } from "@/state";
+import { HandwritingTools } from "./handwriting-tools";
+import { Pencil } from "lucide-react";
 
 /**
  * Boolean 类型的快捷设置项
@@ -241,10 +244,20 @@ function QuickSettingButton({
  * 右侧工具栏
  * 显示用户自定义的快捷设置项（支持开关、下拉菜单、数值调整）
  */
-export default function RightToolbar() {
+export default function RightToolbar({
+  project,
+  showQuickSettingsToolbar,
+}: {
+  project: Project;
+  showQuickSettingsToolbar: boolean;
+}) {
   const [quickSettings, setQuickSettings] = useState<QuickSettingsManager.QuickSettingItem[]>([]);
   const [isHovered, setIsHovered] = useState(false);
   const [isClassroomMode] = useAtom(isClassroomModeAtom);
+  const [isHandwritingEnabled, setIsHandwritingEnabled] = useState(Settings.mouseLeftMode === "draw");
+  const { t } = useTranslation("handwritingTools");
+
+  useEffect(() => Settings.watch("mouseLeftMode", (mode) => setIsHandwritingEnabled(mode === "draw")), []);
 
   const loadQuickSettings = async () => {
     const items = await QuickSettingsManager.getQuickSettings();
@@ -252,15 +265,10 @@ export default function RightToolbar() {
   };
 
   useEffect(() => {
-    // 加载快捷设置项列表
     loadQuickSettings();
-
-    // 定期检查更新（每5秒）
     const interval = setInterval(() => {
       loadQuickSettings();
     }, 5000);
-
-    // 监听窗口焦点事件，当窗口重新获得焦点时刷新
     const handleFocus = () => {
       loadQuickSettings();
     };
@@ -275,18 +283,35 @@ export default function RightToolbar() {
   return (
     <div
       className={cn(
-        "absolute top-1/2 right-2 flex -translate-y-1/2 transform flex-col items-center justify-center transition-all hover:opacity-100",
+        "absolute top-[4.75rem] right-2 z-20 flex flex-col items-center transition-all hover:opacity-100",
         isClassroomMode && "opacity-0",
       )}
     >
       <Toolbar
-        className="bg-popover/95 supports-backdrop-blur:bg-popover/80 border-border/50 flex-col gap-0.5 rounded-lg border px-1 py-1.5 shadow-xl backdrop-blur-md"
+        className="bg-popover/95 supports-backdrop-blur:bg-popover/80 border-border/50 max-h-[calc(100vh-1rem)] flex-col gap-0 overflow-y-auto rounded-lg border px-1 py-1.5 shadow-xl backdrop-blur-md"
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
-        {quickSettings.map((item) => (
-          <QuickSettingButton key={item.settingKey as string} settingKey={item.settingKey} isHovered={isHovered} />
-        ))}
+        <div className="flex h-9 w-full items-center justify-between gap-2 px-1">
+          <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+            <Pencil className="size-4" />
+            {t("title")}
+          </span>
+          <Switch
+            aria-label={t("title")}
+            checked={isHandwritingEnabled}
+            onCheckedChange={(enabled) => project.controller.setHandwritingMode(enabled)}
+          />
+        </div>
+        {isHandwritingEnabled && <HandwritingTools project={project} />}
+        {showQuickSettingsToolbar && quickSettings.length > 0 && (
+          <>
+            <div className="bg-border my-1 h-px w-full" />
+            {quickSettings.map((item) => (
+              <QuickSettingButton key={item.settingKey as string} settingKey={item.settingKey} isHovered={isHovered} />
+            ))}
+          </>
+        )}
       </Toolbar>
     </div>
   );

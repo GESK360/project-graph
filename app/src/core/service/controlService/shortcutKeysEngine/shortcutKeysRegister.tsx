@@ -2558,8 +2558,12 @@ export const allKeyBinds: KeyBindItem[] = [
     defaultKey: "p s c 0",
     icon: Slash,
     when: whenAlways,
-    onPress: () => {
+    onPress: (project) => {
       Settings.autoFillPenStrokeColor = Color.Transparent.toArray();
+      if (project)
+        project.controller.penStrokeDrawing.setCurrentStrokeColor(
+          project.stageStyleManager.currentStyle.StageObjectBorder,
+        );
     },
   },
 

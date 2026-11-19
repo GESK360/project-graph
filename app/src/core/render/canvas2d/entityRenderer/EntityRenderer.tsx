@@ -366,6 +366,7 @@ export class EntityRenderer {
         pressure: segment.pressure,
       })),
       penStrokeColor,
+      penStroke.width ?? 5,
     );
     if (penStroke.isMouseHover) {
       this.project.collisionBoxRenderer.render(

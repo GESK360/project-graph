@@ -16,7 +16,7 @@ export class PenStrokeDeletedEffect extends Effect {
     const segmentList = penStroke.segments;
     this.pathList = penStroke.getPath();
     this.color = penStroke.color;
-    this.width = segmentList[0].pressure * 5;
+    this.width = segmentList[0].pressure * (penStroke.width ?? 5);
   }
 
   static fromPenStroke(penStroke: PenStroke): PenStrokeDeletedEffect {

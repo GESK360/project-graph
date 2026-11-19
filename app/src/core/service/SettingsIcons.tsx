@@ -108,6 +108,7 @@ import {
 } from "lucide-react";
 
 export const settingsIcons = {
+  enablePenPressure: Gauge,
   hideCursorInPenMode: MouseOff,
   penPressureCurve: Spline,
   autoNamerTemplate: Tag,

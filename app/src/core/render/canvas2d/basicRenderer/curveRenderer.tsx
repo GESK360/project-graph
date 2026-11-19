@@ -43,7 +43,7 @@ export class CurveRenderer {
     this.project.canvas.ctx.strokeStyle = color.toString();
     this.project.canvas.ctx.stroke();
   }
-  renderPenStroke(stroke: PenStrokeSegment[], color: Color): void {
+  renderPenStroke(stroke: PenStrokeSegment[], color: Color, width: number = 5): void {
     this.project.canvas.ctx.strokeStyle = color.toString();
     this.project.canvas.ctx.lineJoin = "round";
     if (stroke.length < 2) return;
@@ -64,7 +64,7 @@ export class CurveRenderer {
         previous = current;
       }
       ctx.lineTo(stroke[stroke.length - 1].location.x, stroke[stroke.length - 1].location.y);
-      ctx.lineWidth = Math.max(0.5, stroke[0].pressure * 5 * this.project.camera.currentScale);
+      ctx.lineWidth = Math.max(0.5, stroke[0].pressure * width * this.project.camera.currentScale);
       ctx.stroke();
       return;
     }
@@ -79,7 +79,7 @@ export class CurveRenderer {
       const midX = (curr.x + next.x) / 2;
       const midY = (curr.y + next.y) / 2;
 
-      this.project.canvas.ctx.lineWidth = stroke[i].pressure * 5 * this.project.camera.currentScale;
+      this.project.canvas.ctx.lineWidth = stroke[i].pressure * width * this.project.camera.currentScale;
       this.project.canvas.ctx.quadraticCurveTo(curr.x, curr.y, midX, midY);
       this.project.canvas.ctx.stroke();
       this.project.canvas.ctx.beginPath();
@@ -89,7 +89,7 @@ export class CurveRenderer {
     const lastIndex = stroke.length - 1;
     const last = stroke[lastIndex].location;
     // 使用最后一个线段的pressure值设置lineWidth (AI修复的涂鸦粗细很恍惚的问题)
-    this.project.canvas.ctx.lineWidth = stroke[lastIndex - 1].pressure * 5 * this.project.camera.currentScale;
+    this.project.canvas.ctx.lineWidth = stroke[lastIndex - 1].pressure * width * this.project.camera.currentScale;
     this.project.canvas.ctx.lineTo(last.x, last.y);
     this.project.canvas.ctx.stroke();
   }

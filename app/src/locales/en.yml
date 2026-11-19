@@ -1,3 +1,37 @@
+handwritingTools:
+  title: Handwriting
+  penLabel: Pen {{index}}
+  penSettings: Pen settings
+  color: Color
+  customColor: Custom color
+  colors:
+    charcoal: Charcoal
+    red: Red
+    orange: Orange
+    yellow: Yellow
+    green: Green
+    cyan: Cyan
+    blue: Blue
+    purple: Purple
+    pink: Pink
+    white: White
+  width: Stroke width
+  customWidth: Custom width
+  widthPixels: "{{width}} px"
+  clonePen: Clone pen
+  deletePen: Delete pen
+  keepOnePen: Keep at least one pen
+  eraser: Eraser
+  eraserSettings: Eraser settings
+  shape: Eraser shape
+  eraserType: Eraser type
+  strokeEraser: Stroke eraser
+  pointEraser: Point eraser
+  circle: Circle
+  square: Square
+  clearStrokes: Erase all strokes
+  clearStrokesConfirmTitle: Erase all strokes?
+  clearStrokesConfirmBody: This removes every handwriting stroke from the current canvas. You can undo this action.
 windowControls:
   alwaysOnTop: Keep window on top
 
@@ -182,6 +216,9 @@ settings:
     description: |
       Prevents canvas interactions from changing project content, avoiding accidental edits on touchscreens.
       Camera navigation, object selection, and rectangle selection remain available.
+  enablePenPressure:
+    title: Enable pen pressure
+    description: When enabled, pen pressure controls stroke width. When disabled, strokes use a fixed width. Use the pressure curve to tune the response.
   hideCursorInPenMode:
     title: Hide Cursor in Brush Mode
     description: "When enabled, hides the mouse cursor while drawing with the brush tool"

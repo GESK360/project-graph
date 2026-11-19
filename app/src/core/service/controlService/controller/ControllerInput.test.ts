@@ -1,12 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Vector } from "@graphif/data-structures";
-import { ControllerInput } from "./ControllerInput";
+import { ControllerInput, getPointerSamples } from "./ControllerInput";
 
 beforeEach(() => {
   vi.stubGlobal("window", new EventTarget());
   vi.stubGlobal(
     "PointerEvent",
     class extends Event {
+      getCoalescedEvents() {
+        return (this as unknown as { coalescedEvents?: PointerEvent[] }).coalescedEvents ?? [];
+      }
+
       constructor(type: string, init: object = {}) {
         super(type, { cancelable: true });
         Object.assign(
@@ -46,7 +50,11 @@ function setup() {
     cancel: vi.fn(),
   };
   const input = new ControllerInput(element, (x, y) => new Vector((x - 10) / 2, (y - 20) / 2), handlers);
-  const pointer = (type: string, init: PointerEventInit = {}) => element.dispatchEvent(new PointerEvent(type, init));
+  const pointer = (type: string, init: PointerEventInit = {}, coalescedEvents: PointerEvent[] = []) => {
+    const event = new PointerEvent(type, init) as PointerEvent & { coalescedEvents?: PointerEvent[] };
+    event.coalescedEvents = coalescedEvents;
+    return element.dispatchEvent(event);
+  };
   const touch = (type: string, points: number[][], changed = points) =>
     element.dispatchEvent(
       Object.assign(new Event(type, { cancelable: true }), {
@@ -146,6 +154,40 @@ describe("unified canvas input", () => {
     expect(handlers.wheel).toHaveBeenLastCalledWith(expect.objectContaining({ deltaX: 10, deltaY: 20 }));
     element.dispatchEvent(wheel(true));
     expect(handlers.wheel).toHaveBeenLastCalledWith(expect.objectContaining({ deltaX: 20, deltaY: 40 }));
+    input.dispose();
+  });
+  it("keeps a pressure-active pen stroke when the driver omits the buttons bit", () => {
+    const { input, handlers, pointer } = setup();
+    pointer("pointerdown", { pointerType: "pen", buttons: 1, pressure: 0.4 });
+    pointer("pointermove", { pointerType: "pen", buttons: 0, pressure: 0.4 });
+    expect(handlers.cancel).not.toHaveBeenCalled();
+    expect(handlers.move).toHaveBeenCalledOnce();
+    input.dispose();
+  });
+  it("normalizes coalesced pen samples and retains the latest pointer position", () => {
+    const { input, handlers, pointer } = setup();
+    const sample = new PointerEvent("pointermove", {
+      pointerType: "pen",
+      clientX: 30,
+      clientY: 60,
+      pressure: 0.3,
+    });
+    pointer("pointermove", { pointerType: "pen", clientX: 50, clientY: 80, pressure: 0.6 }, [sample]);
+
+    const event = handlers.move.mock.calls[0][0] as PointerEvent;
+    expect(event.getCoalescedEvents()[0]).toMatchObject({ clientX: 10, clientY: 20, pressure: 0.3 });
+    expect(getPointerSamples(event).map(({ clientX, clientY }) => [clientX, clientY])).toEqual([
+      [10, 20],
+      [20, 30],
+    ]);
+    input.dispose();
+  });
+  it("uses the pointer event itself when no coalesced samples are provided", () => {
+    const { input, handlers, pointer } = setup();
+    pointer("pointermove", { pointerType: "pen", clientX: 50, clientY: 80 });
+
+    const event = handlers.move.mock.calls[0][0] as PointerEvent;
+    expect(getPointerSamples(event)).toEqual([event]);
     input.dispose();
   });
   it("ignores a release after cancellation and recovers when the button state is lost", () => {

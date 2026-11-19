@@ -58,7 +58,7 @@ export class DrawingControllerRenderer {
           currentStrokeColor.a === 0
             ? this.project.stageStyleManager.currentStyle.StageObjectBorder
             : currentStrokeColor,
-          5 * this.project.camera.currentScale,
+          this.project.controller.penStrokeDrawing.getCurrentStrokeWidth() * this.project.camera.currentScale,
         );
       } else {
         this.project.curveRenderer.renderSolidLine(
@@ -67,7 +67,7 @@ export class DrawingControllerRenderer {
           currentStrokeColor.a === 0
             ? this.project.stageStyleManager.currentStyle.StageObjectBorder
             : currentStrokeColor,
-          5 * this.project.camera.currentScale,
+          this.project.controller.penStrokeDrawing.getCurrentStrokeWidth() * this.project.camera.currentScale,
         );
       }
     } else {
@@ -77,17 +77,39 @@ export class DrawingControllerRenderer {
           pressure: segment.pressure,
         })),
         currentStrokeColor.a === 0 ? this.project.stageStyleManager.currentStyle.StageObjectBorder : currentStrokeColor,
+        this.project.controller.penStrokeDrawing.getCurrentStrokeWidth(),
       );
     }
   }
 
   private renderMouse(currentStrokeColor: Color) {
-    // 画跟随鼠标的笔头
-    // 如果粗细大于一定程度，则渲染成空心的
+    const mouseLocation = MouseLocation.vector();
+    const outlineColor =
+      currentStrokeColor.a === 0 ? this.project.stageStyleManager.currentStyle.StageObjectBorder : currentStrokeColor;
+
+    if (Settings.handwritingActiveTool === "eraser") {
+      const size = Settings.handwritingEraserSize;
+      if (Settings.handwritingEraserShape === "circle") {
+        this.project.shapeRenderer.renderCircle(mouseLocation, size / 2, Color.Transparent, outlineColor, 1.5);
+      } else {
+        this.project.shapeRenderer.renderRectFromCenter(
+          mouseLocation,
+          size,
+          size,
+          Color.Transparent,
+          outlineColor,
+          1.5,
+          3,
+        );
+      }
+      return;
+    }
+
+    const width = this.project.controller.penStrokeDrawing.getCurrentStrokeWidth();
     this.project.shapeRenderer.renderCircle(
-      MouseLocation.vector(),
-      (5 / 2) * this.project.camera.currentScale,
-      currentStrokeColor.a === 0 ? this.project.stageStyleManager.currentStyle.StageObjectBorder : currentStrokeColor,
+      mouseLocation,
+      (width * this.project.camera.currentScale) / 2,
+      outlineColor,
       Color.Transparent,
       0,
     );
@@ -96,23 +118,23 @@ export class DrawingControllerRenderer {
       this.renderAxisMouse();
     }
   }
-
   private renderAdjusting(currentStrokeColor: Color) {
     const circleCenter = this.project.renderer.transformWorld2View(
       this.project.controller.penStrokeControl.startAdjustWidthLocation,
     );
     // 鼠标正在调整状态
+    const width = this.project.controller.penStrokeDrawing.currentStrokeWidth;
     this.project.shapeRenderer.renderCircle(
       circleCenter,
-      (5 / 2) * this.project.camera.currentScale,
+      (width / 2) * this.project.camera.currentScale,
       currentStrokeColor.a === 0 ? this.project.stageStyleManager.currentStyle.StageObjectBorder : currentStrokeColor,
       Color.Transparent,
       0,
     );
     // 当前粗细显示
     this.project.textRenderer.renderTextFromCenter(
-      `2R: ${5}px`,
-      circleCenter.add(new Vector(0, (-(5 / 2) - 40) * this.project.camera.currentScale)),
+      `2R: ${width}px`,
+      circleCenter.add(new Vector(0, (-(width / 2) - 40) * this.project.camera.currentScale)),
       24,
       currentStrokeColor.a === 0 ? this.project.stageStyleManager.currentStyle.StageObjectBorder : currentStrokeColor,
     );
