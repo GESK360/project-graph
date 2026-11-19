@@ -77,7 +77,7 @@ export class MouseInteraction {
     // 更新 Edge状态
     this._hoverEdges = [];
     for (const edge of this.project.stageManager.getEdges()) {
-      if (edge.isHiddenBySectionCollapse) {
+      if (edge.isHiddenBySectionCollapse || this.project.stageManager.isHiddenByBranchCollapse(edge)) {
         continue;
       }
       if (this.project.sectionMethods.isAssociationCoveredByBigTitleSection(edge)) {
@@ -92,6 +92,7 @@ export class MouseInteraction {
     for (const edge of this.project.stageManager
       .getAssociations()
       .filter((association) => association instanceof MultiTargetUndirectedEdge)) {
+      if (this.project.stageManager.isHiddenByBranchCollapse(edge)) continue;
       if (this.project.sectionMethods.isAssociationCoveredByBigTitleSection(edge)) {
         continue;
       }

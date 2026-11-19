@@ -2153,6 +2153,9 @@ keyBinds:
   selectAdditionalRight:
     title: 附加選取右側節點
     description: 按下後，附加選取右側節點
+  dragToConnectMindMapAligned:
+    title: 拖曳接入並統一分支方向
+    description: 拖曳時按住這個快速鍵，放開滑鼠接入後，整棵子樹的連線會統一朝接入側排列。
   moveUpSelectedEntities:
     title: 向上移動所有選取的實體
     description: 持續按住時，所有選取的實體會持續向上加速移動，放開後緩動停止

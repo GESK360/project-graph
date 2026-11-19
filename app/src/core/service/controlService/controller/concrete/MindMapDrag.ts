@@ -6,10 +6,12 @@ import { Edge } from "@/core/stage/stageObject/association/Edge";
 import { LineEdge } from "@/core/stage/stageObject/association/LineEdge";
 import { Section } from "@/core/stage/stageObject/entity/Section";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
+import { Direction } from "@/types/directions";
 import { Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
 
 export type MindMapSide = "left" | "right" | "top" | "bottom";
+export type MindMapDragMode = "preserve" | "align";
 
 export const mindMapPorts = {
   left: { source: new Vector(0.01, 0.5), target: new Vector(0.99, 0.5), outward: new Vector(-1, 0) },
@@ -17,6 +19,13 @@ export const mindMapPorts = {
   top: { source: new Vector(0.5, 0.01), target: new Vector(0.5, 0.99), outward: new Vector(0, -1) },
   bottom: { source: new Vector(0.5, 0.99), target: new Vector(0.5, 0.01), outward: new Vector(0, 1) },
 };
+
+const edgeDirections = {
+  left: [Direction.Left, Direction.Right],
+  right: [Direction.Right, Direction.Left],
+  top: [Direction.Up, Direction.Down],
+  bottom: [Direction.Down, Direction.Up],
+} as const;
 
 export function getMindMapPort(rect: Rectangle, rate: Vector): Vector {
   return Edge.getExactEdgePositionByRate(rect, rate) ?? rect.getInnerLocationByRateVector(rate);
@@ -54,6 +63,7 @@ export class MindMapDrag {
     private readonly project: Project,
     public readonly node: ConnectableEntity,
     private readonly startWorld: Vector,
+    public readonly mode: MindMapDragMode = "preserve",
   ) {
     const { graphMethods } = project;
     this.blockedTargets = this.getBlockedTargets();
@@ -110,6 +120,7 @@ export class MindMapDrag {
         node instanceof Section ||
         this.blockedTargets.has(node) ||
         node.isHiddenBySectionCollapse ||
+        this.project.stageManager.isHiddenByBranchCollapse(node) ||
         this.project.sectionMethods.isEntityHiddenByBigTitleSection(node) ||
         node.nearestLockedAncestorSection !== null
       ) {
@@ -138,6 +149,17 @@ export class MindMapDrag {
     if (!this.isMovableBranch(branch) || !graphMethods.validateTreeStructure(this.node, true).isValid) return;
     if (!this.canReplaceIncomingEdges(oldIncomingEdges)) return;
 
+    const branchNodes = new Set(branch);
+    if (this.mode === "align") {
+      const treeEdges = stageManager
+        .getLineEdges()
+        .filter((edge) => edge.lineType !== "dashed" && branchNodes.has(edge.source) && branchNodes.has(edge.target));
+      if (treeEdges.length > 0) {
+        const [sourceDirection, targetDirection] = edgeDirections[side];
+        stageManager.changeEdgesConnectLocation(treeEdges, sourceDirection, true);
+        stageManager.changeEdgesConnectLocation(treeEdges, targetDirection);
+      }
+    }
     autoLayoutFastTree.autoLayoutFastTreeMode(this.node, side);
     const rootRect = this.node.collisionBox.getRectangle();
     const parentRect = parent.collisionBox.getRectangle();
@@ -151,7 +173,6 @@ export class MindMapDrag {
     let offset = getMindMapPort(parentRect, source)
       .subtract(rootPort)
       .add(outward.multiply(gap + clearance));
-    const branchNodes = new Set(branch);
     const siblings = graphMethods.getOutgoingEdges(parent).map((edge) => edge.target);
     const siblingBounds = siblings
       .flatMap((node) => graphMethods.getSuccessorSet(node, true, true))

@@ -66,6 +66,17 @@ function setup() {
 }
 
 describe("unified canvas input", () => {
+  it("does not turn handled control clicks into canvas double-clicks", () => {
+    const { input, handlers, pointer } = setup();
+    handlers.up.mockReturnValue(true);
+    for (let i = 0; i < 2; i++) {
+      pointer("pointerdown");
+      pointer("pointerup", { buttons: 0 });
+    }
+    expect(handlers.up).toHaveBeenCalledTimes(2);
+    expect(handlers.doubleClick).not.toHaveBeenCalled();
+    input.dispose();
+  });
   it.each([
     [0, 1, 2, 1],
     [0, 1, 2, 2],

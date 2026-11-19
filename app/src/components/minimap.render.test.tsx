@@ -83,6 +83,7 @@ function createFakeProject(nodeRectangles: Rectangle[], edgeLines: Line[], viewR
   return {
     stage: [...nodeRectangles, ...edgeLines],
     stageManager: {
+      isHiddenByBranchCollapse: () => false,
       getEntities: () => entities,
       getEdges: () => edges,
     },

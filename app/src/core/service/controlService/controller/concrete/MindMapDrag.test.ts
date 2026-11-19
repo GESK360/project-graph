@@ -4,6 +4,7 @@ import { KeyBindsUI } from "@/core/service/controlService/shortcutKeysEngine/Key
 import { ConnectableEntity } from "@/core/stage/stageObject/abstract/ConnectableEntity";
 import { LineEdge } from "@/core/stage/stageObject/association/LineEdge";
 import { GraphMethods } from "@/core/stage/stageManager/basicMethods/GraphMethods";
+import { Direction } from "@/types/directions";
 import { Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
 import { describe, expect, it, vi } from "vitest";
@@ -56,6 +57,18 @@ function setup() {
   const parent = node(0, 0, new Vector(100, 80));
   const root = node(-300, -300);
   const recordStep = vi.fn();
+  const changeEdgesConnectLocation = vi.fn((edges: LineEdge[], direction: Direction, isSource = false) => {
+    const rates = {
+      [Direction.Up]: new Vector(0.5, 0.01),
+      [Direction.Down]: new Vector(0.5, 0.99),
+      [Direction.Left]: new Vector(0.01, 0.5),
+      [Direction.Right]: new Vector(0.99, 0.5),
+    };
+    for (const edge of edges) {
+      if (isSource) edge.sourceRectangleRate = rates[direction];
+      else edge.targetRectangleRate = rates[direction];
+    }
+  });
   const pressingKeySet = new Set<string>();
   const project = {
     sectionMoveDepth: 0,
@@ -68,11 +81,13 @@ function setup() {
     stageManager: {
       getStageObjects: () => [...nodes, ...edges],
       getEntities: () => nodes,
+      isHiddenByBranchCollapse: () => false,
       isHaveEntitySelected: () => nodes.some((node) => node.isSelected),
       getConnectableEntity: () => nodes,
       getEdges: () => edges,
       getLineEdges: () => edges,
       getAssociations: () => edges,
+      changeEdgesConnectLocation,
       getConnectableEntityByUUID: (id: string) => nodes.find((node) => node.uuid === id),
       isEntityExists: (id: string) => nodes.some((node) => node.uuid === id),
       add: (edge: LineEdge) => edges.push(edge),
@@ -92,7 +107,7 @@ function setup() {
     graphMethods: new GraphMethods(project),
     autoLayoutFastTree: new AutoLayoutFastTree(project),
   });
-  return { project, parent, root, node, edges, recordStep, pressingKeySet };
+  return { project, parent, root, node, edges, recordStep, pressingKeySet, changeEdgesConnectLocation };
 }
 
 describe("mind-map drag", () => {
@@ -142,6 +157,59 @@ describe("mind-map drag", () => {
     expect(root.collisionBox.getRectangle().right).toBeLessThan(child.collisionBox.getRectangle().left);
     expect(child.collisionBox.getRectangle().right).toBeLessThan(grandchild.collisionBox.getRectangle().left);
   });
+
+  it.each([
+    ["left", -40, 25, Direction.Left, Direction.Right, "isRightToLeft", "leftCenter", "rightCenter"],
+    ["right", 100, 25, Direction.Right, Direction.Left, "isLeftToRight", "rightCenter", "leftCenter"],
+    ["top", 30, -30, Direction.Up, Direction.Down, "isBottomToTop", "topCenter", "bottomCenter"],
+    ["bottom", 30, 80, Direction.Down, Direction.Up, "isTopToBottom", "bottomCenter", "topCenter"],
+  ] as const)(
+    "aligns the whole branch to the %s using the existing edge controls",
+    (side, x, y, sourceDirection, targetDirection, direction, from, to) => {
+      const { project, parent, root, node, edges, recordStep, changeEdgesConnectLocation } = setup();
+      const child = node(-450, -195);
+      const grandchild = node(-600, -190);
+      const peer = node(700, -210);
+      const childEdge = new LineEdge(project, {
+        associationList: [root, child],
+        sourceRectangleRate: new Vector(0.5, 0.01),
+        targetRectangleRate: new Vector(0.5, 0.99),
+      });
+      const grandchildEdge = new LineEdge(project, {
+        associationList: [child, grandchild],
+        sourceRectangleRate: new Vector(0.99, 0.5),
+        targetRectangleRate: new Vector(0.01, 0.5),
+      });
+      const reference = new LineEdge(project, { associationList: [root, grandchild], lineType: "dashed" });
+      const otherEdge = new LineEdge(project, { associationList: [parent, peer] });
+      edges.push(childEdge, grandchildEdge, reference, otherEdge);
+      const drag = new MindMapDrag(project, root, new Vector(-300, -300), "align");
+      const target = new Vector(x, y);
+      drag.update(target);
+      expect(drag.preview?.contact).toEqual({ node: parent, side });
+      expect(changeEdgesConnectLocation).not.toHaveBeenCalled();
+
+      drag.drop(target);
+
+      expect(changeEdgesConnectLocation.mock.calls).toEqual([
+        [[childEdge, grandchildEdge], sourceDirection, true],
+        [[childEdge, grandchildEdge], targetDirection],
+      ]);
+      expect(edges.slice(0, -1)).toEqual([childEdge, grandchildEdge, reference, otherEdge]);
+      for (const edge of [edges.at(-1)!, childEdge, grandchildEdge]) {
+        expect(edge[direction]()).toBe(true);
+        const source = edge.source.collisionBox.getRectangle()[from];
+        const target = edge.target.collisionBox.getRectangle()[to];
+        if (side === "left") expect(target.x).toBeLessThan(source.x);
+        if (side === "right") expect(target.x).toBeGreaterThan(source.x);
+        if (side === "top") expect(target.y).toBeLessThan(source.y);
+        if (side === "bottom") expect(target.y).toBeGreaterThan(source.y);
+      }
+      expect(reference.isUnknownDirection()).toBe(true);
+      expect(otherEdge.isUnknownDirection()).toBe(true);
+      expect(recordStep).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("reconnects to the original parent and replaces all direct incoming edges in one step", () => {
     const { project, parent, root, node, edges, recordStep } = setup();
@@ -200,6 +268,28 @@ describe("mind-map drag shortcut", () => {
     metaKey: false,
   } as MouseEvent;
   const release = { ...press, clientX: 100, clientY: 25 } as MouseEvent;
+
+  it.each([
+    ["x", "x", true],
+    ["S-k", "k", true],
+    ["S-k", "x", false],
+  ] as const)("uses the configured alignment binding %s when holding %s", (binding, heldKey, enabled) => {
+    const { project, root, edges, node, pressingKeySet, changeEdgesConnectLocation } = setup();
+    const child = node(-450, -450);
+    const edge = new LineEdge(project, { associationList: [root, child] });
+    edges.push(edge);
+    const controller = new ControllerEntityClickSelectAndMoveClass(project);
+    vi.mocked(KeyBindsUI.getUIKeyBind).mockImplementation((id) => {
+      const key = id === "dragToConnectMindMapAligned" ? binding : "z";
+      return { key, isEnabled: true } as ReturnType<typeof KeyBindsUI.getUIKeyBind>;
+    });
+    const shiftKey = binding === "S-k" && heldKey === "k";
+    pressingKeySet.add(heldKey);
+    controller.mousedown({ ...press, shiftKey } as MouseEvent);
+    controller.mouseup({ ...release, shiftKey } as MouseEvent);
+    expect(changeEdgesConnectLocation).toHaveBeenCalledTimes(enabled ? 2 : 0);
+    expect(edge.isLeftToRight()).toBe(enabled);
+  });
 
   it.each(["key first", "mouse first", "during movement"])("uses the same branch drag with %s", (order) => {
     const { project, parent, root, edges, pressingKeySet, recordStep } = setup();

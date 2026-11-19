@@ -12,7 +12,12 @@ import { parseSingleEmacsKey, transformedKeys } from "@/utils/emacs";
 import { isMac } from "@/utils/platform";
 import { Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
-import { MindMapDrag } from "./MindMapDrag";
+import { MindMapDrag, type MindMapDragMode } from "./MindMapDrag";
+
+const mindMapDragKeyBinds = {
+  preserve: "dragToConnectMindMap",
+  align: "dragToConnectMindMapAligned",
+} satisfies Record<MindMapDragMode, string>;
 
 /**
  * 拖拽节点使其移动的控制器
@@ -35,8 +40,8 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
     return { node: drag.node, ...drag.preview };
   }
 
-  private isMindMapKeyHeld(event: MouseEvent | KeyboardEvent) {
-    const binding = KeyBindsUI.getUIKeyBind("dragToConnectMindMap");
+  private isMindMapKeyHeld(event: MouseEvent | KeyboardEvent, mode: MindMapDragMode) {
+    const binding = KeyBindsUI.getUIKeyBind(mindMapDragKeyBinds[mode]);
     if (!binding?.isEnabled || !binding.key || binding.key.includes(" ")) return false;
     const key = parseSingleEmacsKey(binding.key);
     const pressedKeys = this.project.controller.pressingKeySet;
@@ -53,7 +58,8 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
   private startMindMapDrag(event: MouseEvent | KeyboardEvent) {
     const candidate = this.mindMapCandidate;
     if (!candidate || Settings.viewerMode || Settings.mouseLeftMode !== "selectAndMove") return;
-    if (!this.isMindMapKeyHeld(event)) return;
+    const mode = this.isMindMapKeyHeld(event, "align") ? "align" : "preserve";
+    if (mode === "preserve" && !this.isMindMapKeyHeld(event, mode)) return;
 
     const { stageManager } = this.project;
     if (this.beforeMovePositions) {
@@ -74,7 +80,7 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
     this.beforeMovePositions = null;
     this.isMovingEntity = false;
     for (const object of stageManager.getStageObjects()) object.isSelected = object === candidate.node;
-    const drag = new MindMapDrag(this.project, candidate.node, candidate.startWorld);
+    const drag = new MindMapDrag(this.project, candidate.node, candidate.startWorld, mode);
     this.mindMapDrag = drag;
     if (this.currentViewLocation.distance(this.mouseDownViewLocation) > 5) {
       drag.update(this.project.renderer.transformView2World(this.currentViewLocation));
@@ -92,7 +98,7 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
   };
 
   public keyup = (event: KeyboardEvent) => {
-    if (this.mindMapDrag && !this.isMindMapKeyHeld(event)) this.mindMapDrag = null;
+    if (this.mindMapDrag && !this.isMindMapKeyHeld(event, this.mindMapDrag.mode)) this.mindMapDrag = null;
   };
 
   private mouseDownViewLocation = Vector.getZero();
@@ -203,7 +209,10 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
         this.project.effects.addEffect(RectangleRenderEffect.fromShiftClickSelect(boundingRectangle));
         this.project.effects.addEffect(RectangleNoteEffect.fromShiftClickSelect(this.project, boundingRectangle));
         for (const entity of this.project.stageManager.getStageObjects()) {
-          if (entity.collisionBox.isIntersectsWithRectangle(boundingRectangle)) {
+          if (
+            !this.project.stageManager.isHiddenByBranchCollapse(entity) &&
+            entity.collisionBox.isIntersectsWithRectangle(boundingRectangle)
+          ) {
             entity.isSelected = true;
           }
         }
@@ -245,7 +254,7 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
     }
     this.startMindMapDrag(event);
     if (this.mindMapDrag) {
-      if (Settings.mouseLeftMode !== "selectAndMove" || !this.isMindMapKeyHeld(event)) {
+      if (Settings.mouseLeftMode !== "selectAndMove" || !this.isMindMapKeyHeld(event, this.mindMapDrag.mode)) {
         this.mindMapDrag = null;
         return;
       }
@@ -365,7 +374,7 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
       if (
         !Settings.viewerMode &&
         Settings.mouseLeftMode === "selectAndMove" &&
-        this.isMindMapKeyHeld(event) &&
+        this.isMindMapKeyHeld(event, drag.mode) &&
         view.distance(this.mouseDownViewLocation) > 5
       ) {
         drag.drop(this.project.renderer.transformView2World(view));

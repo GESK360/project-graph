@@ -1911,6 +1911,9 @@ keyBinds:
   dragToConnectMindMap:
     title: 拖拽节点并连接分支
     description: 拖动时按住此键，靠近目标节点的边缘预览连线，松开鼠标替换原有入线并整理分支。
+  dragToConnectMindMapAligned:
+    title: 拖拽接入并统一分支方向
+    description: 拖动时按住此键，松开鼠标接入后，整棵子树的连线会统一朝接入侧排列。
   moveUpSelectedEntities:
     title: 向上移动所有选中的实体
     description: |

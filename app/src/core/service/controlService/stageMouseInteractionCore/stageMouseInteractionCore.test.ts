@@ -12,6 +12,7 @@ describe("hover coalescing", () => {
     const edge = { collisionBox: { isContainsPoint: contains } };
     const project = {
       stageManager: {
+        isHiddenByBranchCollapse: () => false,
         getEdges: () => [edge],
         getAssociations: () => [],
         getSections: () => [],

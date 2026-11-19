@@ -2198,6 +2198,9 @@ keyBinds:
   selectAdditionalRight:
     title: Tambah Pilih Node Kanan
     description: Setelah ditekan, tambah pilih node kanan
+  dragToConnectMindMapAligned:
+    title: Seret untuk menyambung dan menyelaraskan cabang
+    description: Tahan pintasan ini saat menyeret node. Setelah disambungkan, semua garis pada cabang akan mengarah ke sisi sambungan.
   moveUpSelectedEntities:
     title: Gerakkan Semua Entitas yang Dipilih ke Atas
     description: |

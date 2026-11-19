@@ -3,7 +3,8 @@ import { Vector } from "@graphif/data-structures";
 export interface ControllerInputHandlers {
   down(event: PointerEvent): void;
   move(event: PointerEvent): void;
-  up(event: PointerEvent): void;
+  leave?(): void;
+  up(event: PointerEvent): boolean | void;
   doubleClick(event: PointerEvent): void;
   mouseChord(): void;
   wheel(event: WheelEvent): void;
@@ -87,8 +88,14 @@ export class ControllerInput {
     const press = this.press;
     this.press = null;
     this.location = new Vector(event.clientX, event.clientY);
-    this.handlers.up(event);
-    if (!press || press.button !== event.button || press.dragged || press.location.distance(this.location) > 5) {
+    const handled = this.handlers.up(event);
+    if (
+      handled ||
+      !press ||
+      press.button !== event.button ||
+      press.dragged ||
+      press.location.distance(this.location) > 5
+    ) {
       this.lastClick = null;
       return;
     }
@@ -223,6 +230,7 @@ export class ControllerInput {
   private readonly listeners: Record<string, EventListener> = {
     pointerdown: this.pointerdown as EventListener,
     pointermove: this.pointermove as EventListener,
+    pointerleave: () => this.handlers.leave?.(),
     pointerup: this.pointerup as EventListener,
     pointercancel: this.pointercancel as EventListener,
     lostpointercapture: this.pointercancel as EventListener,

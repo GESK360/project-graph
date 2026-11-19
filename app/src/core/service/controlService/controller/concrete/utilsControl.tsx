@@ -308,6 +308,7 @@ export class ControllerUtils {
         if (!association.isPhysical) {
           continue; // 非物理对象（如 SyncAssociation）不参与点击检测
         }
+        if (this.project.stageManager.isHiddenByBranchCollapse(association)) continue;
         if (association instanceof LineEdge) {
           if (association.target.isHiddenBySectionCollapse && association.source.isHiddenBySectionCollapse) {
             continue;

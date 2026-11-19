@@ -172,6 +172,7 @@ export class Renderer {
     this.renderCuttingLine();
     this.renderConnectingLine();
     this.renderMindMapDrag();
+    this.renderBranchFoldBadges();
     this.renderKeyboardOnly();
     this.rendererLayerMovingLine();
     this.project.searchContentHighlightRenderer.render(this.frameIndex);
@@ -781,6 +782,49 @@ export class Renderer {
       );
     }
   }
+  private renderBranchFoldBadges() {
+    const { ctx } = this.project.canvas;
+    const { Background, StageObjectBorder, CollideBoxSelected } = this.project.stageStyleManager.currentStyle;
+    const mouse = MouseLocation.vector();
+    ctx.save();
+    ctx.font = "600 10px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineCap = "round";
+    ctx.lineWidth = 1.5;
+    const pointer =
+      !Settings.viewerMode && Settings.mouseLeftMode === "selectAndMove"
+        ? this.project.controller.branchFoldPointer
+        : undefined;
+    for (const { center, radius, count, origin } of this.project.stageManager.getBranchFoldBadges(pointer)) {
+      const { x, y } = center;
+      if (x + radius < 0 || x - radius > this.w || y + radius < 0 || y - radius > this.h) continue;
+      const outline = center.distance(mouse) <= radius + 2 ? CollideBoxSelected : StageObjectBorder;
+      ctx.fillStyle = Background.toNewAlpha(1).toString();
+      ctx.strokeStyle = outline.toString();
+      if (origin && count !== undefined) {
+        ctx.beginPath();
+        ctx.moveTo(origin.x, origin.y);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      if (count !== undefined) {
+        ctx.fillStyle = StageObjectBorder.toString();
+        ctx.fillText(String(count), x, y + 0.5);
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(x - 3, y);
+        ctx.lineTo(x + 3, y);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
   private renderEntities(viewRectangle: Rectangle) {
     this.project.entityRenderer.renderAllEntities(viewRectangle);
   }
@@ -788,6 +832,7 @@ export class Renderer {
   private renderEdges(viewRectangle: Rectangle) {
     this.renderedEdges = 0;
     for (const association of this.project.stageManager.getAssociations()) {
+      if (this.project.stageManager.isHiddenByBranchCollapse(association)) continue;
       if (this.isOverView(viewRectangle, association)) {
         continue;
       }

@@ -232,6 +232,7 @@ export class RectangleSelect {
    * @param entity
    */
   private isSelectWithEntity(entity: StageObject) {
+    if (this.project.stageManager.isHiddenByBranchCollapse(entity)) return false;
     if (entity.collisionBox && this.selectingRectangle) {
       const mode = this.getSelectMode();
       if (mode === "intersect") {

@@ -18,6 +18,7 @@ import { ControllerPenStrokeControlClass } from "@/core/service/controlService/c
 import { ControllerPenStrokeDrawingClass } from "@/core/service/controlService/controller/concrete/ControllerPenStrokeDrawing";
 import { ControllerRectangleSelectClass } from "@/core/service/controlService/controller/concrete/ControllerRectangleSelect";
 import { ControllerSectionEditClass } from "@/core/service/controlService/controller/concrete/ControllerSectionEdit";
+import type { BranchFoldSide } from "@/core/stage/stageManager/StageManager";
 import { CursorNameEnum } from "@/types/cursors";
 import { isMac } from "@/utils/platform";
 import { Settings } from "../../Settings";
@@ -80,6 +81,8 @@ export class Controller {
   private readonly unwatchMouseLeftMode: () => void;
   private readonly controllers: ControllerClass[] = [];
   private isCameraPointerGesture = false;
+  private pressedBranchBadge: { branch: BranchFoldSide; view: Vector; dragged: boolean } | null = null;
+  public branchFoldPointer: Vector | undefined;
 
   lastClickTime = 0;
   lastClickLocation = Vector.getZero();
@@ -116,6 +119,8 @@ export class Controller {
     this.isMouseDown.fill(false);
     this.isMovingEdge = false;
     this.isCameraPointerGesture = false;
+    this.pressedBranchBadge = null;
+    this.branchFoldPointer = undefined;
     for (const controller of this.controllers) controller.mouseMoveOutWindowForcedShutdown(location);
     this.setCursorName(CursorNameEnum.Default);
   }
@@ -177,6 +182,20 @@ export class Controller {
         this.mousedown(event);
         this.camera.mousedown(event);
         this.isCameraPointerGesture = this.camera.isUsingMouseGrabMove;
+        if (
+          !this.isCameraPointerGesture &&
+          event.button === 0 &&
+          !Settings.viewerMode &&
+          Settings.mouseLeftMode === "selectAndMove"
+        ) {
+          const view = new Vector(event.clientX, event.clientY);
+          const branch = project.stageManager.findBranchFoldBadge(view, this.branchFoldPointer);
+          if (branch) {
+            this.pressedBranchBadge = { branch, view, dragged: false };
+            return;
+          }
+        }
+        this.branchFoldPointer = undefined;
         if (!this.isCameraPointerGesture)
           this.dispatch((c) => {
             if (c !== this.camera) c.mousedown(event);
@@ -185,11 +204,40 @@ export class Controller {
       move: (event) => {
         this.updateModeForPointer(event);
         this.resetCountdownTimer();
+        const view = new Vector(event.clientX, event.clientY);
+        if (this.pressedBranchBadge) {
+          if (view.distance(this.pressedBranchBadge.view) > 5) this.pressedBranchBadge.dragged = true;
+          return;
+        }
+        this.branchFoldPointer =
+          event.buttons === 0 && Settings.mouseLeftMode === "selectAndMove" && !Settings.viewerMode ? view : undefined;
         if (this.isCameraPointerGesture) this.camera.mousemove(event);
         else this.dispatch((c) => c.mousemove(event));
       },
+      leave: () => {
+        this.branchFoldPointer = undefined;
+        this.resetCountdownTimer();
+      },
       up: (event) => {
         this.mouseup(event);
+        const badge = this.pressedBranchBadge;
+        if (badge) {
+          this.pressedBranchBadge = null;
+          const view = new Vector(event.clientX, event.clientY);
+          if (
+            !Settings.viewerMode &&
+            Settings.mouseLeftMode === "selectAndMove" &&
+            !badge.dragged &&
+            view.distance(badge.view) <= 5
+          ) {
+            const branch = project.stageManager.findBranchFoldBadge(view, this.branchFoldPointer);
+            if (branch?.source === badge.branch.source && branch.side === badge.branch.side) {
+              project.stageManager.toggleBranchCollapse(branch);
+            }
+          }
+          this.branchFoldPointer = undefined;
+          return true;
+        }
         if (this.isCameraPointerGesture) this.camera.mouseup(event);
         else this.dispatch((c) => c.mouseup(event));
       },

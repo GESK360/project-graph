@@ -24,6 +24,8 @@ export class LineEdge extends Edge {
   public lineType: string = "solid";
   @serializable
   public arrowType: string = "default";
+  @serializable
+  public isBranchCollapsed: boolean;
 
   get collisionBox(): CollisionBox {
     return EdgeCollisionBoxGetter.getCollisionBox(this);
@@ -54,6 +56,7 @@ export class LineEdge extends Edge {
       targetRectangleRate = Vector.same(0.5),
       lineType = "solid",
       arrowType = "default",
+      isBranchCollapsed = false,
     },
     /** true表示解析状态，false表示解析完毕 */
     public unknown = false,
@@ -67,6 +70,7 @@ export class LineEdge extends Edge {
     this.targetRectangleRate = targetRectangleRate;
     this.lineType = lineType;
     this.arrowType = arrowType;
+    this.isBranchCollapsed = isBranchCollapsed;
 
     this.adjustSizeByText();
   }

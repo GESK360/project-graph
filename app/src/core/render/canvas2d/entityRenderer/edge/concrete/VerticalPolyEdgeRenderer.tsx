@@ -165,135 +165,45 @@ export class VerticalPolyEdgeRenderer extends EdgeRendererClass {
     return Math.exp(-(x * x) / 10000);
   }
 
+  getPolyline(edge: LineEdge) {
+    const direction = this.getVerticalDirection(edge);
+    const start = edge.source.collisionBox.getRectangle();
+    const end = edge.target.collisionBox.getRectangle();
+    const horizontal = direction.x !== 0;
+    const crossOffset = horizontal ? start.center.y - end.center.y : start.center.x - end.center.x;
+    const halfCrossSize = (horizontal ? end.height : end.width) / 2;
+    const rate = this.gaussianFunction(crossOffset);
+    const offset = (1 - rate) * halfCrossSize * (crossOffset > 0 ? 1 : -1);
+    const target = horizontal
+      ? new Vector(direction.x > 0 ? end.left : end.right, end.center.y + offset)
+      : new Vector(end.center.x + offset, direction.y > 0 ? end.top : end.bottom);
+    const source = horizontal
+      ? new Vector(direction.x > 0 ? start.right : start.left, start.center.y)
+      : new Vector(start.center.x, direction.y > 0 ? start.bottom : start.top);
+    const nearTarget = target.subtract(direction.multiply(this.fixedLength + halfCrossSize * rate));
+    const nearSource = horizontal ? new Vector(nearTarget.x, source.y) : new Vector(source.x, nearTarget.y);
+    return { direction, points: [source, nearSource, nearTarget, target] as const };
+  }
+
   public renderNormalState(edge: LineEdge): void {
-    // this.renderTest(edge);
-    // 直线绘制
     if (edge.text.trim() === "") {
-      const verticalDirection = this.getVerticalDirection(edge);
-      if (verticalDirection.x === 0) {
-        // 左右偏离程度
-
-        const rate =
-          1 -
-          this.gaussianFunction(
-            edge.target.collisionBox.getRectangle().center.x - edge.source.collisionBox.getRectangle().center.x,
-          );
-        // 左右偏离距离 恒正
-        const distance = (rate * edge.target.collisionBox.getRectangle().size.x) / 2;
-        // 根据偏移距离计算附加高度  恒正
-        const h = (edge.target.collisionBox.getRectangle().size.x / 2) * (1 - rate);
-        // 终点
-        const p1 = new Vector(
-          edge.target.collisionBox.getRectangle().center.x +
-            distance *
-              (edge.source.collisionBox.getRectangle().center.x > edge.target.collisionBox.getRectangle().center.x
-                ? 1
-                : -1),
-          verticalDirection.y > 0
-            ? edge.target.collisionBox.getRectangle().top
-            : edge.target.collisionBox.getRectangle().bottom,
+      const { direction, points } = this.getPolyline(edge);
+      this.project.curveRenderer.renderSolidLineMultiple(
+        points.map((point) => this.project.renderer.transformWorld2View(point)),
+        new Color(204, 204, 204),
+        2 * this.project.camera.currentScale,
+      );
+      if (this.shouldRenderTargetArrow(edge)) {
+        this.project.edgeRenderer.renderArrowByType(
+          points[3],
+          edge.bodyLine.start.clone(),
+          direction,
+          15,
+          edge.color,
+          edge.arrowType || "default",
+          2,
         );
-        const length = (this.fixedLength + h) * (verticalDirection.y > 0 ? -1 : 1);
-        const p2 = p1.add(new Vector(0, length));
-
-        const p4 = new Vector(
-          edge.source.collisionBox.getRectangle().center.x,
-          verticalDirection.y > 0
-            ? edge.source.collisionBox.getRectangle().bottom
-            : edge.source.collisionBox.getRectangle().top,
-        );
-
-        const p3 = new Vector(p4.x, p2.y);
-        this.project.curveRenderer.renderSolidLineMultiple(
-          [
-            this.project.renderer.transformWorld2View(p1),
-            this.project.renderer.transformWorld2View(p2),
-            this.project.renderer.transformWorld2View(p3),
-            this.project.renderer.transformWorld2View(p4),
-          ],
-          new Color(204, 204, 204),
-          2 * this.project.camera.currentScale,
-        );
-
-        if (this.shouldRenderTargetArrow(edge)) {
-          this.project.edgeRenderer.renderArrowByType(
-            p1,
-            edge.bodyLine.start.clone(),
-            verticalDirection,
-            15,
-            edge.color,
-            edge.arrowType || "default",
-            2,
-          );
-        }
-      } else if (verticalDirection.y === 0) {
-        // 左右
-        const rate =
-          1 -
-          this.gaussianFunction(
-            edge.target.collisionBox.getRectangle().center.y - edge.source.collisionBox.getRectangle().center.y,
-          );
-        // 偏离距离 恒正
-        const distance = (rate * edge.target.collisionBox.getRectangle().size.y) / 2;
-        // 根据偏移距离计算附加高度
-        const h = (edge.target.collisionBox.getRectangle().size.y / 2) * (1 - rate);
-        // 终点
-        const p1 = new Vector(
-          verticalDirection.x > 0
-            ? edge.target.collisionBox.getRectangle().left
-            : edge.target.collisionBox.getRectangle().right,
-          edge.target.collisionBox.getRectangle().center.y +
-            distance *
-              (edge.source.collisionBox.getRectangle().center.y > edge.target.collisionBox.getRectangle().center.y
-                ? 1
-                : -1),
-        );
-        // length 是固定长度+h
-        const length = (this.fixedLength + h) * (verticalDirection.x > 0 ? -1 : 1);
-        const p2 = p1.add(new Vector(length, 0));
-
-        const p4 = new Vector(
-          verticalDirection.x > 0
-            ? edge.source.collisionBox.getRectangle().right
-            : edge.source.collisionBox.getRectangle().left,
-          edge.source.collisionBox.getRectangle().center.y,
-        );
-
-        const p3 = new Vector(p2.x, p4.y);
-
-        this.project.curveRenderer.renderSolidLineMultiple(
-          [
-            this.project.renderer.transformWorld2View(p1),
-            this.project.renderer.transformWorld2View(p2),
-            this.project.renderer.transformWorld2View(p3),
-            this.project.renderer.transformWorld2View(p4),
-          ],
-          new Color(204, 204, 204),
-          2 * this.project.camera.currentScale,
-        );
-
-        if (this.shouldRenderTargetArrow(edge)) {
-          this.project.edgeRenderer.renderArrowByType(
-            p1,
-            edge.bodyLine.start.clone(),
-            verticalDirection,
-            15,
-            edge.color,
-            edge.arrowType || "default",
-            2,
-          );
-        }
-      } else {
-        // 不会出现的情况
       }
-
-      // 没有文字的边
-      // this.project.curveRenderer.renderSolidLine(
-      //  this.project.renderer.transformWorld2View(edge.bodyLine.start),
-      //  this.project.renderer.transformWorld2View(edge.bodyLine.end),
-      //   new Color(204, 204, 204),
-      //   2 * this.project.camera.currentScale,
-      // );
     } else {
       // 有文字的边
       const midPoint = edge.bodyLine.midPoint();

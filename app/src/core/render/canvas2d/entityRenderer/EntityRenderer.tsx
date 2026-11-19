@@ -169,7 +169,7 @@ export class EntityRenderer {
    */
   renderEntity(entity: Entity) {
     // section 折叠不画
-    if (entity.isHiddenBySectionCollapse) {
+    if (entity.isHiddenBySectionCollapse || this.project.stageManager.isHiddenByBranchCollapse(entity)) {
       return;
     }
     if (this.project.sectionMethods.isEntityHiddenByBigTitleSection(entity)) {

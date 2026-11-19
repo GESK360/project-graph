@@ -292,7 +292,7 @@ export class ControllerCuttingClass extends ControllerClass {
       // if (entity instanceof Section) {
       //   continue; // Section的碰撞箱比较特殊
       // }
-      if (entity.isHiddenBySectionCollapse) {
+      if (entity.isHiddenBySectionCollapse || this.project.stageManager.isHiddenByBranchCollapse(entity)) {
         continue; // 隐藏的节点不参与碰撞检测
       }
       // 检查实体是否是背景图片
@@ -334,6 +334,7 @@ export class ControllerCuttingClass extends ControllerClass {
 
     this.warningAssociations = [];
     for (const edge of this.project.stageManager.getAssociations()) {
+      if (this.project.stageManager.isHiddenByBranchCollapse(edge)) continue;
       if (!edge.isPhysical) {
         continue; // 非物理对象（如 SyncAssociation）不参与劈砍检测
       }

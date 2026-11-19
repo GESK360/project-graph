@@ -13,7 +13,7 @@ vi.mock("@/core/Project", () => ({
 vi.mock("@/core/render/canvas2d/renderer", () => ({
   Renderer: { FONT_SIZE: 24, NODE_PADDING: 10 },
 }));
-vi.mock("@/core/service/Settings", () => ({ Settings: { watch: vi.fn() } }));
+vi.mock("@/core/service/Settings", () => ({ Settings: { watch: vi.fn(), lineStyle: "bezier" } }));
 vi.mock("@/core/service/feedbackService/SoundService", () => ({ SoundService: {} }));
 vi.mock("@/utils/font", () => ({
   getMultiLineTextSize: () => new Vector(20, 20),
@@ -22,6 +22,8 @@ vi.mock("@/utils/font", () => ({
 vi.mock("sonner", () => ({ toast: vi.fn() }));
 
 import { StageManager } from "./StageManager";
+import { VerticalPolyEdgeRenderer } from "@/core/render/canvas2d/entityRenderer/edge/concrete/VerticalPolyEdgeRenderer";
+import { Settings } from "@/core/service/Settings";
 import { ConnectableEntity } from "@/core/stage/stageObject/abstract/ConnectableEntity";
 import { Entity } from "@/core/stage/stageObject/abstract/StageEntity";
 import { CollisionBox } from "@/core/stage/stageObject/collisionBox/collisionBox";
@@ -29,6 +31,8 @@ import { LineEdge } from "@/core/stage/stageObject/association/LineEdge";
 import { PenStroke } from "@/core/stage/stageObject/entity/PenStroke";
 import { Section } from "@/core/stage/stageObject/entity/Section";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
+import { Direction } from "@/types/directions";
+import { findHiddenBranchNodes, getBranchSize } from "./basicMethods/BranchCollapse";
 
 function createStageManager(stage: object[]) {
   return new StageManager({ stage } as never);
@@ -164,5 +168,188 @@ describe("StageManager.updateReferences", () => {
 
     expect(associationsSpy).toHaveBeenCalledOnce();
     associationsSpy.mockRestore();
+  });
+});
+
+describe("branch folding", () => {
+  const createFoldingManager = (stage: object[], recordStep = vi.fn()) => {
+    const manager = new StageManager({
+      stage,
+      camera: { currentScale: 1 },
+      renderer: { transformWorld2View: (point: Vector) => point, transformView2World: (point: Vector) => point },
+      verticalPolyEdgeRenderer: new VerticalPolyEdgeRenderer({} as never),
+      sectionMethods: {
+        isEntityHiddenByBigTitleSection: () => false,
+        isObjectBeLockedBySection: () => false,
+        isAssociationHiddenByBigTitleSection: () => false,
+      },
+      historyManager: { recordStep },
+    } as never);
+    manager.updateReferences();
+    return manager;
+  };
+
+  it("shows the minus only at a hovered junction and leaves the line body clickable", () => {
+    const root = textNode("root");
+    const child = textNode("child", 250);
+    const sibling = textNode("sibling", 0, 250);
+    const horizontal = lineEdge([root, child]);
+    const vertical = lineEdge([root, sibling]);
+    const manager = createFoldingManager([root, child, sibling, horizontal, vertical]);
+    expect(manager.getBranchFoldBadges()).toEqual([]);
+    expect(manager.getBranchFoldBadges(new Vector(175, 170))).toEqual([]);
+    const rightJunction = horizontal.bodyLine.start.add(new Vector(9, 0));
+    expect(manager.getBranchFoldBadges(rightJunction)).toEqual([
+      {
+        source: root,
+        side: Direction.Right,
+        center: rightJunction,
+        radius: 8,
+        count: undefined,
+        origin: horizontal.bodyLine.start,
+      },
+    ]);
+    expect(manager.findBranchFoldBadge(rightJunction, rightJunction)).toMatchObject({
+      source: root,
+      side: Direction.Right,
+    });
+    const lineBody = horizontal.bodyLine.midPoint();
+    expect(manager.getBranchFoldBadges(lineBody)).toEqual([]);
+    expect(manager.findBranchFoldBadge(lineBody, rightJunction)).toBeUndefined();
+    const lowerJunction = vertical.bodyLine.start.add(new Vector(0, 9));
+    expect(manager.findBranchFoldBadge(lowerJunction, lowerJunction)).toMatchObject({
+      source: root,
+      side: Direction.Down,
+    });
+  });
+
+  it("uses the source junction of an orthogonal edge", () => {
+    const root = textNode("root");
+    const child = textNode("child", 400, 160);
+    const edge = lineEdge([root, child]);
+    const manager = createFoldingManager([root, child, edge]);
+    const settings = Settings.lineStyle;
+    Settings.lineStyle = "vertical";
+    try {
+      const [origin, turn] = new VerticalPolyEdgeRenderer({} as never).getPolyline(edge).points;
+      const pointer = origin.add(new Vector(9, 0));
+      expect(manager.getBranchFoldBadges(pointer)[0]).toMatchObject({ source: root, side: Direction.Right, origin });
+      expect(manager.getBranchFoldBadges(turn)).toEqual([]);
+      manager.toggleBranchCollapse({ source: root, side: Direction.Right });
+      expect(manager.getBranchFoldBadges()[0].origin).toEqual(origin);
+    } finally {
+      Settings.lineStyle = settings;
+    }
+  });
+
+  it("folds all children on one side, counts unique descendants, and keeps other sides open", () => {
+    const root = textNode("root");
+    const child = textNode("child", 250);
+    const sibling = textNode("sibling", 250, 140);
+    const otherSide = textNode("otherSide", -250);
+    const grandchild = textNode("grandchild", 500);
+    const reference = textNode("reference", 250, 200);
+    const branch = lineEdge([root, child]);
+    const siblingBranch = lineEdge([root, sibling]);
+    branch.sourceRectangleRate = siblingBranch.sourceRectangleRate = new Vector(0.99, 0.5);
+    const otherBranch = lineEdge([root, otherSide]);
+    const nested = lineEdge([child, grandchild]);
+    const shared = lineEdge([sibling, grandchild]);
+    const dashed = lineEdge([root, reference]);
+    dashed.lineType = "dashed";
+    const stage = [
+      root,
+      child,
+      sibling,
+      otherSide,
+      grandchild,
+      reference,
+      branch,
+      siblingBranch,
+      otherBranch,
+      nested,
+      shared,
+      dashed,
+    ];
+    const recordStep = vi.fn();
+    const manager = createFoldingManager(stage, recordStep);
+
+    manager.toggleBranchCollapse({ source: child, side: Direction.Right });
+    manager.toggleBranchCollapse({ source: sibling, side: Direction.Right });
+    child.isSelected = branch.isSelected = true;
+    manager.toggleBranchCollapse({ source: root, side: Direction.Right });
+    const badges = manager.getBranchFoldBadges();
+    expect(badges).toHaveLength(1);
+    const [badge] = badges;
+    expect(badge.count).toBe(3);
+    expect(manager.findBranchFoldBadge(badge.center)).toMatchObject({ source: root, side: Direction.Right });
+    expect(manager.findTextNodeByLocation(child.geometryCenter)).toBeNull();
+    expect(manager.isHiddenByBranchCollapse(branch)).toBe(true);
+    expect(manager.isHiddenByBranchCollapse(nested)).toBe(true);
+    expect(manager.isHiddenByBranchCollapse(reference)).toBe(false);
+    expect(manager.isHiddenByBranchCollapse(siblingBranch)).toBe(true);
+    expect(manager.isHiddenByBranchCollapse(otherBranch)).toBe(false);
+    expect(child.isSelected).toBe(false);
+    expect(branch.isSelected).toBe(false);
+
+    manager.toggleBranchCollapse({ source: root, side: Direction.Right });
+    expect(manager.findTextNodeByLocation(child.geometryCenter)).toBe(child);
+    expect(manager.isHiddenByBranchCollapse(branch)).toBe(false);
+    expect(manager.isHiddenByBranchCollapse(grandchild)).toBe(true);
+    expect(manager.getLineEdges()).toHaveLength(6);
+    expect(recordStep).toHaveBeenCalledTimes(4);
+  });
+
+  it("merges old node folds into a single count for the side", () => {
+    const root = textNode("root");
+    root.legacyBranchCollapsed = true;
+    const child = textNode("child", 250);
+    const sibling = textNode("sibling", 250, 130);
+    const first = lineEdge([root, child]);
+    const second = lineEdge([root, sibling]);
+    first.sourceRectangleRate = second.sourceRectangleRate = new Vector(0.99, 0.5);
+    const manager = createFoldingManager([root, child, sibling, first, second]);
+
+    const badges = manager.getBranchFoldBadges();
+    expect(badges).toHaveLength(1);
+    expect(badges[0].count).toBe(2);
+    expect(manager.findBranchFoldBadge(badges[0].center)).toMatchObject({ source: root, side: Direction.Right });
+    manager.toggleBranchCollapse({ source: root, side: Direction.Right });
+    manager.updateReferences();
+    expect(first.isBranchCollapsed).toBe(false);
+    expect(second.isBranchCollapsed).toBe(false);
+    expect(manager.isHiddenByBranchCollapse(child)).toBe(false);
+    expect(manager.isHiddenByBranchCollapse(sibling)).toBe(false);
+  });
+
+  it("folds parallel links together and counts their destination once", () => {
+    const root = textNode("root");
+    const child = textNode("child", 250);
+    const first = lineEdge([root, child]);
+    const second = lineEdge([root, child]);
+    const manager = createFoldingManager([root, child, first, second]);
+
+    manager.toggleBranchCollapse({ source: root, side: Direction.Right });
+    expect(manager.isHiddenByBranchCollapse(first)).toBe(true);
+    expect(manager.isHiddenByBranchCollapse(second)).toBe(true);
+    expect(manager.isHiddenByBranchCollapse(child)).toBe(true);
+    expect(manager.getBranchFoldBadges().map((badge) => badge.count)).toEqual([1]);
+  });
+
+  it("counts shared descendants once, preserves open routes, and excludes the source in cycles", () => {
+    const link = (source: string, target: string, isBranchCollapsed = false) => ({ source, target, isBranchCollapsed });
+    const folded = link("a", "b", true);
+    const cycle = link("cycle", "loop", true);
+    const outgoing = new Map([
+      ["a", [folded]],
+      ["b", [link("b", "c"), link("b", "d")]],
+      ["d", [link("d", "c")]],
+      ["other", [link("other", "c")]],
+      ["cycle", [cycle]],
+      ["loop", [link("loop", "cycle")]],
+    ]);
+    expect(findHiddenBranchNodes(outgoing, [folded, cycle])).toEqual(new Set(["b", "d", "loop"]));
+    expect(getBranchSize(outgoing, folded.source, [folded.target])).toBe(3);
+    expect(getBranchSize(outgoing, cycle.source, [cycle.target])).toBe(1);
   });
 });

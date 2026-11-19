@@ -1085,6 +1085,14 @@ export const allKeyBinds: KeyBindItem[] = [
     onPress: () => {},
   },
   {
+    id: "dragToConnectMindMapAligned",
+    defaultKey: "x",
+    icon: Network,
+    isContinuous: true,
+    when: () => false,
+    onPress: () => {},
+  },
+  {
     id: "moveUpSelectedEntities",
     defaultKey: "C-arrowup",
     icon: ArrowUp,

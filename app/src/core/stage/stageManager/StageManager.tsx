@@ -25,6 +25,24 @@ import { Direction } from "@/types/directions";
 import { Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
 import { toast } from "sonner";
+import { findHiddenBranchNodes, getBranchSize } from "./basicMethods/BranchCollapse";
+
+const BRANCH_BADGE_RADIUS = 8;
+const BRANCH_SIDE_NORMAL = {
+  [Direction.Left]: new Vector(-1, 0),
+  [Direction.Right]: new Vector(1, 0),
+  [Direction.Up]: new Vector(0, -1),
+  [Direction.Down]: new Vector(0, 1),
+};
+
+export type BranchFoldSide = { source: ConnectableEntity; side: Direction };
+
+type BranchFoldBadge = BranchFoldSide & {
+  center: Vector;
+  radius: number;
+  count?: number;
+  origin?: Vector;
+};
 
 // littlefean:应该改成类，实例化的对象绑定到舞台上。这成单例模式了
 // 开发过程中会造成多开
@@ -74,7 +92,180 @@ export class StageManager {
    */
   public normalizedCrossParentRelationCount: number = 0;
 
+  private branchCollapseState?: {
+    branches: Set<LineEdge>;
+    outgoing: Map<ConnectableEntity, LineEdge[]>;
+    hidden: Set<ConnectableEntity>;
+    counts: Map<string, number>;
+  };
+
   constructor(private readonly project: Project) {}
+
+  private getBranchCollapseState() {
+    if (this.branchCollapseState) return this.branchCollapseState;
+
+    const nodes = new Set(this.getConnectableEntity());
+    const branches = new Set<LineEdge>();
+    const outgoing = new Map<ConnectableEntity, LineEdge[]>();
+    const folded: LineEdge[] = [];
+    for (const edge of this.getLineEdges()) {
+      const { source, target } = edge;
+      if (
+        source === target ||
+        source instanceof Section ||
+        target instanceof Section ||
+        edge.lineType === "dashed" ||
+        !nodes.has(source) ||
+        !nodes.has(target)
+      )
+        continue;
+      branches.add(edge);
+      const children = outgoing.get(source);
+      if (children) children.push(edge);
+      else outgoing.set(source, [edge]);
+      if (edge.isBranchCollapsed) folded.push(edge);
+    }
+
+    return (this.branchCollapseState = {
+      branches,
+      outgoing,
+      hidden: findHiddenBranchNodes(outgoing, folded),
+      counts: new Map(),
+    });
+  }
+
+  isHiddenByBranchCollapse(object: StageObject): boolean {
+    const { branches, hidden } = this.getBranchCollapseState();
+    if (object instanceof ConnectableEntity) return hidden.has(object);
+    if (object instanceof LineEdge && object.isBranchCollapsed && branches.has(object)) return true;
+    if (object instanceof Association) {
+      return object.associationList.some((node) => node instanceof ConnectableEntity && hidden.has(node));
+    }
+    return false;
+  }
+
+  private getBranchExit(edge: LineEdge, rect: Rectangle) {
+    const polyline =
+      Settings.lineStyle === "vertical" && edge.shiftingIndex === 0 && !edge.text.trim()
+        ? this.project.verticalPolyEdgeRenderer.getPolyline(edge)
+        : undefined;
+    const start = polyline?.points[0] ?? edge.bodyLine.start;
+    const offset = start.subtract(rect.center);
+    const direction =
+      polyline?.direction ??
+      Edge.getNormalVectorByRate(edge.sourceRectangleRate) ??
+      (offset.isZero()
+        ? edge.bodyLine.direction()
+        : new Vector(offset.x / Math.max(1, rect.width), offset.y / Math.max(1, rect.height)));
+    const horizontal = Math.abs(direction.x) >= Math.abs(direction.y);
+    const x = Math.max(rect.left, Math.min(rect.right, start.x));
+    const y = Math.max(rect.top, Math.min(rect.bottom, start.y));
+    if (horizontal) {
+      return direction.x >= 0
+        ? { side: Direction.Right, origin: new Vector(rect.right, y) }
+        : { side: Direction.Left, origin: new Vector(rect.left, y) };
+    }
+    return direction.y >= 0
+      ? { side: Direction.Down, origin: new Vector(x, rect.bottom) }
+      : { side: Direction.Up, origin: new Vector(x, rect.top) };
+  }
+
+  getBranchFoldBadges(pointer?: Vector): BranchFoldBadge[] {
+    const { outgoing, hidden, counts } = this.getBranchCollapseState();
+    const { renderer, sectionMethods } = this.project;
+    const badges: BranchFoldBadge[] = [];
+    for (const [source, edges] of outgoing) {
+      if (
+        hidden.has(source) ||
+        source.isHiddenBySectionCollapse ||
+        (source instanceof TextNode && source.isEditing) ||
+        sectionMethods.isEntityHiddenByBigTitleSection(source)
+      )
+        continue;
+
+      const rect = source.collisionBox.getRectangle();
+      if (
+        !edges.some((edge) => edge.isBranchCollapsed) &&
+        (!pointer ||
+          !renderer
+            .transformWorld2View(rect)
+            .expandFromCenter(2 * BRANCH_BADGE_RADIUS + 4)
+            .isPointIn(pointer))
+      )
+        continue;
+      const sides = new Map<Direction, { edge: LineEdge; origin: Vector }[]>();
+      for (const edge of edges) {
+        const { side, origin } = this.getBranchExit(edge, rect);
+        const exits = sides.get(side);
+        if (exits) exits.push({ edge, origin });
+        else sides.set(side, [{ edge, origin }]);
+      }
+
+      for (const [side, exits] of sides) {
+        if (exits.some(({ edge }) => sectionMethods.isObjectBeLockedBySection(edge))) continue;
+        const folded = exits.filter(({ edge }) => edge.isBranchCollapsed);
+        const ports = folded.length
+          ? folded
+          : exits.filter(
+              ({ edge }) =>
+                !hidden.has(edge.target) &&
+                !edge.target.isHiddenBySectionCollapse &&
+                !sectionMethods.isAssociationHiddenByBigTitleSection(edge),
+            );
+        if (ports.length === 0) continue;
+
+        const port = ports.reduce((nearest, next) =>
+          next.origin.distance(rect.center) < nearest.origin.distance(rect.center) ? next : nearest,
+        );
+        const origin = renderer.transformWorld2View(port.origin);
+        let count: number | undefined;
+        if (folded.length) {
+          const key = folded.map(({ edge }) => edge.uuid).join(",");
+          count = counts.get(key);
+          if (count === undefined) {
+            count = getBranchSize(
+              outgoing,
+              source,
+              folded.map(({ edge }) => edge.target),
+            );
+            counts.set(key, count);
+          }
+        }
+        const radius =
+          count === undefined ? BRANCH_BADGE_RADIUS : Math.max(BRANCH_BADGE_RADIUS, String(count).length * 3 + 3);
+        const center = origin.add(BRANCH_SIDE_NORMAL[side].multiply(radius + 1));
+        if (count !== undefined || (pointer && center.distance(pointer) <= radius + 2)) {
+          badges.push({ source, side, center, radius, count, origin });
+        }
+      }
+    }
+    return badges;
+  }
+
+  findBranchFoldBadge(viewLocation: Vector, pointer?: Vector): BranchFoldSide | undefined {
+    let nearest: BranchFoldBadge | undefined;
+    for (const badge of this.getBranchFoldBadges(pointer)) {
+      const distance = badge.center.distance(viewLocation);
+      if (distance <= badge.radius + 2 && (!nearest || distance < nearest.center.distance(viewLocation)))
+        nearest = badge;
+    }
+    return nearest;
+  }
+
+  toggleBranchCollapse({ source, side }: BranchFoldSide) {
+    const rect = source.collisionBox.getRectangle();
+    const edges = this.getBranchCollapseState()
+      .outgoing.get(source)
+      ?.filter((edge) => this.getBranchExit(edge, rect).side === side);
+    if (!edges?.length || edges.some((edge) => this.project.sectionMethods.isObjectBeLockedBySection(edge))) return;
+    const fold = !edges.some((edge) => edge.isBranchCollapsed);
+    for (const edge of edges) edge.isBranchCollapsed = fold;
+    this.branchCollapseState = undefined;
+    for (const object of this.project.stage) {
+      if (object.isSelected && this.isHiddenByBranchCollapse(object)) object.isSelected = false;
+    }
+    this.project.historyManager.recordStep();
+  }
 
   public getRootSections(): Section[] {
     return [...this.rootSections];
@@ -162,6 +353,7 @@ export class StageManager {
   }
   delete(stageObject: StageObject) {
     this.project.stage.splice(this.project.stage.indexOf(stageObject), 1);
+    this.branchCollapseState = undefined;
   }
 
   getAssociations(): Association[] {
@@ -182,6 +374,7 @@ export class StageManager {
 
   add(stageObject: StageObject, skipUpdateReferences = false) {
     this.project.stage.push(stageObject);
+    this.branchCollapseState = undefined;
     if (!skipUpdateReferences) {
       this.updateReferences();
     }
@@ -195,6 +388,7 @@ export class StageManager {
    * 包含了对Edge几何组偏移索引的更新（多重边/双向边自动散开）
    */
   updateReferences() {
+    this.branchCollapseState = undefined;
     // 一次性建立 uuid -> ConnectableEntity 索引。
     // 原实现是「实体 × 关系」双层全量遍历：每个实体都重新扫描一次关系列表，
     // 数千节点/边的工程下单次调用即 O(N*E)，连接、删除等高频路径会卡顿。
@@ -221,6 +415,17 @@ export class StageManager {
           edge.target = entity;
         }
       }
+      if (
+        edge instanceof LineEdge &&
+        edge.lineType !== "dashed" &&
+        edge.source instanceof TextNode &&
+        edge.source.legacyBranchCollapsed
+      ) {
+        edge.isBranchCollapsed = true;
+      }
+    }
+    for (const node of connectableEntities.values()) {
+      if (node instanceof TextNode) node.legacyBranchCollapsed = false;
     }
     this.rebuildSectionRuntimeTree();
 
@@ -472,6 +677,7 @@ export class StageManager {
    */
   findTextNodeByLocation(location: Vector): TextNode | null {
     for (const node of this.getTextNodes()) {
+      if (this.isHiddenByBranchCollapse(node)) continue;
       if (node.collisionBox.isContainsPoint(location)) {
         return node;
       }
@@ -486,6 +692,7 @@ export class StageManager {
    */
   findLineEdgeByLocation(location: Vector): LineEdge | null {
     for (const edge of this.getLineEdges()) {
+      if (this.isHiddenByBranchCollapse(edge)) continue;
       if (edge.collisionBox.isContainsPoint(location)) {
         return edge;
       }
@@ -495,6 +702,7 @@ export class StageManager {
 
   findAssociationByLocation(location: Vector): Association | null {
     for (const association of this.getAssociations()) {
+      if (this.isHiddenByBranchCollapse(association)) continue;
       if (association.collisionBox.isContainsPoint(location)) {
         return association;
       }
@@ -513,7 +721,7 @@ export class StageManager {
 
   findImageNodeByLocation(location: Vector): ImageNode | null {
     for (const node of this.getImageNodes()) {
-      if (!node.isBackground && node.collisionBox.isContainsPoint(location)) {
+      if (!node.isBackground && !this.isHiddenByBranchCollapse(node) && node.collisionBox.isContainsPoint(location)) {
         return node;
       }
     }
@@ -570,7 +778,7 @@ export class StageManager {
 
     for (let i = entities.length - 1; i >= 0; i--) {
       const entity = entities[i];
-      if (entity.isHiddenBySectionCollapse) {
+      if (entity.isHiddenBySectionCollapse || this.isHiddenByBranchCollapse(entity)) {
         continue;
       }
       if (entity instanceof ImageNode && entity.isBackground) {
@@ -618,7 +826,7 @@ export class StageManager {
 
   findConnectPointByLocation(location: Vector): ConnectPoint | null {
     for (const point of this.getConnectPoints()) {
-      if (point.isHiddenBySectionCollapse) {
+      if (point.isHiddenBySectionCollapse || this.isHiddenByBranchCollapse(point)) {
         continue;
       }
       if (point.collisionBox.isContainsPoint(location)) {
@@ -677,7 +885,7 @@ export class StageManager {
    */
   isEntityOnLocation(location: Vector): boolean {
     for (const entity of this.getEntities()) {
-      if (entity.isHiddenBySectionCollapse) {
+      if (entity.isHiddenBySectionCollapse || this.isHiddenByBranchCollapse(entity)) {
         continue;
       }
       if (entity instanceof ImageNode && entity.isBackground) {
@@ -691,6 +899,7 @@ export class StageManager {
   }
   isAssociationOnLocation(location: Vector): boolean {
     for (const association of this.getAssociations()) {
+      if (this.isHiddenByBranchCollapse(association)) continue;
       if (association instanceof Edge) {
         if (association.target.isHiddenBySectionCollapse && association.source.isHiddenBySectionCollapse) {
           continue;
@@ -1138,6 +1347,7 @@ export class StageManager {
     for (const edge of selectedEdges) {
       (edge as LineEdge | ArcEdge | MultiTargetUndirectedEdge).lineType = lineType;
     }
+    this.branchCollapseState = undefined;
   }
 
   /**
@@ -1158,7 +1368,7 @@ export class StageManager {
   selectAll() {
     const allEntity = this.project.stage;
     for (const entity of allEntity) {
-      entity.isSelected = true;
+      if (!this.isHiddenByBranchCollapse(entity)) entity.isSelected = true;
     }
   }
   clearSelectAll() {

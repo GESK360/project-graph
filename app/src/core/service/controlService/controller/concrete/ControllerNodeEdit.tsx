@@ -29,12 +29,10 @@ export class ControllerNodeEditClass extends ControllerClass {
     if (event.button !== 0) return;
     this.lastMouseDownClientLocation = new Vector(event.clientX, event.clientY);
     if (MediaPlaybackManager.hasActive()) {
-      const pressLocation = this.project.renderer.transformView2World(
-        new Vector(event.clientX, event.clientY),
-      );
-      const activeEnt = this.project.stageManager.getEntities().find(
-        (e) => e instanceof MediaNode && MediaPlaybackManager.isActive(e as MediaNode),
-      );
+      const pressLocation = this.project.renderer.transformView2World(new Vector(event.clientX, event.clientY));
+      const activeEnt = this.project.stageManager
+        .getEntities()
+        .find((e) => e instanceof MediaNode && MediaPlaybackManager.isActive(e as MediaNode));
       if (activeEnt instanceof MediaNode && !activeEnt.collisionBox.isContainsPoint(pressLocation)) {
         MediaPlaybackManager.stop();
       }
@@ -98,6 +96,7 @@ export class ControllerNodeEditClass extends ControllerClass {
 
     const pressLocation = this.project.renderer.transformView2World(new Vector(event.clientX, event.clientY));
     for (const entity of this.project.stageManager.getEntities()) {
+      if (this.project.stageManager.isHiddenByBranchCollapse(entity)) continue;
       // 必须有详细信息才显示详细信息按钮，进而点进去，否则会误触
       if (
         entity.isMouseInDetailsButton(pressLocation) &&
@@ -107,7 +106,11 @@ export class ControllerNodeEditClass extends ControllerClass {
         this.project.controllerUtils.editNodeDetails(entity);
         return;
       }
-      if (entity instanceof MediaNode && !entity.isHiddenBySectionCollapse && entity.collisionBox.isContainsPoint(pressLocation)) {
+      if (
+        entity instanceof MediaNode &&
+        !entity.isHiddenBySectionCollapse &&
+        entity.collisionBox.isContainsPoint(pressLocation)
+      ) {
         const dragDistance = this.lastMouseDownClientLocation
           ? new Vector(event.clientX, event.clientY).subtract(this.lastMouseDownClientLocation).magnitude()
           : 0;

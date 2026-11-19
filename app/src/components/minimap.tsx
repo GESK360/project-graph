@@ -97,12 +97,12 @@ export function toMinimapRectangle(rectangle: Rectangle, layout: MinimapLayout):
 export function collectGeometry(project: Project): MinimapGeometry {
   const nodeRectangles: Rectangle[] = [];
   for (const entity of project.stageManager.getEntities()) {
-    if (entity.isHiddenBySectionCollapse) continue;
+    if (entity.isHiddenBySectionCollapse || project.stageManager.isHiddenByBranchCollapse(entity)) continue;
     nodeRectangles.push(entity.collisionBox.getRectangle());
   }
   const edgeLines: Line[] = [];
   for (const edge of project.stageManager.getEdges()) {
-    if (edge.isHiddenBySectionCollapse) continue;
+    if (edge.isHiddenBySectionCollapse || project.stageManager.isHiddenByBranchCollapse(edge)) continue;
     edgeLines.push(edge.bodyLine);
   }
   const layout = createLayout(nodeRectangles, project.renderer.getCoverWorldRectangle());
