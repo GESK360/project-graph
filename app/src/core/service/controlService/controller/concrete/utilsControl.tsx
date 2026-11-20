@@ -391,6 +391,8 @@ export class ControllerUtils {
     }
     this.project.controller.isCameraLocked = true;
     this.project.camera.stopImmediately();
+    const textBeforeEdit = section.text;
+    const centerBeforeEdit = section.rectangle.center;
     section.isEditingTitle = true;
     const inputViewLocation = this.project.renderer
       .transformWorld2View(section.rectangle.location.subtract(new Vector(0, section.text === "" ? 50 : 0)))
@@ -398,7 +400,7 @@ export class ControllerUtils {
     const clientScale = this.project.canvas.viewToClientScale();
     const titleWidth = () =>
       `${Math.max(1, section.rectangle.size.x - Renderer.NODE_PADDING * 2) * this.project.camera.currentScale * clientScale.x}px`;
-    this.project.inputElement
+    return this.project.inputElement
       .input(
         this.project.canvas.viewToClient(inputViewLocation),
         section.text,
@@ -422,6 +424,15 @@ export class ControllerUtils {
       .then(() => {
         section.isEditingTitle = false;
         this.project.controller.isCameraLocked = false;
+        if (this.project.stageManager.getSectionByUUID(section.uuid) !== section) return;
+        if (section.text !== textBeforeEdit) {
+          for (let parent = section.parentSection; parent; parent = parent.parentSection) {
+            parent.adjustLocationAndSize();
+          }
+        }
+        if (isPersistentMindMapDragEnabled()) {
+          reflowMindMapTree(this.project, section, centerBeforeEdit);
+        }
         this.project.historyManager.recordStep();
       });
   }

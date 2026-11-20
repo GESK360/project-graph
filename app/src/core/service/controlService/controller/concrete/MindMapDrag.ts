@@ -72,22 +72,37 @@ function isMovableBranch(branch: ConnectableEntity[]) {
 }
 
 export function reflowMindMapTree(project: Project, node: ConnectableEntity, previousCenter?: Vector) {
-  const { graphMethods, autoLayoutFastTree, stageManager } = project;
-  const [root] = graphMethods.getRoots(node, true);
+  const [root] = project.graphMethods.getRoots(node, true);
   if (!root) return;
+  if (!reflowBranch(project, root, node, previousCenter) && node instanceof Section) {
+    reflowBranch(project, node, node, previousCenter, true);
+  }
+}
 
+function reflowBranch(
+  project: Project,
+  root: ConnectableEntity,
+  node: ConnectableEntity,
+  previousCenter: Vector | undefined,
+  allowExternalParents = false,
+): boolean {
+  const { graphMethods, autoLayoutFastTree, stageManager } = project;
   const tree = graphMethods.getSuccessorSet(root, true, true);
-  if (tree.length < 2 || !tree.includes(node) || !isMovableBranch(tree)) return;
+  if (tree.length < 2 || !tree.includes(node) || !isMovableBranch(tree)) return false;
   const treeNodes = new Set(tree);
   const connected = new Set<ConnectableEntity>();
   const unanchored: LineEdge[] = [];
   // The tree traversal follows LineEdges, but the layout also reads other directed edges.
   for (const edge of stageManager.getEdges()) {
     const { source, target } = edge;
-    if (!treeNodes.has(source) && !treeNodes.has(target)) continue;
-    if (!(edge instanceof LineEdge)) return;
+    const sourceInTree = treeNodes.has(source);
+    const targetInTree = treeNodes.has(target);
+    if (!sourceInTree && !targetInTree) continue;
+    // A grouped Section can have several external parents. They can stay fixed while its outgoing subtree reflows.
+    if (allowExternalParents && target === root && !sourceInTree) continue;
+    if (!(edge instanceof LineEdge)) return false;
     if (edge.lineType === "dashed") continue;
-    if (!treeNodes.has(source) || !treeNodes.has(target) || target === root || connected.has(target)) return;
+    if (!sourceInTree || !targetInTree || target === root || connected.has(target)) return false;
     connected.add(target);
     if (edge.isUnknownDirection()) unanchored.push(edge);
   }
@@ -109,6 +124,7 @@ export function reflowMindMapTree(project: Project, node: ConnectableEntity, pre
   if (unanchored.length || tree.some((member) => member instanceof Section || member.parentSection)) {
     stageManager.updateReferences();
   }
+  return true;
 }
 
 function getMindMapContact(ghost: Rectangle, target: Rectangle, tolerance: number) {

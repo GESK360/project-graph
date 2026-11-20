@@ -1,9 +1,15 @@
 // import { Section } from "@/core/stageObject/entity/Section";
 // import { Entity } from "@/core/stageObject/StageEntity";
 import { Project, service } from "@/core/Project";
+import {
+  getMindMapSide,
+  isPersistentMindMapDragEnabled,
+  mindMapPorts,
+} from "@/core/service/controlService/controller/concrete/MindMapDrag";
 import { Settings } from "@/core/service/Settings";
 import { Entity } from "@/core/stage/stageObject/abstract/StageEntity";
 import { Edge } from "@/core/stage/stageObject/association/Edge";
+import type { LineEdge } from "@/core/stage/stageObject/association/LineEdge";
 import { Section } from "@/core/stage/stageObject/entity/Section";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import { ConnectPoint } from "@/core/stage/stageObject/entity/ConnectPoint";
@@ -334,11 +340,17 @@ export class SectionPackManager {
   }
 
   /** 将多个实体打包成一个section，并添加到舞台中 */
-  async packEntityToSection(addEntities: Entity[]): Promise<Section | undefined> {
+  async packEntityToSection(addEntities: Entity[], inheritBranchEdges = false): Promise<Section | undefined> {
     if (addEntities.length === 0) {
       return;
     }
-    addEntities = this.project.sectionMethods.shallowerNotSectionEntities(addEntities);
+    const selected = new Set(addEntities);
+    addEntities = [...selected].filter((entity) => {
+      for (let parent = entity.parentSection; parent; parent = parent.parentSection) {
+        if (selected.has(parent)) return false;
+      }
+      return true;
+    });
     // 检测父亲section是否是等同
     const firstParent = addEntities[0].parentSection;
     if (addEntities.length > 1) {
@@ -357,24 +369,82 @@ export class SectionPackManager {
         return;
       }
     }
-    if (firstParent) {
-      this.project.stageManager.goOutSection(addEntities, firstParent);
-    }
     const section = Section.fromEntities(this.project, addEntities);
     let smartTitle = this.getSmartSectionTitle(addEntities);
     if (smartTitle.length > 10) {
       smartTitle = smartTitle.slice(0, 10) + "...";
     }
-    section.text =
+    section.rename(
       smartTitle.length > 0
         ? smartTitle
-        : this.project.stageUtils.replaceAutoNameTemplate(Settings.autoNamerSectionTemplate, section);
-    this.project.stageManager.add(section);
+        : this.project.stageUtils.replaceAutoNameTemplate(Settings.autoNamerSectionTemplate, section),
+    );
     if (firstParent) {
-      this.project.stageManager.goInSection([section], firstParent);
+      for (const entity of addEntities) this.project.sectionInOutManager.entityDropParent(entity);
+      this.project.sectionInOutManager.attachEntityToSection(section, firstParent);
     }
+    if (inheritBranchEdges) this.inheritBoundaryBranchEdges(section);
+    this.project.stageManager.add(section);
 
     return section;
+  }
+
+  private inheritBoundaryBranchEdges(section: Section) {
+    const descendants = new Set<Entity>();
+    const collect = (entity: Entity) => {
+      if (descendants.has(entity)) return;
+      descendants.add(entity);
+      if (entity instanceof Section) entity.children.forEach(collect);
+    };
+    section.children.forEach(collect);
+
+    const { stageManager } = this.project;
+    const incomingByPort = new Map<string, { edge: LineEdge; labels: Set<string> }>();
+    const duplicateIncoming: LineEdge[] = [];
+    for (const edge of stageManager.getLineEdges()) {
+      const sourceInside = descendants.has(edge.source);
+      const targetInside = descendants.has(edge.target);
+      if (sourceInside === targetInside || edge.lineType === "dashed") continue;
+
+      const insideRate = sourceInside ? edge.sourceRectangleRate : edge.targetRectangleRate;
+      const outsideRate = sourceInside ? edge.targetRectangleRate : edge.sourceRectangleRate;
+      const insideNormal = Edge.getNormalVectorByRate(insideRate);
+      const outsideNormal = Edge.getNormalVectorByRate(outsideRate);
+      const towardsTarget = edge.targetLocation.subtract(edge.sourceLocation);
+      const direction = insideNormal ?? outsideNormal?.multiply(-1) ?? towardsTarget.multiply(sourceInside ? 1 : -1);
+      const sectionSide = getMindMapSide(direction);
+      const { source: sectionPort, target: oppositePort } = mindMapPorts[sectionSide];
+      const outsideAtCenter = outsideRate.x === 0.5 && outsideRate.y === 0.5;
+
+      if (sourceInside) {
+        edge.source = section;
+        edge.sourceRectangleRate = sectionPort.clone();
+        if (outsideAtCenter) edge.targetRectangleRate = oppositePort.clone();
+        continue;
+      }
+
+      edge.target = section;
+      edge.targetRectangleRate = sectionPort.clone();
+      if (outsideAtCenter) edge.sourceRectangleRate = oppositePort.clone();
+
+      const sourceRate = edge.sourceRectangleRate;
+      const sourceNormal = Edge.getNormalVectorByRate(sourceRate);
+      const sourcePort = sourceNormal ? getMindMapSide(sourceNormal) : `${sourceRate.x},${sourceRate.y}`;
+      const key = `${edge.source.uuid}|${sourcePort}|${sectionSide}`;
+      const incoming = incomingByPort.get(key);
+      if (!incoming) {
+        incomingByPort.set(key, { edge, labels: new Set(edge.text ? [edge.text] : []) });
+        continue;
+      }
+      if (edge.text) incoming.labels.add(edge.text);
+      incoming.edge.isBranchCollapsed &&= edge.isBranchCollapsed;
+      duplicateIncoming.push(edge);
+    }
+    for (const edge of duplicateIncoming) stageManager.delete(edge);
+    for (const { edge, labels } of incomingByPort.values()) {
+      const text = [...labels].join("\n");
+      if (text !== edge.text) edge.rename(text);
+    }
   }
 
   /**
@@ -448,7 +518,7 @@ export class SectionPackManager {
   async packSelectedEntitiesToSection(): Promise<Section | undefined> {
     const selectedEntities = this.project.stageManager.getEntities().filter((entity) => entity.isSelected);
     if (selectedEntities.length > 0) {
-      const section = await this.packEntityToSection(selectedEntities);
+      const section = await this.packEntityToSection(selectedEntities, isPersistentMindMapDragEnabled());
       SoundService.play.packEntityToSectionSoundFile();
       return section;
     }

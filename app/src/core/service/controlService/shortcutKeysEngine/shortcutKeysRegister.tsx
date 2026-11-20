@@ -764,6 +764,7 @@ export const allKeyBinds: KeyBindItem[] = [
             edge.isSelected = false;
           }
           section.isSelected = true;
+          project!.historyManager.recordStep();
           if (Settings.autoEnterSectionEditMode) {
             project!.controllerUtils.editSectionTitle(section);
           }

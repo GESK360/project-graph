@@ -9,15 +9,19 @@ import { GraphMethods } from "@/core/stage/stageManager/basicMethods/GraphMethod
 import { SectionMethods } from "@/core/stage/stageManager/basicMethods/SectionMethods";
 import { EntityMoveManager } from "@/core/stage/stageManager/concreteMethods/StageEntityMoveManager";
 import { SectionInOutManager } from "@/core/stage/stageManager/concreteMethods/StageSectionInOutManager";
+import { SectionPackManager } from "@/core/stage/stageManager/concreteMethods/StageSectionPackManager";
 import { Direction } from "@/types/directions";
-import { Vector } from "@graphif/data-structures";
+import { Color, Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
 import { describe, expect, it, vi } from "vitest";
 import { ControllerEntityClickSelectAndMoveClass } from "./ControllerEntityClickSelectAndMove";
 import { ControllerNodeConnectionClass } from "./ControllerNodeConnection";
 import { MindMapDrag, mindMapPorts, reflowMindMapTree } from "./MindMapDrag";
+import { ControllerUtils } from "./utilsControl";
 
 vi.mock("@/core/Project", () => ({ Project: class {}, service: () => () => {} }));
+vi.mock("@/core/TabWorkspace", () => ({ TabWorkspace: {} }));
+vi.mock("./utilsControlTools", () => ({ AutoCompleteManager: class {} }));
 vi.mock("@/core/service/Settings", () => ({
   Settings: {
     defaultEdgeArrowType: "default",
@@ -38,7 +42,7 @@ vi.mock("@/core/service/feedbackService/effectEngine/concrete/RectangleRenderEff
 }));
 vi.mock("@/utils/platform", () => ({ isMac: false }));
 vi.mock("@/core/service/feedbackService/SoundService", () => ({
-  SoundService: { play: { connectLineStart: vi.fn() } },
+  SoundService: { play: { connectLineStart: vi.fn(), packEntityToSectionSoundFile: vi.fn() } },
 }));
 vi.mock("@/core/stage/stageObject/entity/TextNode", () => ({ TextNode: class {} }));
 vi.mock("@/core/stage/stageObject/entity/ConnectPoint", () => ({ ConnectPoint: class {} }));
@@ -100,6 +104,7 @@ function setup() {
     renderer: { transformView2World: (view: Vector) => view },
     effects: { addMoveShadow: vi.fn() },
     historyManager: { recordStep },
+    stageUtils: { replaceAutoNameTemplate: () => "Section_0" },
     stageManager: {
       getStageObjects: () => [...nodes, ...edges],
       getEntities: () => nodes,
@@ -113,9 +118,16 @@ function setup() {
       getAssociations: () => edges,
       changeEdgesConnectLocation,
       getConnectableEntityByUUID: (id: string) => nodes.find((node) => node.uuid === id),
+      getSectionByUUID: (id: string) => sections.find((section) => section.uuid === id),
       isEntityExists: (id: string) => nodes.some((node) => node.uuid === id),
-      add: (edge: LineEdge, skipUpdateReferences = false) => {
-        edges.push(edge);
+      add: (object: LineEdge | Section, skipUpdateReferences = false) => {
+        if (object instanceof Section) {
+          sections.push(object);
+          nodes.push(object);
+          for (const child of object.children) child.parentSection = object;
+        } else {
+          edges.push(object);
+        }
         if (!skipUpdateReferences) updateReferences();
       },
       delete: (edge: LineEdge) => edges.splice(edges.indexOf(edge), 1),
@@ -505,6 +517,130 @@ describe("mind-map drag", () => {
     expect(parent.collisionBox.getRectangle().location).toEqual(parentBefore);
     expect(root.collisionBox.getRectangle().location).toEqual(detachedBefore);
     expect(dashed.isUnknownDirection()).toBe(true);
+  });
+
+  it.each(["persistentDragToConnectMindMap", "persistentDragToConnectMindMapAligned", null] as const)(
+    "groups a node and nested Section with drag setting %s",
+    async (setting) => {
+      const { project, node, section, edges, parent } = setup();
+      const firstParent = node(180, -45);
+      const secondParent = node(180, 110);
+      const sibling = node(360, -45);
+      const nestedNode = node(425, 110);
+      const leaf = node(540, 110);
+      const nested = section(nestedNode, leaf);
+      const firstChild = node(790, -180);
+      const secondChild = node(1030, 260);
+      const connect = (source: ConnectableEntity, target: ConnectableEntity, lineType = "solid") => {
+        const edge = new LineEdge(project, { associationList: [source, target], lineType });
+        edges.push(edge);
+        return edge;
+      };
+      connect(parent, firstParent);
+      connect(parent, secondParent);
+      const firstIn = connect(firstParent, sibling);
+      const duplicateIn = connect(firstParent, nested);
+      const secondIn = connect(secondParent, nested);
+      const internal = connect(nestedNode, leaf);
+      const firstOut = connect(sibling, firstChild);
+      const secondOut = connect(leaf, secondChild);
+      secondOut.rename("child branch");
+      const reference = connect(nestedNode, firstChild, "dashed");
+      sibling.isSelected = nested.isSelected = leaf.isSelected = true;
+
+      if (setting) Settings[setting] = true;
+      try {
+        const group = await new SectionPackManager(project).packSelectedEntitiesToSection();
+        expect(group?.children).toEqual([sibling, nested]);
+        expect(internal.associationList).toEqual([nestedNode, leaf]);
+        expect(reference.associationList).toEqual([nestedNode, firstChild]);
+        expect(secondOut.text).toBe("child branch");
+        if (!setting) {
+          expect(firstIn.target).toBe(sibling);
+          expect(duplicateIn.target).toBe(nested);
+          expect(edges).toContain(duplicateIn);
+          expect(secondIn.target).toBe(nested);
+          expect(firstOut.source).toBe(sibling);
+          expect(secondOut.source).toBe(leaf);
+          return;
+        }
+        expect(firstIn.associationList).toEqual([firstParent, group]);
+        expect(edges.filter((edge) => edge.source === firstParent && edge.target === group)).toEqual([firstIn]);
+        expect(secondIn.associationList).toEqual([secondParent, group]);
+        expect(firstOut.associationList).toEqual([group, firstChild]);
+        expect(secondOut.associationList).toEqual([group, secondChild]);
+        expect([firstIn, secondIn, firstOut, secondOut].every((edge) => edge.isLeftToRight())).toBe(true);
+
+        const parentRects = [firstParent, secondParent].map((item) => item.collisionBox.getRectangle());
+        const childBeforeEdit = firstChild.collisionBox.getRectangle();
+        let submit!: (text: string) => void;
+        Object.assign(project, {
+          camera: { currentScale: 1, stopImmediately: vi.fn() },
+          canvas: { viewToClientScale: () => Vector.same(1), viewToClient: (point: Vector) => point },
+          renderer: { transformWorld2View: (point: Vector) => point },
+          sectionRenderer: { render: vi.fn() },
+          stageStyleManager: {
+            currentStyle: { StageObjectBorder: Color.Transparent, effects: { successShadow: Color.Transparent } },
+          },
+          inputElement: {
+            input: (_location: Vector, _text: string, onChange: (text: string, element: HTMLInputElement) => void) =>
+              new Promise<string>((resolve) => {
+                submit = (text) => {
+                  onChange(text, { style: {} } as HTMLInputElement);
+                  expect(firstChild.collisionBox.getRectangle()).toEqual(childBeforeEdit);
+                  resolve(text);
+                };
+              }),
+          },
+        });
+        const editing = new ControllerUtils(project).editSectionTitle(group!);
+        submit("Branch group");
+        await editing;
+
+        expect(group!.text).toBe("Branch group");
+        const firstRect = firstChild.collisionBox.getRectangle();
+        const secondRect = secondChild.collisionBox.getRectangle();
+        expect(firstRect.left).toBe(secondRect.left);
+        expect(secondRect.top - firstRect.bottom).toBe(20);
+        expect(firstRect.left - group!.rectangle.right).toBeGreaterThanOrEqual(150);
+        expect([firstParent, secondParent].map((item) => item.collisionBox.getRectangle())).toEqual(parentRects);
+      } finally {
+        if (setting) Settings[setting] = false;
+      }
+    },
+  );
+
+  it("merges incoming edges only when their source and Section sides match, keeping their labels", async () => {
+    const { project, parent, node, edges } = setup();
+    const first = node(250, 0);
+    const second = node(300, 15);
+    const left = mindMapPorts.left.source;
+    const right = mindMapPorts.right.source;
+    const top = mindMapPorts.top.source;
+    const connect = (child: ConnectableEntity, sourceRate: Vector, targetRate: Vector, text: string) => {
+      const edge = new LineEdge(project, {
+        associationList: [parent, child],
+        sourceRectangleRate: sourceRate,
+        targetRectangleRate: targetRate,
+        text,
+      });
+      edges.push(edge);
+      return edge;
+    };
+    const incoming = connect(first, right, left, "first label");
+    incoming.isBranchCollapsed = true;
+    connect(second, new Vector(right.x, 0.25), left, "second label");
+    connect(second, right, left, "first label");
+    const otherSourceSide = connect(first, top, left, "");
+    const otherSectionSide = connect(second, right, top, "");
+
+    const group = await new SectionPackManager(project).packEntityToSection([first, second], true);
+
+    expect(group).toBeDefined();
+    expect(edges).toEqual([incoming, otherSourceSide, otherSectionSide]);
+    expect(edges.every((edge) => edge.target === group)).toBe(true);
+    expect(incoming.isBranchCollapsed).toBe(false);
+    expect(incoming.text).toBe("first label\nsecond label");
   });
 
   it("leaves ordinary gaps free even when a parent has many children on its side", () => {
