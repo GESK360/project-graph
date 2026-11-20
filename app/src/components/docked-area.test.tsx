@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { createTabGroup, splitTabGroup } from "@/core/TabGroup";
+import { createTabGroup, FIXED_SIDE_GROUP_IDS, removeTabFromGroups, splitTabGroup } from "@/core/TabGroup";
 import { store, tabGroupRootAtom } from "@/state";
 import { Provider } from "jotai";
 import React from "react";
@@ -11,6 +11,7 @@ vi.mock("@/core/Project", () => ({ Project: class {}, ProjectState: {} }));
 vi.mock("@/core/Tab", () => ({ isResourceTab: () => false }));
 vi.mock("@/core/TabWorkspace", () => ({ TabWorkspace: {} }));
 vi.mock("@/utils/platform", () => ({ isMac: false }));
+vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("@/ProjectTabs", () => ({
   ProjectTabs: () => (
     <div data-pg-tab-bar>
@@ -31,6 +32,7 @@ const onTitleBarMouseDown = vi.fn();
 
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  localStorage.clear();
   space = new DOMRect(120, 8, 760, 40);
   groupRects = { main: new DOMRect(0, 0, 1000, 56) };
   store.set(tabGroupRootAtom, createTabGroup([], "main"));
@@ -124,4 +126,40 @@ it("drags the window from titlebar space while leaving tab mouse events alone", 
   expect(onTitleBarMouseDown).not.toHaveBeenCalled();
   await React.act(async () => bar.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
   expect(onTitleBarMouseDown).toHaveBeenCalledOnce();
+});
+
+it("keeps the dragged workspace width at different window sizes and restores it after closing", async () => {
+  const id = FIXED_SIDE_GROUP_IDS.workspace;
+  const tree = splitTabGroup(createTabGroup(["canvas"], "main"), "main", createTabGroup(["tree"], id), "left");
+  store.set(tabGroupRootAtom, tree);
+  groupRects[id] = new DOMRect(0, 0, 260, 600);
+  await render();
+
+  const workspace = () => container.querySelector<HTMLElement>(`[data-pg-tab-group-id="${id}"]`);
+  const pane = workspace()!.parentElement!;
+  const handle = container.querySelector<HTMLElement>('[role="separator"]')!;
+  handle.setPointerCapture = vi.fn();
+  expect(pane.style.flex).toBe("0 0 260px");
+  const drag = (type: string, x: number) =>
+    handle.dispatchEvent(new PointerEvent(type, { bubbles: true, button: 0, pointerId: 1, clientX: x }));
+  await React.act(async () => {
+    drag("pointerdown", 262);
+    drag("pointermove", 342);
+    drag("lostpointercapture", 342);
+  });
+  expect(pane.style.flex).toBe("0 0 340px");
+  expect(localStorage.getItem("workspace:sidebar-width")).toBe("340");
+
+  groupRects.main = new DOMRect(340, 0, 360, 600);
+  space = new DOMRect(120, 8, 460, 40);
+  updateLayout();
+  expect(pane.style.flex).toBe("0 0 340px");
+
+  await React.act(async () => store.set(tabGroupRootAtom, removeTabFromGroups(tree, "tree").root));
+  expect(workspace()).toBeNull();
+  expect(container.querySelector('[data-pg-tab-group-id="main"]')?.parentElement?.firstElementChild).toBe(
+    container.querySelector('[data-pg-tab-group-id="main"]'),
+  );
+  await React.act(async () => store.set(tabGroupRootAtom, tree));
+  expect(workspace()!.parentElement!.style.flex).toBe("0 0 340px");
 });

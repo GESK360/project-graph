@@ -92,11 +92,16 @@ export class Canvas {
     this.resizeObserver?.disconnect();
     wrapper.innerHTML = "";
     wrapper.appendChild(this.element);
-    this.project.renderer.resizeWindow(wrapper.clientWidth, wrapper.clientHeight);
-    // 监听画布大小变化
-    this.resizeObserver = new ResizeObserver(() => {
-      this.project.renderer.resizeWindow(wrapper.clientWidth, wrapper.clientHeight);
-    });
+    const resize = () => {
+      const width = wrapper.clientWidth;
+      const height = wrapper.clientHeight;
+      if (width === 0 || height === 0) return;
+      const renderer = this.project.renderer;
+      // 改变画布尺寸会清空像素，渲染循环暂停时也要立即补画这一帧。
+      if (renderer.resizeWindow(width, height)) renderer.tick(true);
+    };
+    resize();
+    this.resizeObserver = new ResizeObserver(resize);
     this.resizeObserver.observe(wrapper);
   }
 

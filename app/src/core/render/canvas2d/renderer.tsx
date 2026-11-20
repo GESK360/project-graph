@@ -59,7 +59,7 @@ export class Renderer {
    */
   resizeWindow(newW: number, newH: number) {
     const scale = window.devicePixelRatio || 1;
-    if (this.w === newW && this.h === newH && this.pixelRatio === scale) return;
+    if (this.w === newW && this.h === newH && this.pixelRatio === scale) return false;
     this.w = newW;
     this.h = newH;
     this.pixelRatio = scale;
@@ -68,6 +68,7 @@ export class Renderer {
     this.project.canvas.element.style.width = `${newW}px`;
     this.project.canvas.element.style.height = `${newH}px`;
     this.project.canvas.ctx.scale(scale, scale);
+    return true;
   }
 
   // 确保这个函数在软件打开的那一次调用
@@ -78,8 +79,8 @@ export class Renderer {
    * 建议此函数内部的调用就像一个清单一样，全是函数（这些函数都不是export的）。
    * @returns
    */
-  tick() {
-    if (Settings.isPauseRenderWhenManipulateOvertime) {
+  tick(forceRedraw = false) {
+    if (!forceRedraw && Settings.isPauseRenderWhenManipulateOvertime) {
       if (!this.project.controller.isManipulateOverTime()) {
         this.tick_();
       }

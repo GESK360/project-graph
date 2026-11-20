@@ -1,7 +1,7 @@
 import { ProjectTabs } from "@/ProjectTabs";
 import { Project, ProjectState } from "@/core/Project";
 import { Tab } from "@/core/Tab";
-import { TabGroupNode } from "@/core/TabGroup";
+import { FIXED_SIDE_GROUP_IDS, TabGroupNode } from "@/core/TabGroup";
 import { TabWorkspace } from "@/core/TabWorkspace";
 import { activeGroupIdAtom, activeTabAtom, store, tabDropTargetAtom, tabGroupRootAtom, tabsAtom } from "@/state";
 import { cn } from "@/utils/cn";
@@ -9,6 +9,15 @@ import { useAtomValue } from "jotai";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "./ui/button";
+
+const WORKSPACE_WIDTH_KEY = "workspace:sidebar-width";
+const DEFAULT_WORKSPACE_WIDTH = 260;
+const MIN_WORKSPACE_WIDTH = 160;
+const MAX_WORKSPACE_WIDTH = 480;
+
+function clampWorkspaceWidth(width: number) {
+  return Math.max(MIN_WORKSPACE_WIDTH, Math.min(MAX_WORKSPACE_WIDTH, Math.round(width)));
+}
 
 function ProjectStatus({ project, isClassroomMode }: { project: Project; isClassroomMode: boolean }) {
   const { t } = useTranslation("projectStatus");
@@ -58,44 +67,86 @@ function ProjectStatus({ project, isClassroomMode }: { project: Project; isClass
 function SplitView({
   node,
   renderNode,
+  workspaceWidth,
+  resizeWorkspace,
 }: {
   node: Extract<TabGroupNode, { type: "split" }>;
   renderNode: (node: TabGroupNode) => React.ReactNode;
+  workspaceWidth: number;
+  resizeWorkspace: (width: number) => void;
 }) {
+  const { t } = useTranslation("workspace");
   const horizontal = node.direction === "horizontal";
+  const workspaceIndex = horizontal
+    ? node.children.findIndex((child) => child.id === FIXED_SIDE_GROUP_IDS.workspace)
+    : -1;
+  const drag = useRef<{ id: number; startX: number; width: number; rect: DOMRect } | null>(null);
+
+  function renderPanel(index: 0 | 1) {
+    let flex = "1 1 0%";
+    if (workspaceIndex === index) flex = `0 0 ${workspaceWidth}px`;
+    else if (workspaceIndex < 0 && index === 0) flex = `0 1 ${node.sizes[0]}%`;
+    return (
+      <div className="min-h-0 min-w-0" style={{ flex }}>
+        {renderNode(node.children[index])}
+      </div>
+    );
+  }
+
   return (
     <div className={cn("flex size-full min-h-0 min-w-0", horizontal ? "flex-row" : "flex-col")}>
-      <div className="min-h-0 min-w-0" style={{ flexBasis: `${node.sizes[0]}%`, flexGrow: 0, flexShrink: 1 }}>
-        {renderNode(node.children[0])}
-      </div>
+      {renderPanel(0)}
       <div
         className={cn(
           "bg-background z-20 shrink-0 touch-none",
           horizontal ? "w-1 cursor-col-resize" : "h-1 cursor-row-resize",
         )}
+        role={workspaceIndex >= 0 ? "separator" : undefined}
+        tabIndex={workspaceIndex >= 0 ? 0 : undefined}
+        aria-label={workspaceIndex >= 0 ? t("title") : undefined}
+        aria-orientation={workspaceIndex >= 0 ? "vertical" : undefined}
+        aria-valuemin={workspaceIndex >= 0 ? MIN_WORKSPACE_WIDTH : undefined}
+        aria-valuemax={workspaceIndex >= 0 ? MAX_WORKSPACE_WIDTH : undefined}
+        aria-valuenow={workspaceIndex >= 0 ? workspaceWidth : undefined}
+        onKeyDown={(event) => {
+          if (workspaceIndex < 0 || (event.key !== "ArrowLeft" && event.key !== "ArrowRight")) return;
+          event.preventDefault();
+          event.stopPropagation();
+          const delta = event.key === "ArrowLeft" ? -10 : 10;
+          resizeWorkspace(workspaceWidth + (workspaceIndex === 0 ? delta : -delta));
+        }}
         onPointerDown={(event) => {
-          event.currentTarget.setPointerCapture(event.pointerId);
-          const parent = event.currentTarget.parentElement;
-          if (!parent) return;
-          const rect = parent.getBoundingClientRect();
-          const update = (clientX: number, clientY: number) => {
-            const total = horizontal ? rect.width : rect.height;
-            const position = horizontal ? clientX - rect.left : clientY - rect.top;
-            const first = Math.max(10, Math.min(90, (position / total) * 100));
-            TabWorkspace.resizeSplit(node.id, [first, 100 - first]);
+          const handle = event.currentTarget;
+          if (event.button !== 0 || drag.current || !handle.parentElement) return;
+          handle.setPointerCapture(event.pointerId);
+          drag.current = {
+            id: event.pointerId,
+            startX: event.clientX,
+            width: workspaceWidth,
+            rect: handle.parentElement.getBoundingClientRect(),
           };
-          const onMove = (moveEvent: PointerEvent) => update(moveEvent.clientX, moveEvent.clientY);
-          const onUp = () => {
-            window.removeEventListener("pointermove", onMove);
-            window.removeEventListener("pointerup", onUp);
-          };
-          window.addEventListener("pointermove", onMove);
-          window.addEventListener("pointerup", onUp);
+        }}
+        onPointerMove={(event) => {
+          const start = drag.current;
+          if (!start || start.id !== event.pointerId) return;
+          if (workspaceIndex >= 0) {
+            const delta = event.clientX - start.startX;
+            resizeWorkspace(start.width + (workspaceIndex === 0 ? delta : -delta));
+            return;
+          }
+          const total = horizontal ? start.rect.width : start.rect.height;
+          if (total <= 0) return;
+          const position = horizontal ? event.clientX - start.rect.left : event.clientY - start.rect.top;
+          const first = Math.max(10, Math.min(90, (position / total) * 100));
+          TabWorkspace.resizeSplit(node.id, [first, 100 - first]);
+        }}
+        onLostPointerCapture={(event) => {
+          if (drag.current?.id === event.pointerId) drag.current = null;
         }}
       >
         <div className="bg-border hover:bg-primary size-full cursor-[inherit] transition-colors" />
       </div>
-      <div className="min-h-0 min-w-0 flex-1">{renderNode(node.children[1])}</div>
+      {renderPanel(1)}
     </div>
   );
 }
@@ -152,6 +203,14 @@ export default function DockedArea({
   const tabs = useAtomValue(tabsAtom);
   const activeGroupId = useAtomValue(activeGroupIdAtom);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [workspaceWidth, setWorkspaceWidth] = useState(() => {
+    const saved = Number(localStorage.getItem(WORKSPACE_WIDTH_KEY));
+    return Number.isFinite(saved) && saved > 0 ? clampWorkspaceWidth(saved) : DEFAULT_WORKSPACE_WIDTH;
+  });
+
+  useEffect(() => {
+    localStorage.setItem(WORKSPACE_WIDTH_KEY, String(workspaceWidth));
+  }, [workspaceWidth]);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -184,6 +243,8 @@ export default function DockedArea({
         <SplitView
           key={node.id}
           node={node}
+          workspaceWidth={workspaceWidth}
+          resizeWorkspace={(width) => setWorkspaceWidth(clampWorkspaceWidth(width))}
           renderNode={(child) =>
             renderNode(child, atWindowTop && (node.direction === "horizontal" || child === node.children[0]))
           }
@@ -200,7 +261,7 @@ export default function DockedArea({
         key={node.id}
         data-pg-tab-group-id={node.id}
         className={cn(
-          "relative flex size-full min-h-0 min-w-0 flex-col overflow-hidden",
+          "group/docked-panel relative flex size-full min-h-0 min-w-0 flex-col overflow-hidden",
           activeTab &&
             !(activeTab instanceof Project) &&
             "bg-background has-[[data-pg-settings-view]]:bg-transparent has-[[data-pg-workspace-view]]:bg-transparent",
@@ -214,7 +275,7 @@ export default function DockedArea({
         <div
           data-pg-window-top-tabs={atWindowTop ? "" : undefined}
           className={cn(
-            "pointer-events-none relative z-10 flex shrink-0 flex-col",
+            "group-has-[[data-pg-workspace-view]]/docked-panel:bg-background pointer-events-none relative z-10 flex shrink-0 flex-col",
             atWindowTop &&
               "group [&_[data-pg-tab-bar]]:cursor-inherit pointer-events-auto h-[var(--pg-titlebar-band-h)] cursor-grab active:cursor-grabbing data-[pg-tabs-separate-row]:h-auto",
           )}
