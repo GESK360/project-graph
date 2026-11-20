@@ -17,7 +17,7 @@ import { Fragment } from "react";
 import { useAtom } from "jotai";
 import { isClassroomModeAtom } from "@/state";
 import { HandwritingTools } from "./handwriting-tools";
-import { Pencil } from "lucide-react";
+import { GitBranch, Network, Pencil } from "lucide-react";
 
 const toggleIconClass = "opacity-50 transition-opacity hover:opacity-100 focus-visible:opacity-100";
 
@@ -32,10 +32,49 @@ function QuickSettingRow({ label, children }: { label: string; children: ReactNo
   );
 }
 
+function PersistentBranchDragControl({
+  settingKey,
+  Icon,
+}: {
+  settingKey: "persistentDragToConnectMindMap" | "persistentDragToConnectMindMapAligned";
+  Icon: typeof GitBranch;
+}) {
+  const { t } = useTranslation("settings");
+  const [enabled] = Settings.use(settingKey);
+  const title = t(`${settingKey}.title`);
+  const description = t(`${settingKey}.description`);
+
+  const toggle = () => {
+    Settings[settingKey] = !Settings[settingKey];
+  };
+
+  return (
+    <QuickSettingRow label={description}>
+      <Button
+        aria-label={title}
+        aria-pressed={enabled}
+        className={cn(toggleIconClass, enabled && "opacity-100")}
+        variant="ghost"
+        size="icon"
+        onClick={toggle}
+      >
+        <Icon />
+      </Button>
+      <Switch aria-label={title} checked={enabled} onCheckedChange={toggle} />
+    </QuickSettingRow>
+  );
+}
+
 /**
  * Boolean 类型的快捷设置项
  */
-function BooleanQuickSettingControl({ settingKey }: { settingKey: keyof typeof settingsSchema.shape }) {
+function BooleanQuickSettingControl({
+  settingKey,
+  label,
+}: {
+  settingKey: keyof typeof settingsSchema.shape;
+  label: string;
+}) {
   const [value, setValue] = useState<boolean>(Settings[settingKey] as boolean);
 
   useEffect(() => {
@@ -53,7 +92,7 @@ function BooleanQuickSettingControl({ settingKey }: { settingKey: keyof typeof s
     }
   };
 
-  return <Switch checked={value} onCheckedChange={handleToggle} />;
+  return <Switch aria-label={label} checked={value} onCheckedChange={handleToggle} />;
 }
 
 /**
@@ -169,6 +208,10 @@ function QuickSettingButton({ settingKey }: { settingKey: keyof typeof settingsS
   const Icon = settingsIcons[settingKey as keyof typeof settingsIcons] ?? Fragment;
   const title = t(`${settingKey as string}.title` as string);
   const description = t(`${settingKey as string}.description` as string);
+  const tooltip =
+    settingKey === "persistentDragToConnectMindMap" || settingKey === "persistentDragToConnectMindMapAligned"
+      ? description
+      : title;
 
   if (Icon === Fragment) return null;
 
@@ -180,11 +223,17 @@ function QuickSettingButton({ settingKey }: { settingKey: keyof typeof settingsS
 
   return (
     <>
-      <QuickSettingRow label={title}>
-        <Button className={iconOpacityClass} variant="ghost" size="icon" onClick={() => setShowDialog(true)}>
+      <QuickSettingRow label={tooltip}>
+        <Button
+          aria-label={title}
+          className={iconOpacityClass}
+          variant="ghost"
+          size="icon"
+          onClick={() => setShowDialog(true)}
+        >
           <Icon />
         </Button>
-        {settingType === "boolean" && <BooleanQuickSettingControl settingKey={settingKey} />}
+        {settingType === "boolean" && <BooleanQuickSettingControl settingKey={settingKey} label={title} />}
         {settingType === "enum" && <EnumQuickSettingControl settingKey={settingKey} />}
         {settingType === "number" && <NumberQuickSettingControl settingKey={settingKey} />}
       </QuickSettingRow>
@@ -274,6 +323,9 @@ export default function RightToolbar({
             <HandwritingTools project={project} />
           </div>
         )}
+        <div className="bg-border my-1 h-px w-full shrink-0" />
+        <PersistentBranchDragControl settingKey="persistentDragToConnectMindMap" Icon={GitBranch} />
+        <PersistentBranchDragControl settingKey="persistentDragToConnectMindMapAligned" Icon={Network} />
         {showQuickSettingsToolbar && quickSettings.length > 0 && (
           <>
             <div className="bg-border my-1 h-px w-full shrink-0" />

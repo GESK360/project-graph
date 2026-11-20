@@ -128,6 +128,8 @@ export const settingsIcons = {
   workspaceRoots: FolderTree,
   activeWorkspaceRoot: FolderTree,
   workspaceVersionHistory: History,
+  workspaceTreeOpacity: Blend,
+  enableTextSelectionContextMenu: TextCursorInput,
   mouseRightDragBackground: MouseRight,
   mouseLeftMode: MouseLeft,
   doubleClickEmptySpaceAction: MousePointerClick,

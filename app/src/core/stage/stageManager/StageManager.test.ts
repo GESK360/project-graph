@@ -171,6 +171,66 @@ describe("StageManager.updateReferences", () => {
   });
 });
 
+describe("branch drag hit testing in sections", () => {
+  it("finds the visible node rather than an overlapping section", () => {
+    const node = textNode("node", 75, 75);
+    const owner = section("owner", [node]);
+    const coveringSection = section("cover", []);
+    const isEntityHiddenByBigTitleSection = vi.fn(() => false);
+    const manager = new StageManager({
+      stage: [owner, node, coveringSection],
+      sectionMethods: { isSectionBigTitleActive: () => true, isEntityHiddenByBigTitleSection },
+    } as never);
+    const point = new Vector(125, 110);
+
+    manager.updateReferences();
+    expect(manager.findBranchDragNodeByLocation(point)).toBe(node);
+    isEntityHiddenByBigTitleSection.mockReturnValue(true);
+    expect(manager.findBranchDragNodeByLocation(point)).toBeNull();
+  });
+
+  it.each(["locked", "collapsed"] as const)("moves %s group bounds along with its nodes", (state) => {
+    const node = textNode("node", 75, 75);
+    node.move = (delta) => {
+      const rect = node.collisionBox.getRectangle();
+      node.collisionBox.updateShapeList([rect.translate(delta)]);
+    };
+    const project = {
+      stage: [node],
+      sectionMoveDepth: 0,
+      effects: { addMoveShadow: vi.fn() },
+      sectionMethods: { isEntityHiddenByBigTitleSection: () => false },
+    };
+    const manager = new StageManager(project as never);
+    Object.assign(project, { stageManager: manager });
+    const group = new Section(project as never, {
+      children: [node],
+      text: "Group",
+      locked: state === "locked",
+      isCollapsed: state === "collapsed",
+    });
+    manager.add(group);
+    if (state === "collapsed") {
+      expect(node.isHiddenBySectionCollapse).toBe(true);
+      expect(manager.findBranchDragNodeByLocation(group.rectangle.center)).toBe(group);
+    }
+    const before = node.collisionBox.getRectangle().location;
+    const groupBefore = group.rectangle.location;
+    const offset = new Vector(400, 500);
+
+    group.move(offset);
+    expect(group.rectangle.location).toEqual(groupBefore.add(offset));
+    expect(node.collisionBox.getRectangle().location).toEqual(before.add(offset));
+
+    group.locked = false;
+    group.isCollapsed = false;
+    const newCenter = node.collisionBox.getRectangle().center;
+    expect(group.rectangle.isPointIn(newCenter)).toBe(true);
+    manager.updateReferences();
+    expect(manager.findBranchDragNodeByLocation(newCenter)).toBe(node);
+  });
+});
+
 describe("branch folding", () => {
   const createFoldingManager = (stage: object[], recordStep = vi.fn()) => {
     const manager = new StageManager({

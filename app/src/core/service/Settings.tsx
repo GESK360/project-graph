@@ -129,10 +129,14 @@ export const settingsSchema = z.object({
   workspaceRoots: z.array(z.string()).default([]),
   activeWorkspaceRoot: z.string().default(""),
   workspaceVersionHistory: z.boolean().default(true),
+  workspaceTreeOpacity: z.number().min(0).max(1).default(1),
   workspaceSortMode: z
     .union([z.literal("custom"), z.literal("name"), z.literal("createdAt"), z.literal("modifiedAt")])
     .default("custom"),
   enableDragEdgeRotateStructure: z.boolean().default(true),
+  persistentDragToConnectMindMap: z.boolean().default(false),
+  persistentDragToConnectMindMapAligned: z.boolean().default(false),
+  enableTextSelectionContextMenu: z.boolean().default(true),
   enableCtrlWheelRotateStructure: z.boolean().default(false),
   aiApiBaseUrl: projectToolSettingSchemas.aiApiBaseUrl,
   aiApiKey: projectToolSettingSchemas.aiApiKey,
@@ -1166,3 +1170,19 @@ export const Settings = new Proxy<
     },
   },
 );
+
+Settings.watch("persistentDragToConnectMindMap", (enabled) => {
+  if (enabled && Settings.persistentDragToConnectMindMapAligned) {
+    Settings.persistentDragToConnectMindMapAligned = false;
+  }
+});
+
+Settings.watch("persistentDragToConnectMindMapAligned", (enabled) => {
+  if (enabled && Settings.persistentDragToConnectMindMap) {
+    Settings.persistentDragToConnectMindMap = false;
+  }
+});
+
+if (Settings.persistentDragToConnectMindMap && Settings.persistentDragToConnectMindMapAligned) {
+  Settings.persistentDragToConnectMindMap = false;
+}

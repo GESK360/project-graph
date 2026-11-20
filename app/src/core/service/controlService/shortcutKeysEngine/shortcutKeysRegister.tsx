@@ -293,6 +293,24 @@ interface KeyBindItem {
 
 const whenAlways: KeyBindWhen = () => true;
 const whenHasProject: KeyBindWhen = (project) => !!project;
+const whenHasOpacityTarget: KeyBindWhen = async (project) => {
+  if (project) return true;
+  const focusedTab = store.get(activeTabAtom);
+  if (!focusedTab) return false;
+  const { findWorkspaceTab } = await import("@/sub/WorkspaceWindow");
+  return findWorkspaceTab() === focusedTab;
+};
+
+function adjustBackgroundOpacity(delta: number, project?: Project) {
+  const key = project ? "windowBackgroundAlpha" : "workspaceTreeOpacity";
+  const current = Settings[key];
+  const next = Math.max(0, Math.min(1, Math.round((current + delta) * 100) / 100));
+  if (next !== current) {
+    Settings[key] = next;
+  } else if (project) {
+    project.effects.addEffect(ViewOutlineFlashEffect.short(project.stageStyleManager.currentStyle.effects.flash));
+  }
+}
 const whenHasNonDraftProject: KeyBindWhen = (project) => !!project && !project.isDraft;
 const whenKeyboardOnlyOpen: KeyBindWhen = (project) => !!project && project.keyboardOnlyEngine.isOpenning();
 const whenHasSelectedStageObjectsOrSelectionRectangle: KeyBindWhen = (project) =>
@@ -1774,31 +1792,15 @@ export const allKeyBinds: KeyBindItem[] = [
     id: "windowOpacityAlphaIncrease",
     defaultKey: "C-A-S-+",
     icon: Sun,
-    when: whenHasProject,
-    onPress: async (project) => {
-      const currentValue = Settings.windowBackgroundAlpha;
-      if (currentValue === 1) {
-        // 已经不能再大了
-        project!.effects.addEffect(ViewOutlineFlashEffect.short(project!.stageStyleManager.currentStyle.effects.flash));
-      } else {
-        Settings.windowBackgroundAlpha = Math.min(1, currentValue + 0.2);
-      }
-    },
+    when: whenHasOpacityTarget,
+    onPress: (project) => adjustBackgroundOpacity(0.2, project),
   },
   {
     id: "windowOpacityAlphaDecrease",
     defaultKey: "C-A-S--",
     icon: Moon,
-    when: whenHasProject,
-    onPress: async (project) => {
-      const currentValue = Settings.windowBackgroundAlpha;
-      if (currentValue === 0) {
-        // 已经不能再小了
-        project!.effects.addEffect(ViewOutlineFlashEffect.short(project!.stageStyleManager.currentStyle.effects.flash));
-      } else {
-        Settings.windowBackgroundAlpha = Math.max(0, currentValue - 0.2);
-      }
-    },
+    when: whenHasOpacityTarget,
+    onPress: (project) => adjustBackgroundOpacity(-0.2, project),
   },
 
   /*------- 复制粘贴 -------*/

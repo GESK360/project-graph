@@ -112,10 +112,10 @@ export class SectionMethods {
    * @returns
    * @complexity O(S)，S 为舞台上 Section 总数（需遍历所有根 Section 的子树）
    */
-  getSectionsByInnerLocation(location: Vector): Section[] {
+  getSectionsByInnerLocation(location: Vector, excluded?: ReadonlySet<Entity>): Section[] {
     const result: Section[] = [];
     for (const rootSection of this.project.stageManager.getRootSections()) {
-      result.push(...this.getDeepestSectionsAtLocation(rootSection, location));
+      result.push(...this.getDeepestSectionsAtLocation(rootSection, location, excluded));
     }
     return this.getSortedSectionsByZ(result).reverse();
   }
@@ -415,8 +415,8 @@ export class SectionMethods {
    * 若有子 Section 命中，则只返回最深层的子 Section；否则返回自身。
    * @complexity O(N)，N 为该 Section 子树内的后代 Section 总数
    */
-  private getDeepestSectionsAtLocation(section: Section, location: Vector): Section[] {
-    if (section.isCollapsed || section.isHiddenBySectionCollapse) {
+  private getDeepestSectionsAtLocation(section: Section, location: Vector, excluded?: ReadonlySet<Entity>): Section[] {
+    if (excluded?.has(section) || section.isCollapsed || section.isHiddenBySectionCollapse) {
       return [];
     }
     if (!section.collisionBox.getRectangle().isPointIn(location)) {
@@ -426,7 +426,7 @@ export class SectionMethods {
     const deeperSections: Section[] = [];
     for (const child of section.children) {
       if (child instanceof Section) {
-        deeperSections.push(...this.getDeepestSectionsAtLocation(child, location));
+        deeperSections.push(...this.getDeepestSectionsAtLocation(child, location, excluded));
       }
     }
 

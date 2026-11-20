@@ -32,6 +32,13 @@ handwritingTools:
   clearStrokes: 清除所有筆跡
   clearStrokesConfirmTitle: 清除所有筆跡？
   clearStrokesConfirmBody: 此操作會刪除目前畫布中的全部手寫筆跡，可透過復原還原。
+nodeDetailsWindow:
+  createLink: 將選取文字轉成超連結
+  createLinkDescription: 將選取文字轉成超連結
+  createLinkTitle: 新增超連結
+  createLinkPrompt: 輸入要加到選取文字嘅網頁或自訂連結
+  createLinkPlaceholder: https://example.com 或自訂連結
+
 findWindow:
   useRegex: 使用正規表示式
   invalidRegex: 正規表示式無效
@@ -728,6 +735,9 @@ settings:
     description: |
       工作空間文件樹用嘅根目錄
       一般經「檔案 → 開啟工作空間」設定，亦可以自己填絕對路徑
+  workspaceTreeOpacity:
+    title: 工作空間文件樹背景透明度
+    description: 只調整背景，唔影響文字同圖示。按一下文件樹後，可以用 Ctrl+Shift+Alt 同加號或者減號調整。
   clearHistoryWhenManualSave:
     title: 使用快捷鍵手動儲存時，自動清空歷史紀錄
     description: '當使用Ctrl+S快捷鍵手動儲存檔案時，自動清空操作歷史紀錄。
@@ -859,6 +869,12 @@ settings:
     description: '開啟後，可以透過拖曳選取的連線來旋轉節點結構
 
       這允許您輕鬆調整相連節點的方向'
+  persistentDragToConnectMindMap:
+    title: 常駐：拖曳節點並連接分支
+    description: 拖曳節點到空白處會移動節點分支；靠近其他節點時可以預覽並接入分支。按住對應快速鍵可暫時關閉，放開後恢復。
+  persistentDragToConnectMindMapAligned:
+    title: 常駐：拖曳接入並統一分支方向
+    description: 拖曳節點到空白處會移動節點分支；接入其他節點後會統一分支方向。按住對應快速鍵可暫時關閉，放開後恢復。
   enableCtrlWheelRotateStructure:
     title: 允許Ctrl+滑鼠滾輪旋轉結構
     description: '開啟後，可以按住 Ctrl 鍵（Mac 系統為 Command 鍵）並捲動滑鼠滾輪來旋轉節點結構
@@ -1014,6 +1030,9 @@ settings:
   textNodeManualDefaultCharWidth:
     title: 文字節點手動模式預設寬度（中文字元數）
     description: 使用ttt快捷鍵切換到手動寬度模式時，文字節點的預設寬度。單位為中文字元數，例如設定為10表示寬度為10個中文字元。英文字元寬度為中文字元的一半。
+  enableTextSelectionContextMenu:
+    title: 啟用選取文字右鍵選單
+    description: 喺節點詳細資訊入面選取文字後按右鍵，可以將佢轉成超連結。
   textNodeAutoFormatTreeWhenInput:
     title: 文字節點輸入時，即時格式化樹狀結構
     description: 文字節點處於編輯狀態並輸入內容時，即時對其所在的樹狀結構進行格式化佈局。疊放在畫布上的文字輸入框也會同步跟隨節點位置更新。
@@ -2153,9 +2172,12 @@ keyBinds:
   selectAdditionalRight:
     title: 附加選取右側節點
     description: 按下後，附加選取右側節點
+  dragToConnectMindMap:
+    title: 拖曳節點並連接分支
+    description: 拖曳時按住呢個快速鍵，靠近目標節點邊緣預覽連線，放開滑鼠後替換原有入線並整理分支。若已開啟對應常駐模式，按住呢個鍵會暫時關閉，放開後恢復。
   dragToConnectMindMapAligned:
     title: 拖曳接入並統一分支方向
-    description: 拖曳時按住這個快速鍵，放開滑鼠接入後，整棵子樹的連線會統一朝接入側排列。
+    description: 拖曳時按住呢個快速鍵，放開滑鼠接入後，成棵子樹嘅連線會統一朝接入側排列。若已開啟對應常駐模式，按住呢個鍵會暫時關閉，放開後恢復。
   moveUpSelectedEntities:
     title: 向上移動所有選取的實體
     description: 持續按住時，所有選取的實體會持續向上加速移動，放開後緩動停止

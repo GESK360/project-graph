@@ -8,6 +8,7 @@ import { ArcEdge } from "@/core/stage/stageObject/association/ArcEdge";
 import { CubicCatmullRomSplineEdge } from "@/core/stage/stageObject/association/CubicCatmullRomSplineEdge";
 import { LineEdge } from "@/core/stage/stageObject/association/LineEdge";
 import { MultiTargetUndirectedEdge } from "@/core/stage/stageObject/association/MutiTargetUndirectedEdge";
+import { Section } from "@/core/stage/stageObject/entity/Section";
 import { getTextSize } from "@/utils/font";
 import { isFrame, isMac } from "@/utils/platform";
 import { Color, mixColors, Vector } from "@graphif/data-structures";
@@ -427,7 +428,12 @@ export class Renderer {
     ctx.save();
     ctx.translate(viewOffset.x, viewOffset.y);
     ctx.globalAlpha *= 0.4;
-    this.project.entityRenderer.renderEntity(preview.node);
+    if (preview.node instanceof Section) {
+      this.project.sectionRenderer.renderBackgroundColor(preview.node);
+      this.project.sectionRenderer.render(preview.node);
+    } else {
+      this.project.entityRenderer.renderEntity(preview.node);
+    }
     ctx.restore();
 
     if (!preview.contact) return;

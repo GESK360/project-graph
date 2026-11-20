@@ -32,6 +32,13 @@ handwritingTools:
   clearStrokes: Hapus semua goresan
   clearStrokesConfirmTitle: Hapus semua goresan?
   clearStrokesConfirmBody: Semua goresan tulisan tangan di kanvas ini akan dihapus. Tindakan ini dapat dibatalkan.
+nodeDetailsWindow:
+  createLink: Ubah teks terpilih menjadi hyperlink
+  createLinkDescription: Ubah teks terpilih menjadi hyperlink
+  createLinkTitle: Tambahkan Hyperlink
+  createLinkPrompt: Masukkan tautan web atau khusus untuk teks terpilih
+  createLinkPlaceholder: https://example.com atau tautan khusus
+
 findWindow:
   useRegex: Gunakan ekspresi reguler
   invalidRegex: Ekspresi reguler tidak valid
@@ -690,6 +697,9 @@ settings:
     description: |
       Folder akar yang dipakai pohon file ruang kerja.
       Biasanya diatur lewat File → Buka Ruang Kerja; path absolut juga bisa diketik di sini.
+  workspaceTreeOpacity:
+    title: Opasitas Latar Pohon File Ruang Kerja
+    description: Atur latar tanpa meredupkan teks atau ikon. Fokuskan pohon file untuk memakai Ctrl+Shift+Alt dengan plus atau minus.
   clearHistoryWhenManualSave:
     title: Bersihkan Riwayat Otomatis Saat Simpan Manual dengan Pintasan
     description: |
@@ -824,6 +834,12 @@ settings:
     description: |
       Saat diaktifkan, dapat memutar struktur node dengan menyeret garis yang dipilih
       Ini memungkinkan Anda menyesuaikan arah node yang terhubung dengan mudah
+  persistentDragToConnectMindMap:
+    title: Tetap Aktifkan Seret untuk Menyambungkan Cabang
+    description: Seret cabang node ke ruang kosong untuk memindahkannya, atau dekati node lain untuk melihat pratinjau dan menyambungkan cabang. Tahan pintasan terkait untuk menangguhkan sementara; lepaskan untuk melanjutkan.
+  persistentDragToConnectMindMapAligned:
+    title: Tetap Aktifkan Seret untuk Menyelaraskan Cabang
+    description: Seret cabang node ke ruang kosong untuk memindahkannya, atau sambungkan ke node lain untuk menyelaraskan arah cabang. Tahan pintasan terkait untuk menangguhkan sementara; lepaskan untuk melanjutkan.
   enableCtrlWheelRotateStructure:
     title: Izinkan Rotasi Struktur dengan Ctrl+Scroll Mouse
     description: |
@@ -984,6 +1000,9 @@ settings:
       Lebar default node teks saat beralih ke mode lebar manual menggunakan pintasan ttt.
       Satuannya adalah karakter Cina, misalnya mengatur ke 10 berarti lebar 10 karakter Cina.
       Lebar karakter Inggris adalah setengah dari karakter Cina.
+  enableTextSelectionContextMenu:
+    title: Aktifkan Menu Konteks Teks Terpilih
+    description: Pilih teks di detail node, lalu klik kanan untuk mengubahnya menjadi hyperlink.
   textNodeAutoFormatTreeWhenInput:
     title: Format Struktur Pohon Secara Realtime Saat Mengetik di Node Teks
     description: |
@@ -2198,9 +2217,12 @@ keyBinds:
   selectAdditionalRight:
     title: Tambah Pilih Node Kanan
     description: Setelah ditekan, tambah pilih node kanan
+  dragToConnectMindMap:
+    title: Seret untuk Menyambungkan Cabang
+    description: Tahan pintasan ini saat menyeret node. Dekati tepi node tujuan untuk melihat pratinjau koneksi, lalu lepaskan untuk mengganti garis masuk dan menata cabang. Jika mode ini dipasang, tahan pintasan untuk menangguhkannya sementara.
   dragToConnectMindMapAligned:
     title: Seret untuk menyambung dan menyelaraskan cabang
-    description: Tahan pintasan ini saat menyeret node. Setelah disambungkan, semua garis pada cabang akan mengarah ke sisi sambungan.
+    description: Tahan pintasan ini saat menyeret node. Setelah disambungkan, semua garis pada cabang akan mengarah ke sisi sambungan. Jika mode ini dipasang, tahan pintasan untuk menangguhkannya sementara.
   moveUpSelectedEntities:
     title: Gerakkan Semua Entitas yang Dipilih ke Atas
     description: |

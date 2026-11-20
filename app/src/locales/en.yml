@@ -37,6 +37,11 @@ windowControls:
 
 nodeDetailsWindow:
   title: Details
+  createLink: Convert selected text to hyperlink
+  createLinkDescription: Convert selected text to hyperlink
+  createLinkTitle: Add hyperlink
+  createLinkPrompt: Enter a webpage or custom link for the selected text
+  createLinkPlaceholder: https://example.com or a custom link
 
 findWindow:
   useRegex: Use regular expression
@@ -332,6 +337,15 @@ settings:
       and intuitively understand the current zoom level.
   windowBackgroundAlpha:
     title: Window Background Transparency
+  persistentDragToConnectMindMap:
+    title: Keep branch-connect drag enabled
+    description: Drag a node branch onto empty space to move it, or approach another node to preview and connect it. Hold its shortcut to temporarily suspend this mode; release to resume.
+  persistentDragToConnectMindMapAligned:
+    title: Keep aligned branch-connect drag enabled
+    description: Drag a node branch onto empty space to move it, or connect it to another node to align the branch direction. Hold its shortcut to temporarily suspend this mode; release to resume.
+  enableTextSelectionContextMenu:
+    title: Enable selected-text context menu
+    description: Select text in node details and right-click to convert it to a hyperlink.
   windowBackgroundOpacityAfterOpenClickThrough:
     title: Window Background Opacity After Enabling Click-Through
     description: |
@@ -498,6 +512,9 @@ settings:
     description: |
       Write a snapshot under the workspace .flux-graph/history folder on each save.
       Review and restore them from "Show Page Versions" in the file tree.
+  workspaceTreeOpacity:
+    title: Workspace File Tree Background Opacity
+    description: Adjust the background without dimming text or icons. Focus the file tree to use Ctrl+Shift+Alt with plus or minus.
   activeWorkspaceRoot:
     title: Workspace Folder
     description: |
@@ -1794,10 +1811,10 @@ keyBinds:
       When pressed, a text node will be created to the right of the currently selected node.
   dragToConnectMindMap:
     title: Drag to attach a branch
-    description: Hold this shortcut while dragging a node. Approach the target's edge to preview the connection, then release to replace the node's incoming edges and arrange the branch.
+    description: Hold this shortcut while dragging a node. Approach the target's edge to preview the connection, then release to replace incoming edges and arrange the branch. If this mode is pinned, hold the shortcut to suspend it until released.
   dragToConnectMindMapAligned:
     title: Drag to attach and align a branch
-    description: Hold this shortcut while dragging a node. On attachment, all tree edges in the dragged branch will run in the direction of the attachment side.
+    description: Hold this shortcut while dragging a node. On attachment, all tree edges in the dragged branch will run in the direction of the attachment side. If this mode is pinned, hold the shortcut to suspend it until released.
   moveUpSelectedEntities:
     title: Move Selected Entities Up
     description: |

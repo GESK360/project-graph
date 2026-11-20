@@ -258,13 +258,15 @@ export class Section extends ConnectableEntity {
     const outermostMove = this.project.sectionMoveDepth === 0;
     this.project.sectionMoveDepth++;
     try {
-      // 让自己移动
-      for (const shape of this.collisionBox.shapes) {
-        if (shape instanceof Line) {
-          shape.start = shape.start.add(delta);
-          shape.end = shape.end.add(delta);
-        } else if (shape instanceof Rectangle) {
-          shape.location = shape.location.add(delta);
+      // 锁定时 collisionBox 是临时创建的矩形；两种状态下实际保存的边界都要跟着子节点移动。
+      for (const box of [this._collisionBoxNormal, this._collisionBoxWhenCollapsed]) {
+        for (const shape of box.shapes) {
+          if (shape instanceof Line) {
+            shape.start = shape.start.add(delta);
+            shape.end = shape.end.add(delta);
+          } else if (shape instanceof Rectangle) {
+            shape.location = shape.location.add(delta);
+          }
         }
       }
       // 让内部元素也移动

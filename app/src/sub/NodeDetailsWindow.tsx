@@ -9,15 +9,21 @@ import { ListKit } from "@/components/editor/plugins/list-kit";
 import { MathKit } from "@/components/editor/plugins/math-kit";
 import { TableKit } from "@/components/editor/plugins/table-kit";
 import { Editor, EditorContainer } from "@/components/ui/editor";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { Dialog } from "@/components/ui/dialog";
+import { Settings } from "@/core/service/Settings";
 import { createSubWindow } from "@/core/subWindowOpen";
 import { TabWorkspace } from "@/core/TabWorkspace";
 import { store, tabsAtom } from "@/state";
 import { Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
 import i18next from "i18next";
+import { upsertLink } from "@platejs/link";
 import { Value } from "platejs";
-import { Plate, usePlateEditor } from "platejs/react";
-import { useEffect } from "react";
+import { Plate, useEditorRef, usePlateEditor } from "platejs/react";
+import { Link2 } from "lucide-react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 
 const detailTabIds = new Set<string>();
 
@@ -54,10 +60,75 @@ export default function NodeDetailsWindow({
 
   return (
     <Plate editor={editor} onChange={({ value }) => onChange(value)}>
-      <EditorContainer>
-        <Editor variant="nodeDetails" />
-      </EditorContainer>
+      <SelectedTextContextMenu>
+        <EditorContainer>
+          <Editor variant="nodeDetails" />
+        </EditorContainer>
+      </SelectedTextContextMenu>
     </Plate>
+  );
+}
+
+function SelectedTextContextMenu({ children }: { children: ReactNode }) {
+  const editor = useEditorRef();
+  const { t } = useTranslation("nodeDetailsWindow");
+  const [contextMenuEnabled] = Settings.use("enableTextSelectionContextMenu");
+  const selectionRef = useRef(editor.selection);
+  const [hasSelection, setHasSelection] = useState(false);
+
+  const handleContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!contextMenuEnabled || !editor.selection || editor.api.isCollapsed()) {
+      selectionRef.current = null;
+      setHasSelection(false);
+      event.preventDefault();
+      return;
+    }
+
+    const { anchor, focus } = editor.selection;
+    selectionRef.current = {
+      anchor: { ...anchor, path: [...anchor.path] },
+      focus: { ...focus, path: [...focus.path] },
+    };
+    setHasSelection(true);
+  };
+
+  const makeSelectedTextLink = async () => {
+    const selection = selectionRef.current;
+    if (!selection) return;
+
+    const value = await Dialog.input(t("createLinkTitle"), t("createLinkPrompt"), {
+      placeholder: t("createLinkPlaceholder"),
+    });
+    if (!value?.trim()) return;
+
+    const trimmed = value.trim();
+    if (/^(javascript|data|vbscript):/i.test(trimmed)) return;
+    const url = /^[a-z][a-z\d+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`;
+
+    editor.tf.select(selection);
+    upsertLink(editor, { url });
+  };
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div className="h-full min-h-0" onContextMenu={handleContextMenu}>
+          {children}
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        {hasSelection && contextMenuEnabled && (
+          <ContextMenuItem
+            aria-label={t("createLink")}
+            className="size-8 justify-center p-0"
+            title={t("createLinkDescription")}
+            onSelect={() => void makeSelectedTextLink()}
+          >
+            <Link2 />
+          </ContextMenuItem>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 

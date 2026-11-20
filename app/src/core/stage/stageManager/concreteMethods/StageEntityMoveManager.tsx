@@ -114,7 +114,7 @@ export class EntityMoveManager {
     // 让自己移动
     entity.move(delta);
 
-    if (isAutoAdjustSection) {
+    if (isAutoAdjustSection && this.project.sectionMoveDepth === 0) {
       let current = entity.parentSection;
       while (current) {
         current.adjustLocationAndSize();
@@ -236,8 +236,21 @@ export class EntityMoveManager {
    * @param skipDashed 是否跳过虚线边（树形格式化时传 true，避免带动虚线连接的节点）
    */
   moveWithChildren(node: ConnectableEntity, delta: Vector, skipDashed = false) {
-    const successorSet = this.project.graphMethods.getSuccessorSet(node, true, skipDashed);
-    for (const successor of successorSet) {
+    const successors = new Set(
+      this.project.graphMethods.getSuccessorSet(node, true, skipDashed).filter((entity) => this.canMoveEntity(entity)),
+    );
+    for (const successor of successors) {
+      // Section.move already carries its unselected members, including members linked by tree edges.
+      let movedWithSection = false;
+      let child: Entity = successor;
+      for (let section = child.parentSection; section && !child.isSelected; section = child.parentSection) {
+        if (successors.has(section)) {
+          movedWithSection = true;
+          break;
+        }
+        child = section;
+      }
+      if (movedWithSection) continue;
       this.moveEntityUtils(successor, delta);
     }
   }

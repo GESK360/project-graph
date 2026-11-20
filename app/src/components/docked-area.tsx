@@ -201,7 +201,9 @@ export default function DockedArea({
         data-pg-tab-group-id={node.id}
         className={cn(
           "relative flex size-full min-h-0 min-w-0 flex-col overflow-hidden",
-          activeTab && !(activeTab instanceof Project) && "bg-background has-[[data-pg-settings-view]]:bg-transparent",
+          activeTab &&
+            !(activeTab instanceof Project) &&
+            "bg-background has-[[data-pg-settings-view]]:bg-transparent has-[[data-pg-workspace-view]]:bg-transparent",
           root?.type === "split" && "border-background outline-border border outline-1 -outline-offset-1",
           root?.type === "split" && activeGroupId === node.id && "outline-primary/60",
         )}

@@ -46,6 +46,7 @@ export default function FloatingTabs({
             }}
             className={cn(
               "outline-primary pointer-events-auto absolute flex flex-col overflow-hidden shadow-md outline-0 transition",
+              "has-[[data-pg-workspace-view]]:bg-transparent",
               "data-closed:scale-90 data-closed:opacity-0",
               activeTab === tab && "outline-1",
             )}

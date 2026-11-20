@@ -737,10 +737,7 @@ export class AutoLayoutFastTree {
     // 矩形左上角是矩形的标志位
     const delta = rootLeftTopLocation.subtract(rootNode.collisionBox.getRectangle().leftTop);
     // 只移动树形结构中的节点（跳过虚线边），避免虚线连接的节点随每次布局累积偏移
-    const treeNodes = this.project.graphMethods.getSuccessorSet(rootNode, true, true);
-    for (const node of treeNodes) {
-      this.project.entityMoveManager.moveEntityUtils(node, delta);
-    }
+    this.project.entityMoveManager.moveWithChildren(rootNode, delta, true);
     // ------- 恢复完毕
   }
 

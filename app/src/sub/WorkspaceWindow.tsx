@@ -82,6 +82,8 @@ export default function WorkspaceWindow() {
   const [activeTab] = useAtom(activeResourceTabAtom);
   const [root] = Settings.use("activeWorkspaceRoot");
   const [sortMode, setSortMode] = Settings.use("workspaceSortMode");
+  const [treeOpacity] = Settings.use("workspaceTreeOpacity");
+  const backgroundColor = `color-mix(in srgb, var(--background) ${treeOpacity * 100}%, transparent)`;
   const [tree, setTree] = useState<WorkspaceNode[]>([]);
   const [collapsedDirs, setCollapsedDirs] = useState<ReadonlySet<string>>(new Set());
   const [versionCounts, setVersionCounts] = useState<ReadonlyMap<string, number>>(new Map());
@@ -549,7 +551,11 @@ export default function WorkspaceWindow() {
 
   if (!root) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
+      <div
+        data-pg-workspace-view
+        className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center"
+        style={{ backgroundColor }}
+      >
         <FolderOpen className="text-muted-foreground size-6" />
         <div className="text-muted-foreground text-xs leading-relaxed">{t("emptyHint")}</div>
         <Button size="sm" onClick={openFolder}>
@@ -568,7 +574,7 @@ export default function WorkspaceWindow() {
       .pop() || root;
 
   return (
-    <div className="flex h-full flex-col">
+    <div data-pg-workspace-view className="flex h-full flex-col" style={{ backgroundColor }}>
       <div className="flex items-center gap-1 border-b px-2 py-1.5">
         <span className="min-w-0 flex-1 truncate text-xs font-medium" title={root}>
           {rootName}

@@ -37,6 +37,11 @@ windowControls:
 
 nodeDetailsWindow:
   title: 详细信息
+  createLink: 将选中文本转换为超链接
+  createLinkDescription: 将选中文本转换为超链接
+  createLinkTitle: 添加超链接
+  createLinkPrompt: 为选中文本输入网页或自定义链接
+  createLinkPlaceholder: https://example.com 或自定义链接
 
 findWindow:
   useRegex: 使用正则表达式
@@ -404,6 +409,15 @@ settings:
     title: 窗口背景透明度
     description: |
       *从1改到小于1的值需要重新打开文件才能生效
+  persistentDragToConnectMindMap:
+    title: 常驻：拖拽节点并连接分支
+    description: 拖拽节点到空白处会移动节点分支；靠近其他节点时可预览并接入分支。按住对应快捷键可临时关闭，松开后恢复。
+  persistentDragToConnectMindMapAligned:
+    title: 常驻：拖拽接入并统一分支方向
+    description: 拖拽节点到空白处会移动节点分支；接入其他节点后会统一分支方向。按住对应快捷键可临时关闭，松开后恢复。
+  enableTextSelectionContextMenu:
+    title: 启用选中文本右键菜单
+    description: 在节点详细信息中选中文本后右键，可将其转换为超链接。
   windowBackgroundOpacityAfterOpenClickThrough:
     title: 开启点击穿透后的窗口背景透明度
     description: |
@@ -712,6 +726,9 @@ settings:
     description: |
       保存页面时在工作空间的 .flux-graph/history 目录留一份快照
       可在文件树的“显示页面版本”里查看与恢复
+  workspaceTreeOpacity:
+    title: 工作空间文件树背景透明度
+    description: 仅调整背景，不影响文字和图标。点击文件树后，可用 Ctrl+Shift+Alt 和加号或减号调整。
   activeWorkspaceRoot:
     title: 当前工作空间目录
     description: |
@@ -1910,10 +1927,10 @@ keyBinds:
     description: 按下后，附加选中右侧节点
   dragToConnectMindMap:
     title: 拖拽节点并连接分支
-    description: 拖动时按住此键，靠近目标节点的边缘预览连线，松开鼠标替换原有入线并整理分支。
+    description: 拖动时按住此键，靠近目标节点的边缘预览连线，松开鼠标替换原有入线并整理分支。若已开启对应常驻模式，按住此键可临时关闭常驻，松开恢复。
   dragToConnectMindMapAligned:
     title: 拖拽接入并统一分支方向
-    description: 拖动时按住此键，松开鼠标接入后，整棵子树的连线会统一朝接入侧排列。
+    description: 拖动时按住此键，松开鼠标接入后，整棵子树的连线会统一朝接入侧排列。若已开启对应常驻模式，按住此键可临时关闭常驻，松开恢复。
   moveUpSelectedEntities:
     title: 向上移动所有选中的实体
     description: |

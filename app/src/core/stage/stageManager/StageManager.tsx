@@ -738,6 +738,24 @@ export class StageManager {
     );
   }
 
+  findBranchDragNodeByLocation(location: Vector): ConnectableEntity | null {
+    // Section backgrounds can overlap visible nodes; the renderer draws the nodes above those backgrounds.
+    const hits = this.getConnectableEntity().filter(
+      (node) =>
+        !node.isHiddenBySectionCollapse &&
+        !this.isHiddenByBranchCollapse(node) &&
+        !this.project.sectionMethods.isEntityHiddenByBigTitleSection(node) &&
+        node.collisionBox.isContainsPoint(location),
+    );
+    return (
+      hits.findLast((node) => !(node instanceof Section)) ??
+      hits.reduce<Section | null>((hit, node) => {
+        if (node instanceof Section && (!hit || node.sectionDepth >= hit.sectionDepth)) return node;
+        return hit;
+      }, null)
+    );
+  }
+
   /**
    * 优先级：
    * 涂鸦 > 其他

@@ -323,7 +323,7 @@ export const categories = {
       "autoBackupCustomPath2",
     ],
     autoImport: ["autoImportTxtFileWhenOpenPrg", "imageImportOrder"],
-    workspace: ["activeWorkspaceRoot", "autoSaveOnSwitch", "workspaceVersionHistory"],
+    workspace: ["activeWorkspaceRoot", "autoSaveOnSwitch", "workspaceVersionHistory", "workspaceTreeOpacity"],
   },
   control: {
     mouse: [
@@ -377,6 +377,7 @@ export const categories = {
       "textNodeBigContentThresholdWhenPaste",
       "textNodePasteSizeAdjustMode",
       "textNodeManualDefaultCharWidth",
+      "enableTextSelectionContextMenu",
       "newNodeScaleByCamera",
       "newNodeScaleByCameraOffset",
     ],
@@ -391,6 +392,8 @@ export const categories = {
       "defaultEdgeLineType",
       "defaultEdgeArrowType",
       "enableDragEdgeRotateStructure",
+      "persistentDragToConnectMindMap",
+      "persistentDragToConnectMindMapAligned",
     ],
     generateNode: [
       "autoLayoutWhenTreeGenerate",

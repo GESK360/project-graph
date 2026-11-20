@@ -33,6 +33,7 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
   private mindMapCandidate: { node: ConnectableEntity; startWorld: Vector } | null = null;
   private beforeMovePositions: Map<Entity, Vector> | null = null;
   private currentViewLocation = Vector.getZero();
+  private hasMovedEntity = false;
 
   public get mindMapDragPreview() {
     const drag = this.mindMapDrag;
@@ -40,7 +41,7 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
     return { node: drag.node, ...drag.preview };
   }
 
-  private isMindMapKeyHeld(event: MouseEvent | KeyboardEvent, mode: MindMapDragMode) {
+  private isMindMapShortcutHeld(event: MouseEvent | KeyboardEvent, mode: MindMapDragMode) {
     const binding = KeyBindsUI.getUIKeyBind(mindMapDragKeyBinds[mode]);
     if (!binding?.isEnabled || !binding.key || binding.key.includes(" ")) return false;
     const key = parseSingleEmacsKey(binding.key);
@@ -55,11 +56,24 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
     );
   }
 
+  private isMindMapKeyHeld(event: MouseEvent | KeyboardEvent, mode: MindMapDragMode) {
+    const pinnedMode = Settings.persistentDragToConnectMindMapAligned
+      ? "align"
+      : Settings.persistentDragToConnectMindMap
+        ? "preserve"
+        : null;
+    if (pinnedMode) {
+      return pinnedMode === mode && !this.isMindMapShortcutHeld(event, pinnedMode);
+    }
+    return this.isMindMapShortcutHeld(event, mode);
+  }
+
   private startMindMapDrag(event: MouseEvent | KeyboardEvent) {
     const candidate = this.mindMapCandidate;
     if (!candidate || Settings.viewerMode || Settings.mouseLeftMode !== "selectAndMove") return;
     const mode = this.isMindMapKeyHeld(event, "align") ? "align" : "preserve";
-    if (mode === "preserve" && !this.isMindMapKeyHeld(event, mode)) return;
+    if (!this.isMindMapKeyHeld(event, mode)) return;
+    if (this.mindMapDrag?.node === candidate.node && this.mindMapDrag.mode === mode) return;
 
     const { stageManager } = this.project;
     if (this.beforeMovePositions) {
@@ -76,7 +90,6 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
       stageManager.updateReferences();
     }
 
-    this.mindMapCandidate = null;
     this.beforeMovePositions = null;
     this.isMovingEntity = false;
     for (const object of stageManager.getStageObjects()) object.isSelected = object === candidate.node;
@@ -92,13 +105,25 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
       this.mindMapDrag = null;
       this.mindMapCandidate = null;
       this.beforeMovePositions = null;
+      this.hasMovedEntity = false;
       return;
+    }
+    if (this.mindMapDrag && !this.isMindMapKeyHeld(event, this.mindMapDrag.mode)) {
+      this.mindMapDrag = null;
+      this.isMovingEntity = Settings.persistentDragToConnectMindMap || Settings.persistentDragToConnectMindMapAligned;
+      if (this.isMovingEntity) {
+        this.lastMoveLocation = this.project.renderer.transformView2World(this.currentViewLocation);
+      }
     }
     this.startMindMapDrag(event);
   };
 
   public keyup = (event: KeyboardEvent) => {
-    if (this.mindMapDrag && !this.isMindMapKeyHeld(event, this.mindMapDrag.mode)) this.mindMapDrag = null;
+    if (this.mindMapDrag && !this.isMindMapKeyHeld(event, this.mindMapDrag.mode)) {
+      this.mindMapDrag = null;
+      this.isMovingEntity = Settings.persistentDragToConnectMindMap || Settings.persistentDragToConnectMindMapAligned;
+    }
+    this.startMindMapDrag(event);
   };
 
   private mouseDownViewLocation = Vector.getZero();
@@ -118,6 +143,7 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
     this.mindMapDrag = null;
     this.mindMapCandidate = null;
     this.beforeMovePositions = null;
+    this.hasMovedEntity = false;
     if (Settings.mouseLeftMode !== "selectAndMove") {
       return;
     }
@@ -167,14 +193,18 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
       }
     }
 
-    if (
-      !Settings.viewerMode &&
-      clickedStageObject instanceof ConnectableEntity &&
-      !(clickedStageObject instanceof Section)
-    ) {
-      this.mindMapCandidate = { node: clickedStageObject, startWorld: pressWorldLocation };
-      this.startMindMapDrag(event);
-      if (this.mindMapDrag) return;
+    if (!Settings.viewerMode) {
+      const node =
+        clickedStageObject instanceof ConnectableEntity && !(clickedStageObject instanceof Section)
+          ? clickedStageObject
+          : clickedStageObject instanceof Section || clickedStageObject === null
+            ? (this.project.stageManager.findBranchDragNodeByLocation(pressWorldLocation) ?? clickedStageObject)
+            : null;
+      if (node && node.nearestLockedAncestorSection === null && !(node instanceof Section && node.locked)) {
+        this.mindMapCandidate = { node, startWorld: pressWorldLocation };
+        this.startMindMapDrag(event);
+        if (this.mindMapDrag) return;
+      }
     }
 
     // 防止跳跃式移动的时候改变选中内容
@@ -256,13 +286,18 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
     if (this.mindMapDrag) {
       if (Settings.mouseLeftMode !== "selectAndMove" || !this.isMindMapKeyHeld(event, this.mindMapDrag.mode)) {
         this.mindMapDrag = null;
+        if (Settings.mouseLeftMode !== "selectAndMove") return;
+        this.isMovingEntity = Settings.persistentDragToConnectMindMap || Settings.persistentDragToConnectMindMapAligned;
+        if (this.isMovingEntity) {
+          this.lastMoveLocation = this.project.renderer.transformView2World(this.currentViewLocation);
+        }
+      } else {
+        const view = this.currentViewLocation;
+        if (this.mindMapDrag.preview || view.distance(this.mouseDownViewLocation) > 5) {
+          this.mindMapDrag.update(this.project.renderer.transformView2World(view));
+        }
         return;
       }
-      const view = this.currentViewLocation;
-      if (this.mindMapDrag.preview || view.distance(this.mouseDownViewLocation) > 5) {
-        this.mindMapDrag.update(this.project.renderer.transformView2World(view));
-      }
-      return;
     }
     if (
       this.project.controller.rectangleSelect.isUsing ||
@@ -308,6 +343,7 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
     }
 
     if (this.project.stageManager.isHaveEntitySelected()) {
+      if (!diffLocation.isZero()) this.hasMovedEntity = true;
       if (this.mindMapCandidate && !this.beforeMovePositions && !diffLocation.isZero()) {
         this.beforeMovePositions = new Map(
           this.project.stageManager
@@ -379,6 +415,8 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
       ) {
         drag.drop(this.project.renderer.transformView2World(view));
       }
+      this.isMovingEntity = false;
+      this.hasMovedEntity = false;
       return;
     }
     if (Settings.viewerMode) {
@@ -399,7 +437,7 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
     const diffLocation = mouseUpViewLocation.subtract(this.mouseDownViewLocation);
     if (diffLocation.magnitude() > 5) {
       // 判定为有效吸附的拖拽操作
-      if (this.isMovingEntity) {
+      if (this.isMovingEntity && this.hasMovedEntity) {
         // 这个时候可以触发对齐吸附事件
         if (Settings.enableDragAutoAlign) {
           this.project.autoAlign.alignAllSelected();
@@ -413,6 +451,7 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
     }
 
     this.isMovingEntity = false;
+    this.hasMovedEntity = false;
     this.shakeDetector.reset();
     this.shiftAxisLock = null;
     this.shiftAccumulatedDelta = Vector.getZero();
@@ -421,6 +460,7 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
   public mouseMoveOutWindowForcedShutdown(_outsideLocation: Vector): void {
     super.mouseMoveOutWindowForcedShutdown(_outsideLocation);
     this.isMovingEntity = false;
+    this.hasMovedEntity = false;
     this.mindMapDrag = null;
     this.mindMapCandidate = null;
     this.beforeMovePositions = null;
