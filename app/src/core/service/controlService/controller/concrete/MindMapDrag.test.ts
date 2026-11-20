@@ -15,7 +15,7 @@ import { Rectangle } from "@graphif/shapes";
 import { describe, expect, it, vi } from "vitest";
 import { ControllerEntityClickSelectAndMoveClass } from "./ControllerEntityClickSelectAndMove";
 import { ControllerNodeConnectionClass } from "./ControllerNodeConnection";
-import { MindMapDrag, mindMapPorts } from "./MindMapDrag";
+import { MindMapDrag, mindMapPorts, reflowMindMapTree } from "./MindMapDrag";
 
 vi.mock("@/core/Project", () => ({ Project: class {}, service: () => () => {} }));
 vi.mock("@/core/service/Settings", () => ({
@@ -384,9 +384,30 @@ describe("mind-map drag", () => {
     expect(drag.update(new Vector(150, 150)).landing).toBeUndefined();
   });
 
-  it.each(["preserve", "align"] as const)("attaches to a right-drag-created child in %s mode", async (mode) => {
-    const { project, parent, root, node, edges } = setup();
+  it.each([
+    ["preserve", false],
+    ["preserve", true],
+    ["align", false],
+    ["align", true],
+  ] as const)("creates a child by right-drag in %s mode (pinned: %s)", async (mode, pinned) => {
+    const { project, parent, root, node, edges, recordStep } = setup();
     const { stageManager } = project;
+    const connect = (
+      source: ConnectableEntity,
+      target: ConnectableEntity,
+      _text: string,
+      targetRate: [number, number],
+      sourceRate: [number, number],
+    ) => {
+      edges.push(
+        new LineEdge(project, {
+          associationList: [source, target],
+          sourceRectangleRate: new Vector(...sourceRate),
+          targetRectangleRate: new Vector(...targetRate),
+        }),
+      );
+    };
+    Object.assign(project, { nodeConnector: { connectConnectableEntity: connect } });
     Object.assign(stageManager, {
       findConnectableEntityByLocation: (point: Vector) =>
         stageManager.getConnectableEntity().find((entity) => entity.collisionBox.getRectangle().isPointIn(point)) ??
@@ -399,19 +420,17 @@ describe("mind-map drag", () => {
         from: [number, number],
         to: [number, number],
       ) => {
-        for (const source of sources)
-          edges.push(
-            new LineEdge(project, {
-              associationList: [source, child],
-              sourceRectangleRate: new Vector(...from),
-              targetRectangleRate: new Vector(...to),
-            }),
-          );
+        for (const source of sources) connect(source, child, "", to, from);
       },
+    });
+    const startEditing = vi.fn((uuid: string) => {
+      const rectangle = stageManager.getConnectableEntityByUUID(uuid)?.collisionBox.getRectangle();
+      expect(rectangle?.center.y).toBe(pinned ? parent.collisionBox.getRectangle().center.y : 90);
+      if (pinned) expect(recordStep).toHaveBeenCalledOnce();
     });
     Object.assign(project.controllerUtils, {
       addTextNodeByLocation: async (position: Vector) => node(position.x, position.y).uuid,
-      textNodeInEditModeByUUID: vi.fn(),
+      textNodeInEditModeByUUID: startEditing,
     });
     Object.assign(project.controller, { setCursorName: vi.fn() });
     Object.assign(project.effects, { addEffect: vi.fn() });
@@ -422,23 +441,27 @@ describe("mind-map drag", () => {
     });
     const originalTrack = Settings.autoAdjustLineEndpointsByMouseTrack;
     const originalEndpoints = Settings.autoAdjustLineEndpointsWhenRightDragToBlank;
-    Settings.autoAdjustLineEndpointsByMouseTrack = true;
-    Settings.autoAdjustLineEndpointsWhenRightDragToBlank = true;
+    Settings.autoAdjustLineEndpointsByMouseTrack = !pinned;
+    Settings.autoAdjustLineEndpointsWhenRightDragToBlank = !pinned;
+    Settings.persistentDragToConnectMindMap = pinned && mode === "preserve";
+    Settings.persistentDragToConnectMindMapAligned = pinned && mode === "align";
     vi.stubGlobal("window", new EventTarget());
     const rightDrag = new ControllerNodeConnectionClass(project);
     try {
       const at = (x: number, y: number) => ({ button: 2, clientX: x, clientY: y }) as MouseEvent;
       rightDrag.mousedown(at(50, 25));
-      rightDrag.mouseup(at(250, 25));
+      rightDrag.mouseup(at(300, 75));
       await Promise.resolve();
 
+      expect(startEditing).toHaveBeenCalledOnce();
       expect(edges).toHaveLength(1);
       const [original] = edges;
       expect(original.source).toBe(parent);
       expect(original.isLeftToRight()).toBe(true);
       const child = original.target;
       const drag = new MindMapDrag(project, root, root.collisionBox.getRectangle().location, mode);
-      const release = new Vector(210, 25);
+      const childRect = child.collisionBox.getRectangle();
+      const release = new Vector(childRect.left - 40, childRect.top);
       expect(drag.update(release).contact).toEqual({ node: child, side: "left" });
       drag.drop(release);
       expect(edges).toHaveLength(2);
@@ -449,7 +472,39 @@ describe("mind-map drag", () => {
       vi.unstubAllGlobals();
       Settings.autoAdjustLineEndpointsByMouseTrack = originalTrack;
       Settings.autoAdjustLineEndpointsWhenRightDragToBlank = originalEndpoints;
+      Settings.persistentDragToConnectMindMap = false;
+      Settings.persistentDragToConnectMindMapAligned = false;
     }
+  });
+
+  it("uses the old side and the edited size to lay out a tree connected with center ports", () => {
+    const { project, parent, node, edges, root } = setup();
+    const child = node(210, 55);
+    const size = new Vector(100, 80);
+    const edited = node(30, 240, size);
+    const descendant = node(250, 260);
+    const dashed = new LineEdge(project, { associationList: [edited, root], lineType: "dashed" });
+    const right = new LineEdge(project, { associationList: [parent, child] });
+    const bottom = new LineEdge(project, { associationList: [parent, edited] });
+    const editedRight = new LineEdge(project, { associationList: [edited, descendant] });
+    edges.push(right, bottom, editedRight, dashed);
+    const parentBefore = parent.collisionBox.getRectangle().location;
+    const detachedBefore = root.collisionBox.getRectangle().location;
+    const centerBeforeEdit = edited.collisionBox.getRectangle().center;
+    size.x = 600;
+
+    reflowMindMapTree(project, edited, centerBeforeEdit);
+
+    expect(right.isLeftToRight()).toBe(true);
+    expect(bottom.isTopToBottom()).toBe(true);
+    expect(editedRight.isLeftToRight()).toBe(true);
+    const editedRect = edited.collisionBox.getRectangle();
+    const descendantRect = descendant.collisionBox.getRectangle();
+    expect(descendantRect.left - editedRect.right).toBeGreaterThanOrEqual(150);
+    expect(descendantRect.center.y).toBe(editedRect.center.y);
+    expect(parent.collisionBox.getRectangle().location).toEqual(parentBefore);
+    expect(root.collisionBox.getRectangle().location).toEqual(detachedBefore);
+    expect(dashed.isUnknownDirection()).toBe(true);
   });
 
   it("leaves ordinary gaps free even when a parent has many children on its side", () => {

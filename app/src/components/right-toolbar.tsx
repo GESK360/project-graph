@@ -11,15 +11,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Slider } from "./ui/slider";
 import { Input } from "./ui/input";
 import { useTranslation } from "react-i18next";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { cn } from "@/utils/cn";
 import { Fragment } from "react";
 import { useAtom } from "jotai";
 import { isClassroomModeAtom } from "@/state";
 import { HandwritingTools } from "./handwriting-tools";
-import { GitBranch, Network, Pencil } from "lucide-react";
+import { GitBranch, Hand, MouseLeft, MousePointer, MouseRight, Network, Pencil, Scissors } from "lucide-react";
 
 const toggleIconClass = "opacity-50 transition-opacity hover:opacity-100 focus-visible:opacity-100";
+const dragHandleClass = "touch-none cursor-grab active:cursor-grabbing";
 
 function QuickSettingRow({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -50,9 +51,10 @@ function PersistentBranchDragControl({
   return (
     <QuickSettingRow label={title}>
       <Button
+        data-sidebar-drag-handle
         aria-label={title}
         aria-pressed={enabled}
-        className={cn(toggleIconClass, enabled && "opacity-100")}
+        className={cn(toggleIconClass, dragHandleClass, enabled && "opacity-100")}
         variant="ghost"
         size="icon"
         onClick={toggle}
@@ -220,8 +222,9 @@ function QuickSettingButton({ settingKey }: { settingKey: keyof typeof settingsS
     <>
       <QuickSettingRow label={title}>
         <Button
+          data-sidebar-drag-handle
           aria-label={title}
-          className={iconOpacityClass}
+          className={cn(iconOpacityClass, dragHandleClass)}
           variant="ghost"
           size="icon"
           onClick={() => setShowDialog(true)}
@@ -248,10 +251,101 @@ function QuickSettingButton({ settingKey }: { settingKey: keyof typeof settingsS
   );
 }
 
-/**
- * 右侧工具栏
- * 显示用户自定义的快捷设置项（支持开关、下拉菜单、数值调整）
- */
+function MouseModeControls({ project }: { project: Project }) {
+  const { t } = useTranslation("settings");
+  const [leftMode] = Settings.use("mouseLeftMode");
+  const [rightMode] = Settings.use("mouseRightDragBackground");
+  const leftActions = [
+    { value: "selectAndMove", Icon: MousePointer },
+    { value: "draw", Icon: Pencil },
+  ] as const;
+  const rightActions = [
+    { value: "cut", Icon: Scissors },
+    { value: "moveCamera", Icon: Hand },
+  ] as const;
+
+  return (
+    <div className="grid shrink-0 grid-cols-[2.25rem_2rem] gap-x-1">
+      <div role="group" aria-label={t("mouseLeftMode.title")} className="flex flex-col">
+        <Tooltip>
+          <TooltipTrigger>
+            <span className="text-muted-foreground flex h-6 items-center justify-center">
+              <MouseLeft aria-hidden="true" className="size-4" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="left">{t("mouseLeftMode.title")}</TooltipContent>
+        </Tooltip>
+        {leftActions.map(({ value, Icon }) => (
+          <MouseModeButton
+            key={value}
+            label={t(`mouseLeftMode.options.${value}`)}
+            active={leftMode === value}
+            onClick={() => project.controller.setHandwritingMode(value === "draw")}
+          >
+            <Icon />
+          </MouseModeButton>
+        ))}
+      </div>
+      <div role="group" aria-label={t("mouseRightDragBackground.title")} className="flex flex-col">
+        <Tooltip>
+          <TooltipTrigger>
+            <span className="text-muted-foreground flex h-6 items-center justify-center">
+              <MouseRight aria-hidden="true" className="size-4" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="left">{t("mouseRightDragBackground.title")}</TooltipContent>
+        </Tooltip>
+        {rightActions.map(({ value, Icon }) => (
+          <MouseModeButton
+            key={value}
+            label={t(`mouseRightDragBackground.options.${value}`)}
+            active={rightMode === value}
+            onClick={() => {
+              Settings.mouseRightDragBackground = value;
+            }}
+          >
+            <Icon />
+          </MouseModeButton>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MouseModeButton({
+  active,
+  label,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={label}
+          aria-pressed={active}
+          className={cn("h-8 w-full", active ? "bg-accent text-accent-foreground" : toggleIconClass)}
+          onClick={onClick}
+        >
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="left">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+type SidebarKey = QuickSettingsManager.QuickSettingItem["settingKey"];
+type SidebarDrop = { key: SidebarKey; after: boolean };
+type SidebarDrag = { key: SidebarKey; pointerId: number; startX: number; startY: number; moved: boolean };
+
 export default function RightToolbar({
   project,
   showQuickSettingsToolbar,
@@ -259,35 +353,80 @@ export default function RightToolbar({
   project: Project;
   showQuickSettingsToolbar: boolean;
 }) {
-  const [quickSettings, setQuickSettings] = useState<QuickSettingsManager.QuickSettingItem[]>([]);
+  const [sidebarItems, setSidebarItems] = useState<QuickSettingsManager.QuickSettingItem[]>([]);
   const [isClassroomMode] = useAtom(isClassroomModeAtom);
-  const [isHandwritingEnabled, setIsHandwritingEnabled] = useState(Settings.mouseLeftMode === "draw");
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [draggedKey, setDraggedKey] = useState<SidebarKey | null>(null);
+  const [drop, setDrop] = useState<SidebarDrop | null>(null);
+  const drag = useRef<SidebarDrag | null>(null);
+  const suppressDragClick = useRef(false);
   const { t } = useTranslation("handwritingTools");
-  const drawingLabel = t("title");
-  const setDrawingMode = (enabled: boolean) => project.controller.setHandwritingMode(enabled);
-
-  useEffect(() => Settings.watch("mouseLeftMode", (mode) => setIsHandwritingEnabled(mode === "draw")), []);
-
-  const loadQuickSettings = async () => {
-    const items = await QuickSettingsManager.getQuickSettings();
-    setQuickSettings(items);
-  };
+  const paletteLabel = t("palette", { defaultValue: "Drawing palette" });
+  const items = sidebarItems.filter(
+    ({ settingKey }) => showQuickSettingsToolbar || QuickSettingsManager.isBranchControl(settingKey),
+  );
 
   useEffect(() => {
-    loadQuickSettings();
-    const interval = setInterval(() => {
-      loadQuickSettings();
-    }, 5000);
-    const handleFocus = () => {
-      loadQuickSettings();
-    };
-    window.addEventListener("focus", handleFocus);
+    const load = async () => setSidebarItems(await QuickSettingsManager.getSidebarItems());
+    void load();
+    const interval = setInterval(load, 5000);
+    window.addEventListener("focus", load);
 
     return () => {
       clearInterval(interval);
-      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("focus", load);
     };
   }, []);
+
+  function startDrag(event: PointerEvent<HTMLDivElement>) {
+    if (drag.current) return;
+    suppressDragClick.current = false;
+    if (event.button !== 0 || !(event.target instanceof Element)) return;
+    const handle = event.target.closest("[data-sidebar-drag-handle]");
+    const key = handle?.closest<HTMLElement>("[data-sidebar-item]")?.dataset.sidebarItem;
+    const item = items.find(({ settingKey }) => settingKey === key);
+    if (!handle || !item) return;
+    handle.setPointerCapture(event.pointerId);
+    drag.current = {
+      key: item.settingKey,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
+    };
+  }
+
+  function findDrop(event: PointerEvent<HTMLDivElement>, source: SidebarKey): SidebarDrop | null {
+    const row = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-sidebar-item]");
+    if (!row || !event.currentTarget.contains(row)) return null;
+    const item = items.find(({ settingKey }) => settingKey === row.dataset.sidebarItem);
+    if (!item || item.settingKey === source) return null;
+    const { top, height } = row.getBoundingClientRect();
+    return { key: item.settingKey, after: event.clientY >= top + height / 2 };
+  }
+
+  function moveDrag(event: PointerEvent<HTMLDivElement>) {
+    const active = drag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    if (!active.moved) {
+      if (Math.hypot(event.clientX - active.startX, event.clientY - active.startY) < 5) return;
+      active.moved = true;
+      setDraggedKey(active.key);
+    }
+    setDrop(findDrop(event, active.key));
+  }
+
+  function finishDrag(event: PointerEvent<HTMLDivElement>, commit: boolean) {
+    const active = drag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    drag.current = null;
+    setDraggedKey(null);
+    setDrop(null);
+    suppressDragClick.current = active.moved;
+    if (!commit || !active.moved) return;
+    const target = findDrop(event, active.key);
+    if (target) void QuickSettingsManager.moveSidebarItem(active.key, target.key, target.after).then(setSidebarItems);
+  }
 
   return (
     <div
@@ -298,37 +437,64 @@ export default function RightToolbar({
     >
       <Toolbar
         orientation="vertical"
-        className="bg-popover/95 supports-backdrop-blur:bg-popover/80 border-border/50 max-h-[calc(100dvh-5.25rem)] flex-col items-stretch gap-0 overflow-y-auto rounded-lg border px-1 py-1.5 shadow-xl backdrop-blur-md [scrollbar-width:thin]"
+        className="bg-popover/95 supports-backdrop-blur:bg-popover/80 border-border/50 max-h-[calc(100dvh-5.25rem)] flex-col items-stretch gap-0 rounded-lg border px-1 py-1.5 shadow-xl backdrop-blur-md"
       >
-        <QuickSettingRow label={drawingLabel}>
+        <MouseModeControls project={project} />
+        <div className="bg-border my-1 h-px shrink-0" />
+        <QuickSettingRow label={paletteLabel}>
           <Button
             variant="ghost"
             size="icon"
-            className={cn(toggleIconClass, isHandwritingEnabled && "opacity-100")}
-            aria-label={drawingLabel}
-            aria-pressed={isHandwritingEnabled}
-            onClick={() => setDrawingMode(!isHandwritingEnabled)}
+            className={cn(toggleIconClass, paletteOpen && "opacity-100")}
+            aria-label={paletteLabel}
+            aria-expanded={paletteOpen}
+            onClick={() => setPaletteOpen((open) => !open)}
           >
             <Pencil />
           </Button>
-          <Switch aria-label={drawingLabel} checked={isHandwritingEnabled} onCheckedChange={setDrawingMode} />
+          <Switch aria-label={paletteLabel} checked={paletteOpen} onCheckedChange={setPaletteOpen} />
         </QuickSettingRow>
-        {isHandwritingEnabled && (
-          <div className="shrink-0 self-center">
-            <HandwritingTools project={project} />
-          </div>
-        )}
-        <div className="bg-border my-1 h-px w-full shrink-0" />
-        <PersistentBranchDragControl settingKey="persistentDragToConnectMindMap" Icon={GitBranch} />
-        <PersistentBranchDragControl settingKey="persistentDragToConnectMindMapAligned" Icon={Network} />
-        {showQuickSettingsToolbar && quickSettings.length > 0 && (
-          <>
-            <div className="bg-border my-1 h-px w-full shrink-0" />
-            {quickSettings.map((item) => (
-              <QuickSettingButton key={item.settingKey} settingKey={item.settingKey} />
-            ))}
-          </>
-        )}
+        {paletteOpen && <HandwritingTools project={project} />}
+        <div className="bg-border my-1 h-px shrink-0" />
+        <div
+          className="min-h-0 overflow-y-auto [scrollbar-width:thin]"
+          onPointerDown={startDrag}
+          onPointerMove={moveDrag}
+          onPointerUp={(event) => finishDrag(event, true)}
+          onPointerCancel={(event) => finishDrag(event, false)}
+          onLostPointerCapture={(event) => finishDrag(event, false)}
+          onClickCapture={(event) => {
+            if (!suppressDragClick.current || event.detail === 0) return;
+            suppressDragClick.current = false;
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
+          {items.map(({ settingKey }) => (
+            <div
+              key={settingKey}
+              data-sidebar-item={settingKey}
+              className={cn("relative", draggedKey === settingKey && "opacity-40")}
+            >
+              {drop?.key === settingKey && (
+                <div
+                  className={cn(
+                    "bg-primary pointer-events-none absolute inset-x-0 z-10 h-0.5 rounded-full",
+                    drop.after ? "bottom-0" : "top-0",
+                  )}
+                />
+              )}
+              {QuickSettingsManager.isBranchControl(settingKey) ? (
+                <PersistentBranchDragControl
+                  settingKey={settingKey}
+                  Icon={settingKey === "persistentDragToConnectMindMap" ? GitBranch : Network}
+                />
+              ) : (
+                <QuickSettingButton settingKey={settingKey} />
+              )}
+            </div>
+          ))}
+        </div>
       </Toolbar>
     </div>
   );

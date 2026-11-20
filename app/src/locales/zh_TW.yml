@@ -1,5 +1,6 @@
 handwritingTools:
   title: 繪圖
+  palette: 畫盤
   penLabel: 畫筆 {{index}}
   penSettings: 畫筆設置
   color: 顏色
@@ -22,7 +23,11 @@ handwritingTools:
   deletePen: 刪除畫筆
   keepOnePen: 至少保留一支畫筆
   eraser: 橡皮
+  eraserLabel: 橡皮 {{index}}
   eraserSettings: 橡皮設置
+  cloneEraser: 克隆橡皮
+  deleteEraser: 刪除橡皮
+  keepOneEraser: 至少保留一個橡皮
   shape: 橡皮形狀
   eraserType: 橡皮類型
   strokeEraser: 筆劃橡皮擦

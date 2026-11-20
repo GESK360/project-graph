@@ -2,13 +2,15 @@ import { createStore } from "@/utils/store";
 import { settingsSchema } from "./Settings";
 import { settingsIcons } from "./SettingsIcons";
 import { z } from "zod";
+import type { Store } from "@tauri-apps/plugin-store";
 
 /**
  * 管理右侧快捷设置项列表
  * 有数据持久化机制
  */
 export namespace QuickSettingsManager {
-  let store: any;
+  let store: Store;
+  let writeQueue = Promise.resolve();
 
   /**
    * 设置项的类型
@@ -28,9 +30,13 @@ export namespace QuickSettingsManager {
     settingKey: keyof typeof settingsSchema.shape;
   };
 
-  /**
-   * 默认的快捷设置项列表（8个布尔类型的设置项）
-   */
+  const branchControls = ["persistentDragToConnectMindMap", "persistentDragToConnectMindMapAligned"] as const;
+  type SettingKey = QuickSettingItem["settingKey"];
+
+  export function isBranchControl(settingKey: string): settingKey is (typeof branchControls)[number] {
+    return branchControls.some((key) => key === settingKey);
+  }
+
   const DEFAULT_QUICK_SETTINGS: QuickSettingItem[] = [
     { settingKey: "isStealthModeEnabled" },
     { settingKey: "stealthModeReverseMask" },
@@ -45,23 +51,21 @@ export namespace QuickSettingsManager {
 
   export async function init() {
     store = await createStore("quick-settings.json");
-    const existingItems = await getQuickSettings();
-    if (existingItems.length === 0) {
-      await setQuickSettings(DEFAULT_QUICK_SETTINGS);
+    const sidebar = await getSidebarItems();
+    if (sidebar.every(({ settingKey }) => isBranchControl(settingKey))) {
+      await saveSidebarItems([...sidebar, ...DEFAULT_QUICK_SETTINGS]);
     } else {
-      await setQuickSettings(existingItems);
-      await migrateMinimapQuickSetting(existingItems);
+      await saveSidebarItems(sidebar);
+      await migrateMinimapQuickSetting();
     }
   }
 
   /**
    * 老用户的快捷栏列表里没有「小地图」开关，升级后补一个到末尾
    */
-  async function migrateMinimapQuickSetting(existingItems: QuickSettingItem[]) {
+  async function migrateMinimapQuickSetting() {
     if (await store.get(MINIMAP_MIGRATION_FLAG)) return;
-    if (!existingItems.some((item) => item.settingKey === "showMinimap")) {
-      await setQuickSettings([...existingItems, { settingKey: "showMinimap" }]);
-    }
+    await addQuickSetting({ settingKey: "showMinimap" });
     await store.set(MINIMAP_MIGRATION_FLAG, true);
     await store.save();
   }
@@ -70,44 +74,80 @@ export namespace QuickSettingsManager {
    * 获取快捷设置项列表
    */
   export async function getQuickSettings(): Promise<QuickSettingItem[]> {
-    const data = ((await store.get("quickSettings")) as QuickSettingItem[]) || [];
-    return data.filter((item) => isValidQuickSetting(item.settingKey as string));
+    return (await getSidebarItems()).filter((item) => !isBranchControl(item.settingKey));
   }
 
-  /**
-   * 设置快捷设置项列表
-   */
-  export async function setQuickSettings(items: QuickSettingItem[]): Promise<void> {
+  export async function getSidebarItems(): Promise<QuickSettingItem[]> {
+    const stored = (await store.get<QuickSettingItem[]>("quickSettings")) ?? [];
+    const keys = new Set(stored.map(({ settingKey }) => settingKey));
+    const missingBranchControls = branchControls.filter((key) => !keys.has(key));
+    return [...missingBranchControls, ...keys]
+      .filter((key) => isBranchControl(key) || isValidQuickSetting(key))
+      .map((settingKey) => ({ settingKey }));
+  }
+
+  async function saveSidebarItems(items: QuickSettingItem[]): Promise<void> {
     await store.set("quickSettings", items);
     await store.save();
+  }
+
+  function updateSidebarItems(update: (current: QuickSettingItem[]) => QuickSettingItem[]) {
+    const result = writeQueue.then(async () => {
+      const current = await getSidebarItems();
+      const next = update(current);
+      if (current !== next) await saveSidebarItems(next);
+      return next;
+    });
+    writeQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  export async function moveSidebarItem(source: SettingKey, target: SettingKey, after: boolean) {
+    return updateSidebarItems((sidebar) => {
+      const moved = sidebar.find((item) => item.settingKey === source);
+      if (!moved || source === target) return sidebar;
+      const next = sidebar.filter((item) => item.settingKey !== source);
+      const index = next.findIndex((item) => item.settingKey === target);
+      if (index === -1) return sidebar;
+      next.splice(index + Number(after), 0, moved);
+      return next;
+    });
   }
 
   /**
    * 添加一个快捷设置项
    */
   export async function addQuickSetting(item: QuickSettingItem): Promise<void> {
-    const existingItems = await getQuickSettings();
-    // 检查是否已存在
-    if (!existingItems.some((it) => it.settingKey === item.settingKey)) {
-      existingItems.push(item);
-      await setQuickSettings(existingItems);
-    }
+    if (!isValidQuickSetting(item.settingKey)) return;
+    await updateSidebarItems((sidebar) =>
+      sidebar.some(({ settingKey }) => settingKey === item.settingKey) ? sidebar : [...sidebar, item],
+    );
   }
 
   /**
    * 删除一个快捷设置项
    */
   export async function removeQuickSetting(settingKey: keyof typeof settingsSchema.shape): Promise<void> {
-    const existingItems = await getQuickSettings();
-    const filtered = existingItems.filter((it) => it.settingKey !== settingKey);
-    await setQuickSettings(filtered);
+    if (isBranchControl(settingKey)) return;
+    await updateSidebarItems((sidebar) => sidebar.filter((item) => item.settingKey !== settingKey));
   }
 
   /**
    * 更新快捷设置项的顺序
    */
   export async function reorderQuickSettings(newOrder: QuickSettingItem[]): Promise<void> {
-    await setQuickSettings(newOrder);
+    await updateSidebarItems((sidebar) => {
+      const quickKeys = new Set<SettingKey>(
+        sidebar.map(({ settingKey }) => settingKey).filter((key) => !isBranchControl(key)),
+      );
+      const requestedKeys = newOrder.map(({ settingKey }) => settingKey).filter((key) => quickKeys.has(key));
+      const order = Array.from(new Set([...requestedKeys, ...quickKeys]));
+      let index = 0;
+      return sidebar.map((item) => (isBranchControl(item.settingKey) ? item : { settingKey: order[index++] }));
+    });
   }
 
   /**
@@ -157,6 +197,9 @@ export namespace QuickSettingsManager {
    * 验证设置项是否可以加入快捷栏（boolean/enum/number 且有图标）
    */
   export function isValidQuickSetting(settingKey: string): boolean {
+    if (isBranchControl(settingKey) || settingKey === "mouseLeftMode" || settingKey === "mouseRightDragBackground") {
+      return false;
+    }
     const type = getSettingType(settingKey);
     if (type === "unknown") return false;
     // 必须有对应图标才能在工具栏中展示

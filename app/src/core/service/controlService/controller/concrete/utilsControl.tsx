@@ -19,6 +19,7 @@ import type { Direction } from "@/types/directions";
 import { colorInvert, Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
 import { toast } from "sonner";
+import { isPersistentMindMapDragEnabled, reflowMindMapTree } from "./MindMapDrag";
 import {
   autoChangeTextNodeToLatexNode,
   autoChangeTextNodeToReferenceBlock,
@@ -56,6 +57,7 @@ export class ControllerUtils {
     // 停止实体移动漂移
     this.project.entityMoveManager.stopImmediately();
     const rectWorld = clickedNode.collisionBox.getRectangle();
+    const centerBeforeEdit = rectWorld.center;
     const rectView = this.project.renderer.transformWorld2View(rectWorld);
     const rectClient = this.viewRectangleToClient(rectView);
     const clientScale = this.project.canvas.viewToClientScale();
@@ -107,27 +109,28 @@ export class ControllerUtils {
     this.project.inputElement
       .textarea(
         clickedNode.text,
-        async (text, ele) => {
+        (text, ele) => {
           const currentRequestId = latexPreview.nextRequestId();
           if (lastAutoCompleteTabId) {
             void TabWorkspace.close(lastAutoCompleteTabId);
           }
-          // 自动补全逻辑
-          await this.autoComplete.handle(text, clickedNode, ele, (value) => {
-            lastAutoCompleteTabId = value;
-          });
-          // onChange
-          clickedNode?.rename(text);
-          if (Settings.textNodeAutoFormatTreeWhenInput) {
-            relayoutTreeWhileEditing();
+          if (clickedNode.text !== text) {
+            clickedNode.rename(text);
+            if (Settings.textNodeAutoFormatTreeWhenInput) {
+              relayoutTreeWhileEditing();
+            }
+            for (const section of this.project.sectionMethods.getFatherSectionsList(clickedNode)) {
+              section.adjustLocationAndSize();
+            }
           }
           syncTextareaPositionWithNode(ele);
-          // 宽度由 inputElement.tsx 的 adjustSize（镜像 div 测量）负责，此处不再重复设置
-          // 自动调整它的外层框的大小
-          const fatherSections = this.project.sectionMethods.getFatherSectionsList(clickedNode);
-          for (const section of fatherSections) {
-            section.adjustLocationAndSize();
-          }
+          this.autoComplete.handle(text, clickedNode, ele, (value) => {
+            if (!clickedNode.isEditing || currentRequestId !== latexPreview.currentRequestId()) {
+              void TabWorkspace.close(value);
+              return;
+            }
+            lastAutoCompleteTabId = value;
+          });
 
           // 实时 LaTeX 预览：检测光标附近的 $...$ 片段
           const cursor =
@@ -185,9 +188,13 @@ export class ControllerUtils {
         void TabWorkspace.close(lastAutoCompleteTabId);
         // 移除 LaTeX 实时预览 div
         latexPreview.dismiss();
-        clickedNode!.isEditing = false;
+        clickedNode.isEditing = false;
         this.project.controller.isCameraLocked = false;
+        if (this.project.stageManager.getTextNodeByUUID(clickedNode.uuid) !== clickedNode) return;
         if (clickedNode.text !== textBeforeEdit) {
+          if (isPersistentMindMapDragEnabled()) {
+            reflowMindMapTree(this.project, clickedNode, centerBeforeEdit);
+          }
           this.project.historyManager.recordStep();
         }
 

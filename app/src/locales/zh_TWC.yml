@@ -1,4 +1,5 @@
 handwritingTools:
+  palette: 畫盤
   title: 繪圖
   penLabel: 畫筆 {{index}}
   penSettings: 畫筆設定
@@ -22,7 +23,11 @@ handwritingTools:
   deletePen: 刪除畫筆
   keepOnePen: 至少保留一支畫筆
   eraser: 橡皮擦
+  eraserLabel: 橡皮擦 {{index}}
   eraserSettings: 橡皮擦設定
+  cloneEraser: 複製橡皮擦
+  deleteEraser: 刪除橡皮擦
+  keepOneEraser: 至少保留一個橡皮擦
   shape: 橡皮擦形狀
   eraserType: 橡皮擦類型
   strokeEraser: 筆劃橡皮擦

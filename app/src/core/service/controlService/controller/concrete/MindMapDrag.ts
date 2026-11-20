@@ -54,6 +54,63 @@ export function getMindMapPort(rect: Rectangle, rate: Vector): Vector {
   return Edge.getExactEdgePositionByRate(rect, rate) ?? rect.getInnerLocationByRateVector(rate);
 }
 
+export function isPersistentMindMapDragEnabled() {
+  return (
+    !Settings.viewerMode && (Settings.persistentDragToConnectMindMap || Settings.persistentDragToConnectMindMapAligned)
+  );
+}
+
+export function getMindMapSide(delta: Vector): MindMapSide {
+  if (Math.abs(delta.x) >= Math.abs(delta.y)) return delta.x < 0 ? "left" : "right";
+  return delta.y < 0 ? "top" : "bottom";
+}
+
+function isMovableBranch(branch: ConnectableEntity[]) {
+  return branch.every(
+    (node) => node.nearestLockedAncestorSection === null && !(node instanceof Section && node.locked),
+  );
+}
+
+export function reflowMindMapTree(project: Project, node: ConnectableEntity, previousCenter?: Vector) {
+  const { graphMethods, autoLayoutFastTree, stageManager } = project;
+  const [root] = graphMethods.getRoots(node, true);
+  if (!root) return;
+
+  const tree = graphMethods.getSuccessorSet(root, true, true);
+  if (tree.length < 2 || !tree.includes(node) || !isMovableBranch(tree)) return;
+  const treeNodes = new Set(tree);
+  const connected = new Set<ConnectableEntity>();
+  const unanchored: LineEdge[] = [];
+  // The tree traversal follows LineEdges, but the layout also reads other directed edges.
+  for (const edge of stageManager.getEdges()) {
+    const { source, target } = edge;
+    if (!treeNodes.has(source) && !treeNodes.has(target)) continue;
+    if (!(edge instanceof LineEdge)) return;
+    if (edge.lineType === "dashed") continue;
+    if (!treeNodes.has(source) || !treeNodes.has(target) || target === root || connected.has(target)) return;
+    connected.add(target);
+    if (edge.isUnknownDirection()) unanchored.push(edge);
+  }
+
+  const centerOf = (member: ConnectableEntity) =>
+    member === node && previousCenter ? previousCenter : member.collisionBox.getRectangle().center;
+  // Resolve center-to-center edges once so densely spaced siblings keep their sides on later edits.
+  for (const edge of unanchored) {
+    const { source, target } = mindMapPorts[getMindMapSide(centerOf(edge.target).subtract(centerOf(edge.source)))];
+    edge.sourceRectangleRate = source.clone();
+    edge.targetRectangleRate = target.clone();
+  }
+  project.sectionMoveDepth++;
+  try {
+    autoLayoutFastTree.autoLayoutFastTreeMode(root);
+  } finally {
+    project.sectionMoveDepth--;
+  }
+  if (unanchored.length || tree.some((member) => member instanceof Section || member.parentSection)) {
+    stageManager.updateReferences();
+  }
+}
+
 function getMindMapContact(ghost: Rectangle, target: Rectangle, tolerance: number) {
   const center = ghost.center;
   const targetCenter = target.center;
@@ -86,7 +143,7 @@ function getBodyContact(ghost: Rectangle, target: Rectangle, pointer: Vector, of
   const heading = delta.isZero() ? offset.multiply(-1) : delta;
   const x = heading.x / Math.max(1, target.width);
   const y = heading.y / Math.max(1, target.height);
-  const side: MindMapSide = Math.abs(x) >= Math.abs(y) ? (x < 0 ? "left" : "right") : y < 0 ? "top" : "bottom";
+  const side = getMindMapSide(new Vector(x, y));
   return { side, distance: 0, crossDistance: pointer.distance(target.center) };
 }
 
@@ -165,7 +222,7 @@ export class MindMapDrag {
     this.blockedTargets = this.getBlockedTargets();
     const branches = this.roots.flatMap((root) => graphMethods.getSuccessorSet(root, true, true));
     this.canLayOut =
-      this.isMovableBranch(branches) &&
+      isMovableBranch(branches) &&
       new Set(branches).size === branches.length &&
       this.roots.every(
         (root) =>
@@ -199,12 +256,6 @@ export class MindMapDrag {
       }
     }
     return blocked;
-  }
-
-  private isMovableBranch(branch: ConnectableEntity[]) {
-    return branch.every(
-      (node) => node.nearestLockedAncestorSection === null && !(node instanceof Section && node.locked),
-    );
   }
 
   private canEnterSection(section: Section, blocked: Set<StageObject>) {
@@ -428,7 +479,7 @@ export class MindMapDrag {
     const { stageManager, graphMethods, entityMoveManager, historyManager } = this.project;
     if (this.roots.some((root) => !stageManager.isEntityExists(root.uuid))) return;
     const branch = [...new Set(this.roots.flatMap((root) => graphMethods.getSuccessorSet(root, true, true)))];
-    if (!this.isMovableBranch(branch)) return;
+    if (!isMovableBranch(branch)) return;
     if (!attachment) {
       if (offset.isZero()) return;
       const ghostCenter = this.node.collisionBox.getRectangle().center.add(offset);
@@ -503,7 +554,7 @@ export class MindMapDrag {
     // The tree validator follows LineEdges, but the default layout also traverses other directed edges.
     if (tree.some((node) => graphMethods.getOutgoingEdges(node).some((edge) => !(edge instanceof LineEdge))))
       return false;
-    if (!this.isMovableBranch(tree) || !graphMethods.validateTreeStructure(root, true).isValid) return false;
+    if (!isMovableBranch(tree) || !graphMethods.validateTreeStructure(root, true).isValid) return false;
 
     autoLayoutFastTree.autoLayoutFastTreeMode(root, undefined, { parent, side, children });
     return true;

@@ -1,5 +1,6 @@
 handwritingTools:
   title: Drawing
+  palette: Drawing palette
   penLabel: Pen {{index}}
   penSettings: Pen settings
   color: Color
@@ -22,7 +23,11 @@ handwritingTools:
   deletePen: Delete pen
   keepOnePen: Keep at least one pen
   eraser: Eraser
+  eraserLabel: Eraser {{index}}
   eraserSettings: Eraser settings
+  cloneEraser: Clone eraser
+  deleteEraser: Delete eraser
+  keepOneEraser: Keep at least one eraser
   shape: Eraser shape
   eraserType: Eraser type
   strokeEraser: Stroke eraser

@@ -15,6 +15,7 @@ import { Direction } from "@/types/directions";
 import { isMac } from "@/utils/platform";
 import { ProgressNumber, Vector } from "@graphif/data-structures";
 import { Line } from "@graphif/shapes";
+import { getMindMapSide, isPersistentMindMapDragEnabled, mindMapPorts, reflowMindMapTree } from "./MindMapDrag";
 
 /**
  * 连线控制器
@@ -413,28 +414,54 @@ export class ControllerNodeConnectionClass extends ControllerClass {
       const sourceImageLocation = isSingleImageOrReferenceSource
         ? this._startImageLocation.get(newConnectFromEntities[0].uuid)?.clone()
         : undefined;
+      const alignedParent =
+        event.button === 2 &&
+        newConnectFromEntities.length === 1 &&
+        isPersistentMindMapDragEnabled() &&
+        Settings.defaultEdgeLineType !== "dashed"
+          ? newConnectFromEntities[0]
+          : null;
+      const alignedPorts = alignedParent
+        ? mindMapPorts[
+            getMindMapSide(
+              sourceDirection === null
+                ? releaseWorldLocation.subtract(alignedParent.collisionBox.getRectangle().center)
+                : this.directionToRate(sourceDirection).subtract(Vector.same(0.5)),
+            )
+          ]
+        : null;
 
       this.project.controllerUtils.addTextNodeByLocation(releaseWorldLocation, true).then((uuid) => {
-        const createdNode = this.project.stageManager.getTextNodeByUUID(uuid) as ConnectableEntity;
+        const createdNode = this.project.stageManager.getTextNodeByUUID(uuid);
+        if (!createdNode) return;
 
-        // 让这个新建的节点进入编辑状态
-        this.project.controllerUtils.textNodeInEditModeByUUID(uuid);
-
-        const sourceRectangleRate = Settings.autoAdjustLineEndpointsWhenRightDragToBlank
-          ? (sourceImageLocation ?? this.directionToRate(sourceDirection))
-          : Vector.same(0.5);
+        const sourceRectangleRate =
+          alignedPorts?.source ??
+          (Settings.autoAdjustLineEndpointsWhenRightDragToBlank
+            ? (sourceImageLocation ?? this.directionToRate(sourceDirection))
+            : Vector.same(0.5));
         const targetRectangleRate =
-          Settings.autoAdjustLineEndpointsWhenRightDragToBlank && !isSingleImageOrReferenceSource
+          alignedPorts?.target ??
+          (Settings.autoAdjustLineEndpointsWhenRightDragToBlank && !isSingleImageOrReferenceSource
             ? this.directionToRate(sourceDirection !== null ? this.getOppositeDirection(sourceDirection) : null)
-            : Vector.same(0.5);
+            : Vector.same(0.5));
+        const sourceRate: [number, number] = [sourceRectangleRate.x, sourceRectangleRate.y];
+        const targetRate: [number, number] = [targetRectangleRate.x, targetRectangleRate.y];
 
-        this.project.stageManager.connectMultipleEntities(
-          newConnectFromEntities,
-          createdNode,
-          false,
-          [sourceRectangleRate.x, sourceRectangleRate.y],
-          [targetRectangleRate.x, targetRectangleRate.y],
-        );
+        if (alignedParent) {
+          this.project.nodeConnector.connectConnectableEntity(alignedParent, createdNode, "", targetRate, sourceRate);
+          reflowMindMapTree(this.project, createdNode);
+          this.project.historyManager.recordStep();
+        } else {
+          this.project.stageManager.connectMultipleEntities(
+            newConnectFromEntities,
+            createdNode,
+            false,
+            sourceRate,
+            targetRate,
+          );
+        }
+        this.project.controllerUtils.textNodeInEditModeByUUID(uuid);
         for (const fromEntity of newConnectFromEntities) {
           this.addConnectEffect(fromEntity, createdNode, sourceRectangleRate, targetRectangleRate);
         }

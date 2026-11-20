@@ -1,4 +1,5 @@
 handwritingTools:
+  palette: Palet gambar
   title: Menggambar
   penLabel: Pena {{index}}
   penSettings: Pengaturan pena
@@ -22,7 +23,11 @@ handwritingTools:
   deletePen: Hapus pena
   keepOnePen: Sisakan setidaknya satu pena
   eraser: Penghapus
+  eraserLabel: Penghapus {{index}}
   eraserSettings: Pengaturan penghapus
+  cloneEraser: Duplikat penghapus
+  deleteEraser: Hapus penghapus
+  keepOneEraser: Sisakan setidaknya satu penghapus
   shape: Bentuk penghapus
   eraserType: Jenis penghapus
   strokeEraser: Penghapus goresan

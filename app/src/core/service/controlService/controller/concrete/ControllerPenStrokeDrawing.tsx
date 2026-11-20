@@ -1,6 +1,6 @@
 import { Project } from "@/core/Project";
 import { ControllerClass } from "@/core/service/controlService/controller/ControllerClass";
-import { Settings } from "@/core/service/Settings";
+import { getSelectedHandwritingEraser, Settings, type HandwritingEraser } from "@/core/service/Settings";
 import { PenStroke, PenStrokeSegment } from "@/core/stage/stageObject/entity/PenStroke";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import { CursorNameEnum } from "@/types/cursors";
@@ -29,7 +29,7 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
   public currentStrokeWidth: number = 5;
   private activeStrokeWidth = 5;
   private activeStrokeColor: Color = Color.White;
-  private activeToolId = "pen-1";
+  private activeEraser: HandwritingEraser | undefined;
   private lastEraserLocation: Vector | null = null;
   private erasedWhileUsingEraser = false;
 
@@ -51,17 +51,18 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
       return;
     }
     this._isUsing = true;
-    this.activeToolId = Settings.handwritingActiveTool;
-    const activePen = Settings.handwritingPens.find((pen) => pen.id === this.activeToolId);
+    const activeToolId = Settings.handwritingActiveTool;
+    this.activeEraser = activeToolId === "eraser" ? getSelectedHandwritingEraser() : undefined;
+    const activePen = Settings.handwritingPens.find((pen) => pen.id === activeToolId);
     this.activeStrokeWidth = activePen?.width ?? this.currentStrokeWidth;
     this.currentStrokeWidth = this.activeStrokeWidth;
     this.activeStrokeColor = activePen ? Color.fromCss(activePen.color) : this.getCurrentStrokeColor();
     this.lastEraserLocation = null;
     this.erasedWhileUsingEraser = false;
-    if (this.activeToolId === "eraser") {
+    if (this.activeEraser) {
       const eraserLocation = this.project.renderer.transformView2World(new Vector(event.clientX, event.clientY));
       this.lastEraserLocation = eraserLocation;
-      this.eraseAlong(eraserLocation, eraserLocation);
+      this.eraseAlong(eraserLocation, eraserLocation, this.activeEraser);
     }
     if (Settings.hideCursorInPenMode) {
       this.project.controller.setCursorName(CursorNameEnum.None);
@@ -71,8 +72,7 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
       event.pointerType === "pen"
         ? normalizePenPressure(event.pressure, Settings.penPressureCurve, Settings.enablePenPressure)
         : 1;
-    this.currentSegments =
-      this.activeToolId === "eraser" ? [] : [new PenStrokeSegment(pressWorldLocation.clone(), pressPressure)];
+    this.currentSegments = this.activeEraser ? [] : [new PenStrokeSegment(pressWorldLocation.clone(), pressPressure)];
     if (this.project.controller.pressingKeySet.has("shift")) {
       this.isDrawingLine = true;
     }
@@ -84,11 +84,11 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
     if (!this.project.controller.isMouseDown[0] && Settings.mouseLeftMode === "draw") return;
     if (this.project.controller.isMouseDown[0] && Settings.mouseLeftMode !== "draw") return;
     const events = getPointerSamples(event);
-    if (this.activeToolId === "eraser") {
+    if (this.activeEraser) {
       for (const e of events) {
         const eraserLocation = this.project.renderer.transformView2World(new Vector(e.clientX, e.clientY));
         const eraserStart = this.lastEraserLocation ?? eraserLocation;
-        this.eraseAlong(eraserStart, eraserLocation);
+        this.eraseAlong(eraserStart, eraserLocation, this.activeEraser);
         this.lastEraserLocation = eraserLocation;
       }
       return;
@@ -105,7 +105,7 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
 
   public mouseup = (event: MouseEvent) => {
     if (!this._isUsing || event.button !== 0) return;
-    if (this.activeToolId === "eraser") {
+    if (this.activeEraser) {
       if (this.erasedWhileUsingEraser) this.project.historyManager.recordStep();
       this.releaseMouseAndClear();
       return;
@@ -228,7 +228,7 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
     this.currentSegments = [];
     this.lastEraserLocation = null;
     this.erasedWhileUsingEraser = false;
-    this.activeToolId = Settings.handwritingActiveTool;
+    this.activeEraser = undefined;
     this._isUsing = false;
     this.isDrawingLine = false;
   }
@@ -236,7 +236,7 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
   public mouseMoveOutWindowForcedShutdown(_outsideLocation: Vector) {
     super.mouseMoveOutWindowForcedShutdown(_outsideLocation);
     if (this._isUsing) {
-      if (this.activeToolId === "eraser" && this.erasedWhileUsingEraser) this.project.historyManager.recordStep();
+      if (this.activeEraser && this.erasedWhileUsingEraser) this.project.historyManager.recordStep();
       this.releaseMouseAndClear();
     }
   }
@@ -296,20 +296,25 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
     );
   }
 
-  private eraseAlong(eraserStart: Vector, eraserEnd: Vector) {
-    if (Settings.handwritingEraserType === "point") {
-      this.erasePointAlong(eraserStart, eraserEnd);
+  public getCurrentEraser(): HandwritingEraser | undefined {
+    if (this._isUsing) return this.activeEraser;
+    if (Settings.handwritingActiveTool === "eraser") return getSelectedHandwritingEraser();
+  }
+
+  private eraseAlong(eraserStart: Vector, eraserEnd: Vector, eraser: HandwritingEraser) {
+    if (eraser.type === "point") {
+      this.erasePointAlong(eraserStart, eraserEnd, eraser);
       return;
     }
-    const strokes = this.getStrokesHitByEraser(eraserStart, eraserEnd);
+    const strokes = this.getStrokesHitByEraser(eraserStart, eraserEnd, eraser);
     if (strokes.length === 0) return;
     this.project.deleteManager.deleteEntities(strokes);
     this.erasedWhileUsingEraser = true;
   }
 
-  private erasePointAlong(eraserStart: Vector, eraserEnd: Vector) {
+  private erasePointAlong(eraserStart: Vector, eraserEnd: Vector, eraser: HandwritingEraser) {
     const scale = Math.max(this.project.camera.currentScale, 0.000001);
-    const eraserRadius = eraserScreenDiameterToWorldRadius(Settings.handwritingEraserSize, scale);
+    const eraserRadius = eraserScreenDiameterToWorldRadius(eraser.size, scale);
     const changedStrokes: PenStroke[] = [];
     const deletedStrokes: Array<{ stroke: PenStroke; section: PenStroke["parentSection"] }> = [];
     const newFragments: Array<{ stroke: PenStroke; section: PenStroke["parentSection"] }> = [];
@@ -340,7 +345,7 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
         eraserRadius,
         strokeWidth,
         scale,
-        Settings.handwritingEraserShape,
+        eraser.shape,
       );
       if (!result.erased) continue;
 
@@ -377,12 +382,12 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
     this.erasedWhileUsingEraser = true;
   }
 
-  private getStrokesHitByEraser(eraserStart: Vector, eraserEnd: Vector) {
+  private getStrokesHitByEraser(eraserStart: Vector, eraserEnd: Vector, eraser: HandwritingEraser) {
     const strokes = this.project.stageManager.getPenStrokes();
     if (strokes.length === 0) return [];
     const scale = Math.max(this.project.camera.currentScale, 0.000001);
-    const eraserRadius = eraserScreenDiameterToWorldRadius(Settings.handwritingEraserSize, scale);
-    const shape = Settings.handwritingEraserShape;
+    const eraserRadius = eraserScreenDiameterToWorldRadius(eraser.size, scale);
+    const shape = eraser.shape;
 
     return strokes.filter((stroke) => {
       if (stroke.isHiddenBySectionCollapse || stroke.segments.length < 2) return false;

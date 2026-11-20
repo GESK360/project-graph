@@ -43,6 +43,17 @@ const projectToolSettingSchemas = createProjectToolSettingSchemas(
   isMac ? MAC_DEFAULT_FONT_FAMILY : DEFAULT_FONT_FAMILY,
 );
 
+const eraserSizeSchema = z.number().int().min(4).max(80).default(24);
+const eraserShapeSchema = z.enum(["circle", "square"]).default("circle");
+const eraserTypeSchema = z.enum(["stroke", "point"]).default("stroke");
+const eraserPresetSchema = z.object({
+  id: z.string().min(1),
+  size: eraserSizeSchema,
+  shape: eraserShapeSchema,
+  type: eraserTypeSchema,
+});
+export type HandwritingEraser = z.infer<typeof eraserPresetSchema>;
+
 export const settingsSchema = z.object({
   language: z
     .union([z.literal("en"), z.literal("zh_CN"), z.literal("zh_TW"), z.literal("zh_TWC"), z.literal("id")])
@@ -269,9 +280,14 @@ export const settingsSchema = z.object({
     .min(1)
     .default([{ id: "pen-1", color: "#2563EB", width: 5 }]),
   handwritingActiveTool: z.string().default("pen-1"),
-  handwritingEraserSize: z.number().int().min(4).max(80).default(24),
-  handwritingEraserShape: z.union([z.literal("circle"), z.literal("square")]).default("circle"),
-  handwritingEraserType: z.union([z.literal("stroke"), z.literal("point")]).default("stroke"),
+  handwritingErasers: z
+    .array(eraserPresetSchema)
+    .min(1)
+    .default(() => [eraserPresetSchema.parse({ id: "eraser" })]),
+  handwritingEraserId: z.string().default("eraser"),
+  handwritingEraserSize: eraserSizeSchema,
+  handwritingEraserShape: eraserShapeSchema,
+  handwritingEraserType: eraserTypeSchema,
   colorPanelMouseEnterPreview: z.boolean().default(false),
   autoFillEdgeColor: z.tuple([z.number(), z.number(), z.number(), z.number()]).default([0, 0, 0, 0]),
   autoOpenPath: z.string().default(""), // 废弃
@@ -1016,6 +1032,16 @@ if (rawSettings.handwritingPens === undefined && savedSettings.autoFillPenStroke
   savedSettings.handwritingPens[0].color =
     `#${toHex(red)}${toHex(green)}${toHex(blue)}${toHex(alpha * 255)}`.toUpperCase();
 }
+if (rawSettings.handwritingErasers === undefined) {
+  savedSettings.handwritingErasers = [
+    {
+      id: "eraser",
+      size: savedSettings.handwritingEraserSize,
+      shape: savedSettings.handwritingEraserShape,
+      type: savedSettings.handwritingEraserType,
+    },
+  ];
+}
 if (rawSettings.windowBackgroundAlpha === 0.28) {
   savedSettings.windowBackgroundAlpha = 0.72;
   await store.set("windowBackgroundAlpha", 0.72);
@@ -1170,6 +1196,13 @@ export const Settings = new Proxy<
     },
   },
 );
+
+export function getSelectedHandwritingEraser(): HandwritingEraser {
+  return (
+    Settings.handwritingErasers.find((eraser) => eraser.id === Settings.handwritingEraserId) ??
+    Settings.handwritingErasers[0]
+  );
+}
 
 Settings.watch("persistentDragToConnectMindMap", (enabled) => {
   if (enabled && Settings.persistentDragToConnectMindMapAligned) {

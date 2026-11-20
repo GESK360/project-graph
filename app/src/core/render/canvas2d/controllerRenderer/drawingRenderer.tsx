@@ -87,9 +87,10 @@ export class DrawingControllerRenderer {
     const outlineColor =
       currentStrokeColor.a === 0 ? this.project.stageStyleManager.currentStyle.StageObjectBorder : currentStrokeColor;
 
-    if (Settings.handwritingActiveTool === "eraser") {
-      const size = Settings.handwritingEraserSize;
-      if (Settings.handwritingEraserShape === "circle") {
+    const eraser = this.project.controller.penStrokeDrawing.getCurrentEraser();
+    if (eraser) {
+      const { size, shape } = eraser;
+      if (shape === "circle") {
         this.project.shapeRenderer.renderCircle(mouseLocation, size / 2, Color.Transparent, outlineColor, 1.5);
       } else {
         this.project.shapeRenderer.renderRectFromCenter(
