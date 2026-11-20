@@ -175,6 +175,7 @@ export class Renderer {
     this.renderConnectingLine();
     this.renderMindMapDrag();
     this.renderBranchFoldBadges();
+    this.renderSectionFoldBadges();
     this.renderKeyboardOnly();
     this.rendererLayerMovingLine();
     this.project.searchContentHighlightRenderer.render(this.frameIndex);
@@ -425,60 +426,67 @@ export class Renderer {
     if (!preview) return;
 
     const ctx = this.project.canvas.ctx;
-    const viewOffset = preview.offset.multiply(this.project.camera.currentScale);
-    ctx.save();
-    ctx.translate(viewOffset.x, viewOffset.y);
-    ctx.globalAlpha *= 0.4;
-    if (preview.node instanceof Section) {
-      this.project.sectionRenderer.renderBackgroundColor(preview.node);
-      this.project.sectionRenderer.render(preview.node);
-    } else {
-      this.project.entityRenderer.renderEntity(preview.node);
-    }
-    ctx.restore();
-
-    if (!preview.contact) return;
-    const { node: parent, side } = preview.contact;
-    const port = mindMapPorts[side];
-    const start = this.transformWorld2View(getMindMapPort(parent.collisionBox.getRectangle(), port.source));
-    const end = this.transformWorld2View(
-      getMindMapPort(preview.node.collisionBox.getRectangle(), port.target).add(preview.offset),
-    );
-    const difference = end.subtract(start);
-    const forwardDistance = difference.x * port.outward.x + difference.y * port.outward.y;
-    const arrowTip = start.add(port.outward.multiply(24));
-    const arrowBase = arrowTip.subtract(port.outward.multiply(7));
-    const wing = new Vector(-port.outward.y, port.outward.x).multiply(4);
-    const arrowLeft = arrowBase.add(wing);
-    const arrowRight = arrowBase.subtract(wing);
     const accent = this.project.stageStyleManager.currentStyle.CollideBoxSelected.toString();
 
-    ctx.save();
-    ctx.lineWidth = 2;
-    ctx.lineCap = "round";
-    ctx.strokeStyle = accent;
-    ctx.fillStyle = accent;
-    ctx.beginPath();
-    ctx.moveTo(start.x, start.y);
-    ctx.lineTo(arrowTip.x, arrowTip.y);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(arrowTip.x, arrowTip.y);
-    ctx.lineTo(arrowLeft.x, arrowLeft.y);
-    ctx.lineTo(arrowRight.x, arrowRight.y);
-    ctx.closePath();
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(start.x, start.y, 4, 0, Math.PI * 2);
-    ctx.fill();
-    if (forwardDistance >= 0 && difference.magnitude() > 5) {
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.moveTo(start.x, start.y);
-      ctx.lineTo(end.x, end.y);
-      ctx.stroke();
+    if (preview.contact && preview.landing) {
+      const port = mindMapPorts[preview.contact.side];
+      const start = this.transformWorld2View(getMindMapPort(preview.landing.parentRectangle, port.source));
+      ctx.save();
+      ctx.lineWidth = 2;
+      ctx.lineCap = "round";
+      ctx.strokeStyle = accent;
+      ctx.fillStyle = accent;
+      for (const { rectangle } of preview.landing.placements) {
+        const end = this.transformWorld2View(getMindMapPort(rectangle, port.target));
+        const distance = Math.abs((end.x - start.x) * port.outward.x + (end.y - start.y) * port.outward.y);
+        const control = port.outward.multiply(Math.max(8, distance / 2));
+        const from = start.add(control);
+        const to = end.subtract(control);
+        ctx.beginPath();
+        ctx.moveTo(start.x, start.y);
+        ctx.bezierCurveTo(from.x, from.y, to.x, to.y, end.x, end.y);
+        ctx.stroke();
+
+        const base = end.subtract(port.outward.multiply(8));
+        const wing = new Vector(-port.outward.y, port.outward.x).multiply(4);
+        ctx.beginPath();
+        ctx.moveTo(end.x, end.y);
+        ctx.lineTo(base.x + wing.x, base.y + wing.y);
+        ctx.lineTo(base.x - wing.x, base.y - wing.y);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
     }
-    ctx.restore();
+
+    const scale = this.project.camera.currentScale;
+    const paintGhost = ({ node, rectangle }: (typeof preview.ghosts)[number], opacity: number) => {
+      const current = node.collisionBox.getRectangle();
+      const viewOffset = rectangle.location.subtract(current.location).multiply(scale);
+      ctx.save();
+      ctx.translate(viewOffset.x, viewOffset.y);
+      ctx.globalAlpha *= opacity;
+      if (node instanceof Section) {
+        this.project.sectionRenderer.renderBackgroundColor(node);
+        this.project.sectionRenderer.render(node);
+      } else {
+        this.project.entityRenderer.renderEntity(node);
+      }
+      ctx.restore();
+    };
+
+    for (const placement of preview.landing?.placements ?? []) {
+      const { rectangle } = placement;
+      const view = this.transformWorld2View(rectangle.location);
+      paintGhost(placement, 0.55);
+      ctx.save();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = accent;
+      ctx.setLineDash([5, 3]);
+      ctx.strokeRect(view.x, view.y, rectangle.width * scale, rectangle.height * scale);
+      ctx.restore();
+    }
+    for (const ghost of preview.ghosts) paintGhost(ghost, 0.35);
   }
 
   private renderConnectingLine() {
@@ -828,6 +836,36 @@ export class Renderer {
         ctx.lineTo(x + 3, y);
         ctx.stroke();
       }
+    }
+    ctx.restore();
+  }
+
+  private renderSectionFoldBadges() {
+    const { ctx } = this.project.canvas;
+    const { Background, StageObjectBorder, CollideBoxSelected } = this.project.stageStyleManager.currentStyle;
+    const mouse = MouseLocation.vector();
+    const pointer =
+      !Settings.viewerMode && Settings.mouseLeftMode === "selectAndMove"
+        ? this.project.controller.sectionFoldPointer
+        : undefined;
+    ctx.save();
+    ctx.font = "600 12px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineCap = "round";
+    ctx.lineWidth = 1.5;
+    for (const { center, radius, count } of this.project.stageManager.getSectionFoldBadges(pointer)) {
+      const { x, y } = center;
+      if (x + radius < 0 || x - radius > this.w || y + radius < 0 || y - radius > this.h) continue;
+      const outline = center.distance(mouse) <= radius + 2 ? CollideBoxSelected : StageObjectBorder;
+      ctx.fillStyle = Background.toNewAlpha(1).toString();
+      ctx.strokeStyle = outline.toString();
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = StageObjectBorder.toString();
+      ctx.fillText(count === undefined ? "−" : String(count), x, y + 0.5);
     }
     ctx.restore();
   }

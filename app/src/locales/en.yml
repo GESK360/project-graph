@@ -338,11 +338,11 @@ settings:
   windowBackgroundAlpha:
     title: Window Background Transparency
   persistentDragToConnectMindMap:
-    title: Keep branch-connect drag enabled
-    description: Drag a node branch onto empty space to move it, or approach another node to preview and connect it. Hold its shortcut to temporarily suspend this mode; release to resume.
+    title: Drag - Preserve
+    description: Drag a branch onto empty space to move it. Attaching it to a parent rearranges the tree and preserves the branch's existing edge directions. Hold the shortcut to pause this mode until released.
   persistentDragToConnectMindMapAligned:
-    title: Keep aligned branch-connect drag enabled
-    description: Drag a node branch onto empty space to move it, or connect it to another node to align the branch direction. Hold its shortcut to temporarily suspend this mode; release to resume.
+    title: Drag - Align
+    description: Drag a branch onto empty space to move it. Attaching it to a parent rearranges the tree and aligns the dragged branch's tree edges with the attachment side. Hold the shortcut to pause this mode until released.
   enableTextSelectionContextMenu:
     title: Enable selected-text context menu
     description: Select text in node details and right-click to convert it to a hyperlink.
@@ -1810,11 +1810,11 @@ keyBinds:
     description: |
       When pressed, a text node will be created to the right of the currently selected node.
   dragToConnectMindMap:
-    title: Drag to attach a branch
-    description: Hold this shortcut while dragging a node. Approach the target's edge to preview the connection, then release to replace incoming edges and arrange the branch. If this mode is pinned, hold the shortcut to suspend it until released.
+    title: Drag - Preserve
+    description: Hold this shortcut while dragging a node. Approach the target's edge to preview the connection. Release to attach the existing node as a child and rearrange the tree while preserving the branch's edge directions. If this mode is pinned, hold the shortcut to pause it until released.
   dragToConnectMindMapAligned:
-    title: Drag to attach and align a branch
-    description: Hold this shortcut while dragging a node. On attachment, all tree edges in the dragged branch will run in the direction of the attachment side. If this mode is pinned, hold the shortcut to suspend it until released.
+    title: Drag - Align
+    description: Hold this shortcut while dragging a node. Release to attach the existing node as a child, rearrange the tree, and align the dragged branch's tree edges with the attachment side. If this mode is pinned, hold the shortcut to pause it until released.
   moveUpSelectedEntities:
     title: Move Selected Entities Up
     description: |

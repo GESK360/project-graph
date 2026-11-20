@@ -76,6 +76,7 @@ export class AutoLayoutFastTree {
     direction: "top" | "bottom" | "left" | "right",
     gap = 10,
     skipDashed = false,
+    keepOrder = false,
   ) {
     if (trees.length === 0 || trees.length === 1) {
       return;
@@ -88,18 +89,18 @@ export class AutoLayoutFastTree {
     if (direction === "right") {
       // ok
       currentPosition = firstTreeRect.leftBottom.add(new Vector(0, gap));
-      trees.sort((a, b) => a.collisionBox.getRectangle().top - b.collisionBox.getRectangle().top);
+      if (!keepOrder) trees.sort((a, b) => a.collisionBox.getRectangle().top - b.collisionBox.getRectangle().top);
     } else if (direction === "left") {
       currentPosition = firstTreeRect.rightBottom.add(new Vector(0, gap));
-      trees.sort((a, b) => a.collisionBox.getRectangle().top - b.collisionBox.getRectangle().top);
+      if (!keepOrder) trees.sort((a, b) => a.collisionBox.getRectangle().top - b.collisionBox.getRectangle().top);
     } else if (direction === "bottom") {
       // ok
       currentPosition = firstTreeRect.rightTop.add(new Vector(gap, 0));
-      trees.sort((a, b) => a.collisionBox.getRectangle().left - b.collisionBox.getRectangle().left);
+      if (!keepOrder) trees.sort((a, b) => a.collisionBox.getRectangle().left - b.collisionBox.getRectangle().left);
     } else {
       // top
       currentPosition = firstTreeRect.rightBottom.add(new Vector(gap, 0));
-      trees.sort((a, b) => a.collisionBox.getRectangle().left - b.collisionBox.getRectangle().left);
+      if (!keepOrder) trees.sort((a, b) => a.collisionBox.getRectangle().left - b.collisionBox.getRectangle().left);
     }
 
     // 记录前一棵子树所属的分组框，用于检测分组框切换，避免重叠
@@ -613,7 +614,11 @@ export class AutoLayoutFastTree {
    * 快速树形布局
    * @param rootNode
    */
-  public autoLayoutFastTreeMode(rootNode: ConnectableEntity, unanchoredDirection?: MindMapSide) {
+  public autoLayoutFastTreeMode(
+    rootNode: ConnectableEntity,
+    unanchoredDirection?: MindMapSide,
+    childOrder?: { parent: ConnectableEntity; side: MindMapSide; children: ConnectableEntity[] },
+  ) {
     // 树形结构的根节点 矩形左上角位置固定不动
     const rootLeftTopLocation = rootNode.collisionBox.getRectangle().leftTop.clone();
 
@@ -648,10 +653,17 @@ export class AutoLayoutFastTree {
       const unknownChildList = outUnknownEdges.map((edge) => edge.target);
       const nonStandardChildList = outNonStandardEdges.map((edge) => edge.target);
 
-      rightChildList = this.getSortedChildNodes(node, rightChildList, "col");
-      leftChildList = this.getSortedChildNodes(node, leftChildList, "col");
-      topChildList = this.getSortedChildNodes(node, topChildList, "row");
-      bottomChildList = this.getSortedChildNodes(node, bottomChildList, "row");
+      const keepOrder = (side: MindMapSide) => childOrder?.parent === node && childOrder.side === side;
+      rightChildList = keepOrder("right")
+        ? [...childOrder!.children]
+        : this.getSortedChildNodes(node, rightChildList, "col");
+      leftChildList = keepOrder("left")
+        ? [...childOrder!.children]
+        : this.getSortedChildNodes(node, leftChildList, "col");
+      topChildList = keepOrder("top") ? [...childOrder!.children] : this.getSortedChildNodes(node, topChildList, "row");
+      bottomChildList = keepOrder("bottom")
+        ? [...childOrder!.children]
+        : this.getSortedChildNodes(node, bottomChildList, "row");
 
       for (const child of rightChildList) {
         dfs(child); // 递归口
@@ -689,7 +701,7 @@ export class AutoLayoutFastTree {
       const topEdgeTextHeight = this.getMaxEdgeTextDimension(outTopEdges, "vertical");
       const bottomEdgeTextHeight = this.getMaxEdgeTextDimension(outBottomEdges, "vertical");
 
-      this.alignTrees(rightChildList, "right", treesGap, true);
+      this.alignTrees(rightChildList, "right", treesGap, true, keepOrder("right"));
       this.adjustChildrenTreesByRootNodeLocation(
         node,
         rightChildList,
@@ -698,16 +710,16 @@ export class AutoLayoutFastTree {
         true,
       );
 
-      this.alignTrees(topChildList, "top", treesGap, true);
+      this.alignTrees(topChildList, "top", treesGap, true, keepOrder("top"));
       const topGap = (topChildList.length === 1 ? fatherChildNearGap : fatherChildNormalGap) + topEdgeTextHeight;
       this.adjustChildrenTreesByRootNodeLocation(node, topChildList, topGap, "topCenter", true);
 
-      this.alignTrees(bottomChildList, "bottom", treesGap, true);
+      this.alignTrees(bottomChildList, "bottom", treesGap, true, keepOrder("bottom"));
       const bottomGap =
         (bottomChildList.length === 1 ? fatherChildNearGap : fatherChildNormalGap) + bottomEdgeTextHeight;
       this.adjustChildrenTreesByRootNodeLocation(node, bottomChildList, bottomGap, "bottomCenter", true);
 
-      this.alignTrees(leftChildList, "left", treesGap, true);
+      this.alignTrees(leftChildList, "left", treesGap, true, keepOrder("left"));
       this.adjustChildrenTreesByRootNodeLocation(
         node,
         leftChildList,

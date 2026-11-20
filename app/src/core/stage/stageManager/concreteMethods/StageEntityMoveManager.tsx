@@ -236,8 +236,14 @@ export class EntityMoveManager {
    * @param skipDashed 是否跳过虚线边（树形格式化时传 true，避免带动虚线连接的节点）
    */
   moveWithChildren(node: ConnectableEntity, delta: Vector, skipDashed = false) {
+    this.moveWithChildrenOf([node], delta, skipDashed);
+  }
+
+  moveWithChildrenOf(roots: ConnectableEntity[], delta: Vector, skipDashed = false) {
     const successors = new Set(
-      this.project.graphMethods.getSuccessorSet(node, true, skipDashed).filter((entity) => this.canMoveEntity(entity)),
+      roots
+        .flatMap((node) => this.project.graphMethods.getSuccessorSet(node, true, skipDashed))
+        .filter((entity) => this.canMoveEntity(entity)),
     );
     for (const successor of successors) {
       // Section.move already carries its unselected members, including members linked by tree edges.

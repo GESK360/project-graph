@@ -28,6 +28,7 @@ import { toast } from "sonner";
 import { findHiddenBranchNodes, getBranchSize } from "./basicMethods/BranchCollapse";
 
 const BRANCH_BADGE_RADIUS = 8;
+const SECTION_BADGE_RADIUS = 8;
 const BRANCH_SIDE_NORMAL = {
   [Direction.Left]: new Vector(-1, 0),
   [Direction.Right]: new Vector(1, 0),
@@ -42,6 +43,13 @@ type BranchFoldBadge = BranchFoldSide & {
   radius: number;
   count?: number;
   origin?: Vector;
+};
+
+export type SectionFoldBadge = {
+  section: Section;
+  center: Vector;
+  radius: number;
+  count?: number;
 };
 
 // littlefean:应该改成类，实例化的对象绑定到舞台上。这成单例模式了
@@ -110,15 +118,7 @@ export class StageManager {
     const folded: LineEdge[] = [];
     for (const edge of this.getLineEdges()) {
       const { source, target } = edge;
-      if (
-        source === target ||
-        source instanceof Section ||
-        target instanceof Section ||
-        edge.lineType === "dashed" ||
-        !nodes.has(source) ||
-        !nodes.has(target)
-      )
-        continue;
+      if (source === target || edge.lineType === "dashed" || !nodes.has(source) || !nodes.has(target)) continue;
       branches.add(edge);
       const children = outgoing.get(source);
       if (children) children.push(edge);
@@ -136,10 +136,18 @@ export class StageManager {
 
   isHiddenByBranchCollapse(object: StageObject): boolean {
     const { branches, hidden } = this.getBranchCollapseState();
-    if (object instanceof ConnectableEntity) return hidden.has(object);
+    if (object instanceof Entity) {
+      if (object instanceof ConnectableEntity && hidden.has(object)) return true;
+      let parent = object.parentSection;
+      while (parent) {
+        if (hidden.has(parent)) return true;
+        parent = parent.parentSection;
+      }
+      return false;
+    }
     if (object instanceof LineEdge && object.isBranchCollapsed && branches.has(object)) return true;
     if (object instanceof Association) {
-      return object.associationList.some((node) => node instanceof ConnectableEntity && hidden.has(node));
+      return object.associationList.some((node) => this.isHiddenByBranchCollapse(node));
     }
     return false;
   }
@@ -171,13 +179,13 @@ export class StageManager {
   }
 
   getBranchFoldBadges(pointer?: Vector): BranchFoldBadge[] {
-    const { outgoing, hidden, counts } = this.getBranchCollapseState();
+    const { outgoing, counts } = this.getBranchCollapseState();
     const { renderer, sectionMethods } = this.project;
     const badges: BranchFoldBadge[] = [];
     for (const [source, edges] of outgoing) {
       if (
-        hidden.has(source) ||
         source.isHiddenBySectionCollapse ||
+        this.isHiddenByBranchCollapse(source) ||
         (source instanceof TextNode && source.isEditing) ||
         sectionMethods.isEntityHiddenByBigTitleSection(source)
       )
@@ -208,7 +216,7 @@ export class StageManager {
           ? folded
           : exits.filter(
               ({ edge }) =>
-                !hidden.has(edge.target) &&
+                !this.isHiddenByBranchCollapse(edge.target) &&
                 !edge.target.isHiddenBySectionCollapse &&
                 !sectionMethods.isAssociationHiddenByBigTitleSection(edge),
             );
@@ -250,6 +258,67 @@ export class StageManager {
         nearest = badge;
     }
     return nearest;
+  }
+
+  getSectionFoldBadges(pointer?: Vector): SectionFoldBadge[] {
+    const { renderer, sectionMethods } = this.project;
+    const badges: SectionFoldBadge[] = [];
+    const pointerWorld = pointer ? renderer.transformView2World(pointer) : undefined;
+    for (const section of this.getSections()) {
+      if (
+        section.children.length === 0 ||
+        section.isHiddenBySectionCollapse ||
+        this.isHiddenByBranchCollapse(section) ||
+        sectionMethods.isEntityHiddenByBigTitleSection(section)
+      ) {
+        continue;
+      }
+
+      const rectangle = section.collisionBox.getRectangle();
+      const isPointerInTitleBar =
+        pointerWorld !== undefined &&
+        rectangle.isPointIn(pointerWorld) &&
+        (section.isCollapsed || section.text === "" || pointerWorld.y <= rectangle.top + 50);
+      if (pointer === undefined && !section.isCollapsed && !section.isSelected) continue;
+      if (pointer !== undefined && !section.isCollapsed && !section.isSelected && !isPointerInTitleBar) continue;
+
+      const scale = this.project.camera.currentScale;
+      const count = section.isCollapsed ? this.getSectionDescendantCount(section) : undefined;
+      const radius =
+        count === undefined ? SECTION_BADGE_RADIUS : Math.max(SECTION_BADGE_RADIUS, String(count).length * 3 + 3);
+      const inset = (radius + 4) / scale;
+      const center = renderer.transformWorld2View(new Vector(rectangle.right - inset, rectangle.top + inset));
+      badges.push({ section, center, radius, count });
+    }
+    return badges;
+  }
+
+  private getSectionDescendantCount(section: Section): number {
+    const visited = new Set<string>();
+    const countEntity = (entity: Entity): number => {
+      if (visited.has(entity.uuid)) return 0;
+      visited.add(entity.uuid);
+      if (!(entity instanceof Section)) return 1;
+      return 1 + entity.children.reduce((count, child) => count + countEntity(child), 0);
+    };
+    return section.children.reduce((count, child) => count + countEntity(child), 0);
+  }
+
+  findSectionFoldBadge(viewLocation: Vector, pointer?: Vector): SectionFoldBadge | undefined {
+    let nearest: SectionFoldBadge | undefined;
+    for (const badge of this.getSectionFoldBadges(pointer)) {
+      const distance = badge.center.distance(viewLocation);
+      if (distance <= badge.radius + 2 && (!nearest || distance < nearest.center.distance(viewLocation))) {
+        nearest = badge;
+      }
+    }
+    return nearest;
+  }
+
+  toggleSectionCollapse(section: Section) {
+    if (section.children.length === 0) return;
+    this.project.sectionPackManager.toggleSectionCollapse(section);
+    this.project.historyManager.recordStep();
   }
 
   toggleBranchCollapse({ source, side }: BranchFoldSide) {

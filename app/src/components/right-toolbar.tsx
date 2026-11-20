@@ -42,14 +42,13 @@ function PersistentBranchDragControl({
   const { t } = useTranslation("settings");
   const [enabled] = Settings.use(settingKey);
   const title = t(`${settingKey}.title`);
-  const description = t(`${settingKey}.description`);
 
   const toggle = () => {
     Settings[settingKey] = !Settings[settingKey];
   };
 
   return (
-    <QuickSettingRow label={description}>
+    <QuickSettingRow label={title}>
       <Button
         aria-label={title}
         aria-pressed={enabled}
@@ -208,10 +207,6 @@ function QuickSettingButton({ settingKey }: { settingKey: keyof typeof settingsS
   const Icon = settingsIcons[settingKey as keyof typeof settingsIcons] ?? Fragment;
   const title = t(`${settingKey as string}.title` as string);
   const description = t(`${settingKey as string}.description` as string);
-  const tooltip =
-    settingKey === "persistentDragToConnectMindMap" || settingKey === "persistentDragToConnectMindMapAligned"
-      ? description
-      : title;
 
   if (Icon === Fragment) return null;
 
@@ -223,7 +218,7 @@ function QuickSettingButton({ settingKey }: { settingKey: keyof typeof settingsS
 
   return (
     <>
-      <QuickSettingRow label={tooltip}>
+      <QuickSettingRow label={title}>
         <Button
           aria-label={title}
           className={iconOpacityClass}

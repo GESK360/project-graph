@@ -410,11 +410,11 @@ settings:
     description: |
       *从1改到小于1的值需要重新打开文件才能生效
   persistentDragToConnectMindMap:
-    title: 常驻：拖拽节点并连接分支
-    description: 拖拽节点到空白处会移动节点分支；靠近其他节点时可预览并接入分支。按住对应快捷键可临时关闭，松开后恢复。
+    title: 拖拽-原样
+    description: 拖到空白处会移动整条分支。接入父节点后自动排版，保留被拖拽分支原有的连线方向。按住对应快捷键可临时关闭，松开后恢复。
   persistentDragToConnectMindMapAligned:
-    title: 常驻：拖拽接入并统一分支方向
-    description: 拖拽节点到空白处会移动节点分支；接入其他节点后会统一分支方向。按住对应快捷键可临时关闭，松开后恢复。
+    title: 拖拽-齐整
+    description: 拖到空白处会移动整条分支。接入父节点后自动排版，被拖拽分支的树形连线统一朝接入侧。按住对应快捷键可临时关闭，松开后恢复。
   enableTextSelectionContextMenu:
     title: 启用选中文本右键菜单
     description: 在节点详细信息中选中文本后右键，可将其转换为超链接。
@@ -1926,11 +1926,11 @@ keyBinds:
     title: 附加选中右侧节点
     description: 按下后，附加选中右侧节点
   dragToConnectMindMap:
-    title: 拖拽节点并连接分支
-    description: 拖动时按住此键，靠近目标节点的边缘预览连线，松开鼠标替换原有入线并整理分支。若已开启对应常驻模式，按住此键可临时关闭常驻，松开恢复。
+    title: 拖拽-原样
+    description: 拖动时按住此键，靠近目标节点的边缘预览连线。松开鼠标将现有节点接为子节点并自动排版，保留被拖拽分支原有的连线方向。若已开启对应常驻模式，按住此键可临时关闭，松开恢复。
   dragToConnectMindMapAligned:
-    title: 拖拽接入并统一分支方向
-    description: 拖动时按住此键，松开鼠标接入后，整棵子树的连线会统一朝接入侧排列。若已开启对应常驻模式，按住此键可临时关闭常驻，松开恢复。
+    title: 拖拽-齐整
+    description: 拖动时按住此键，松开鼠标将现有节点接为子节点并自动排版，被拖拽分支的树形连线统一朝接入侧。若已开启对应常驻模式，按住此键可临时关闭，松开恢复。
   moveUpSelectedEntities:
     title: 向上移动所有选中的实体
     description: |

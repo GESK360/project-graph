@@ -70,18 +70,32 @@ export class SectionPackManager {
     this.autoLayoutConnectedSections();
   }
 
+  toggleSectionCollapse(section: Section): void {
+    if (section.children.length === 0) {
+      return;
+    }
+    if (section.isCollapsed) {
+      this.modifyHiddenDfs(section, false);
+      section.isCollapsed = false;
+    } else {
+      this.modifyHiddenDfs(section, true);
+      section.isCollapsed = true;
+    }
+    this.project.stageManager.updateReferences();
+    this.autoLayoutConnectedSections([section]);
+  }
+
   /**
    * 对所有选中的、且有连线的分组框，触发其所在节点树的格式化布局。
    * 用于折叠/展开后自动重排树形结构。
    */
-  private autoLayoutConnectedSections(): void {
+  private autoLayoutConnectedSections(
+    sections = this.project.stageManager.getSections().filter((section) => section.isSelected),
+  ): void {
     if (!Settings.autoLayoutWhenSectionCollapseToggle) {
       return;
     }
-    for (const section of this.project.stageManager.getSections()) {
-      if (!section.isSelected) {
-        continue;
-      }
+    for (const section of sections) {
       const hasEdges =
         this.project.graphMethods.getIncomingEdges(section).length > 0 ||
         this.project.graphMethods.getOutgoingEdges(section).length > 0;

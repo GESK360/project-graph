@@ -249,6 +249,115 @@ describe("branch folding", () => {
     return manager;
   };
 
+  it("shows a section fold badge in the title bar and keeps it available when collapsed", () => {
+    const child = textNode("child", 50, 60);
+    const group = section("group", [child]);
+    group.text = "Group";
+    const manager = createFoldingManager([group, child]);
+    const pointer = new Vector(288, 12);
+
+    expect(manager.getSectionFoldBadges()).toEqual([]);
+    expect(manager.getSectionFoldBadges(new Vector(288, 100))).toEqual([]);
+    expect(manager.getSectionFoldBadges(pointer)).toEqual([
+      {
+        section: group,
+        center: pointer,
+        radius: 8,
+        count: undefined,
+      },
+    ]);
+    expect(manager.findSectionFoldBadge(pointer, pointer)?.section).toBe(group);
+
+    group.isCollapsed = true;
+    expect(manager.getSectionFoldBadges()).toEqual([
+      {
+        section: group,
+        center: pointer,
+        radius: 8,
+        count: 1,
+      },
+    ]);
+  });
+
+  it("counts nested sections and nodes on a collapsed section badge", () => {
+    const internalSections = Array.from({ length: 4 }, (_, index) => section(`internal-${index}`, []));
+    const internalNodes = Array.from({ length: 3 }, (_, index) => textNode(`internal-node-${index}`));
+    const group = section("group", [...internalSections, ...internalNodes]);
+    group.isCollapsed = true;
+    const manager = createFoldingManager([group, ...internalSections, ...internalNodes]);
+
+    expect(manager.getSectionFoldBadges()[0]).toMatchObject({ section: group, count: 7 });
+  });
+
+  it("supports external branch folding from a section on each side", () => {
+    const group = section("group", [textNode("internal")]);
+    const edges = [
+      { target: textNode("right", 500, 80), sourceRectangleRate: new Vector(0.99, 0.5), side: Direction.Right },
+      { target: textNode("left", -300, 80), sourceRectangleRate: new Vector(0.01, 0.5), side: Direction.Left },
+      { target: textNode("up", 130, -300), sourceRectangleRate: new Vector(0.5, 0.01), side: Direction.Up },
+      { target: textNode("down", 130, 400), sourceRectangleRate: new Vector(0.5, 0.99), side: Direction.Down },
+    ].map(({ target, sourceRectangleRate, side }) => {
+      const edge = lineEdge([group, target]);
+      edge.sourceRectangleRate = sourceRectangleRate;
+      return { edge, target, side };
+    });
+    const manager = createFoldingManager([group, ...edges.flatMap(({ edge, target }) => [target, edge])]);
+
+    for (const { edge, target, side } of edges) {
+      manager.toggleBranchCollapse({ source: group, side });
+      expect(edge.isBranchCollapsed).toBe(true);
+      expect(manager.isHiddenByBranchCollapse(target)).toBe(true);
+    }
+  });
+
+  it("folds a normal-node branch whose target is a section", () => {
+    const source = textNode("source");
+    const inside = textNode("inside");
+    const target = section("target", [inside]);
+    const edge = lineEdge([source, target]);
+    edge.sourceRectangleRate = new Vector(0.99, 0.5);
+    const manager = createFoldingManager([source, target, inside, edge]);
+
+    manager.toggleBranchCollapse({ source, side: Direction.Right });
+
+    expect(edge.isBranchCollapsed).toBe(true);
+    expect(manager.isHiddenByBranchCollapse(target)).toBe(true);
+    expect(manager.isHiddenByBranchCollapse(inside)).toBe(true);
+  });
+
+  it("folds a branch between two sections", () => {
+    const sourceInside = textNode("source-inside");
+    const targetInside = textNode("target-inside");
+    const source = section("source", [sourceInside]);
+    const target = section("target", [targetInside]);
+    const edge = lineEdge([source, target]);
+    edge.sourceRectangleRate = new Vector(0.99, 0.5);
+    const manager = createFoldingManager([source, target, sourceInside, targetInside, edge]);
+
+    manager.toggleBranchCollapse({ source, side: Direction.Right });
+
+    expect(edge.isBranchCollapsed).toBe(true);
+    expect(manager.isHiddenByBranchCollapse(target)).toBe(true);
+    expect(manager.isHiddenByBranchCollapse(targetInside)).toBe(true);
+  });
+
+  it("routes a section fold click through the section pack manager", () => {
+    const child = textNode("child");
+    const group = section("group", [child]);
+    const toggleSectionCollapse = vi.fn();
+    const recordStep = vi.fn();
+    const manager = new StageManager({
+      stage: [group, child],
+      sectionPackManager: { toggleSectionCollapse },
+      historyManager: { recordStep },
+    } as never);
+
+    manager.toggleSectionCollapse(group);
+
+    expect(toggleSectionCollapse).toHaveBeenCalledWith(group);
+    expect(recordStep).toHaveBeenCalledOnce();
+  });
+
   it("shows the minus only at a hovered junction and leaves the line body clickable", () => {
     const root = textNode("root");
     const child = textNode("child", 250);

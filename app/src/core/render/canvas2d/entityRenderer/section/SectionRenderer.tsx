@@ -250,7 +250,7 @@ export class SectionRenderer {
   // }
 
   render(section: Section): void {
-    if (section.isHiddenBySectionCollapse) {
+    if (section.isHiddenBySectionCollapse || this.project.stageManager.isHiddenByBranchCollapse(section)) {
       return;
     }
 

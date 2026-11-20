@@ -61,6 +61,9 @@ export class EntityRenderer {
       if (this.project.sectionMethods.isEntityHiddenByBigTitleSection(section)) {
         continue;
       }
+      if (this.project.stageManager.isHiddenByBranchCollapse(section)) {
+        continue;
+      }
       this.project.sectionRenderer.renderBackgroundColor(section);
     }
     // 最后更新帧
@@ -86,6 +89,9 @@ export class EntityRenderer {
         continue;
       }
       if (section.isHiddenBySectionCollapse) {
+        continue;
+      }
+      if (this.project.stageManager.isHiddenByBranchCollapse(section)) {
         continue;
       }
       if (this.project.sectionMethods.isEntityHiddenByBigTitleSection(section)) {
@@ -141,6 +147,9 @@ export class EntityRenderer {
         continue;
       }
       if (this.project.sectionMethods.isEntityHiddenByBigTitleSection(section)) {
+        continue;
+      }
+      if (this.project.stageManager.isHiddenByBranchCollapse(section)) {
         continue;
       }
       this.project.sectionRenderer.render(section);

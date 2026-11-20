@@ -18,7 +18,7 @@ import { ControllerPenStrokeControlClass } from "@/core/service/controlService/c
 import { ControllerPenStrokeDrawingClass } from "@/core/service/controlService/controller/concrete/ControllerPenStrokeDrawing";
 import { ControllerRectangleSelectClass } from "@/core/service/controlService/controller/concrete/ControllerRectangleSelect";
 import { ControllerSectionEditClass } from "@/core/service/controlService/controller/concrete/ControllerSectionEdit";
-import type { BranchFoldSide } from "@/core/stage/stageManager/StageManager";
+import type { BranchFoldSide, SectionFoldBadge } from "@/core/stage/stageManager/StageManager";
 import { CursorNameEnum } from "@/types/cursors";
 import { isMac } from "@/utils/platform";
 import { Settings } from "../../Settings";
@@ -82,7 +82,9 @@ export class Controller {
   private readonly controllers: ControllerClass[] = [];
   private isCameraPointerGesture = false;
   private pressedBranchBadge: { branch: BranchFoldSide; view: Vector; dragged: boolean } | null = null;
+  private pressedSectionFoldBadge: { badge: SectionFoldBadge; view: Vector; dragged: boolean } | null = null;
   public branchFoldPointer: Vector | undefined;
+  public sectionFoldPointer: Vector | undefined;
 
   lastClickTime = 0;
   lastClickLocation = Vector.getZero();
@@ -189,6 +191,11 @@ export class Controller {
           Settings.mouseLeftMode === "selectAndMove"
         ) {
           const view = new Vector(event.clientX, event.clientY);
+          const sectionBadge = project.stageManager.findSectionFoldBadge(view, this.sectionFoldPointer);
+          if (sectionBadge) {
+            this.pressedSectionFoldBadge = { badge: sectionBadge, view, dragged: false };
+            return;
+          }
           const branch = project.stageManager.findBranchFoldBadge(view, this.branchFoldPointer);
           if (branch) {
             this.pressedBranchBadge = { branch, view, dragged: false };
@@ -196,6 +203,7 @@ export class Controller {
           }
         }
         this.branchFoldPointer = undefined;
+        this.sectionFoldPointer = undefined;
         if (!this.isCameraPointerGesture)
           this.dispatch((c) => {
             if (c !== this.camera) c.mousedown(event);
@@ -209,13 +217,20 @@ export class Controller {
           if (view.distance(this.pressedBranchBadge.view) > 5) this.pressedBranchBadge.dragged = true;
           return;
         }
+        if (this.pressedSectionFoldBadge) {
+          if (view.distance(this.pressedSectionFoldBadge.view) > 5) this.pressedSectionFoldBadge.dragged = true;
+          return;
+        }
         this.branchFoldPointer =
+          event.buttons === 0 && Settings.mouseLeftMode === "selectAndMove" && !Settings.viewerMode ? view : undefined;
+        this.sectionFoldPointer =
           event.buttons === 0 && Settings.mouseLeftMode === "selectAndMove" && !Settings.viewerMode ? view : undefined;
         if (this.isCameraPointerGesture) this.camera.mousemove(event);
         else this.dispatch((c) => c.mousemove(event));
       },
       leave: () => {
         this.branchFoldPointer = undefined;
+        this.sectionFoldPointer = undefined;
         this.resetCountdownTimer();
       },
       up: (event) => {
@@ -236,6 +251,24 @@ export class Controller {
             }
           }
           this.branchFoldPointer = undefined;
+          return true;
+        }
+        const sectionBadge = this.pressedSectionFoldBadge;
+        if (sectionBadge) {
+          this.pressedSectionFoldBadge = null;
+          const view = new Vector(event.clientX, event.clientY);
+          if (
+            !Settings.viewerMode &&
+            Settings.mouseLeftMode === "selectAndMove" &&
+            !sectionBadge.dragged &&
+            view.distance(sectionBadge.view) <= 5
+          ) {
+            const badge = project.stageManager.findSectionFoldBadge(view, this.sectionFoldPointer);
+            if (badge?.section === sectionBadge.badge.section) {
+              project.stageManager.toggleSectionCollapse(badge.section);
+            }
+          }
+          this.sectionFoldPointer = undefined;
           return true;
         }
         if (this.isCameraPointerGesture) this.camera.mouseup(event);

@@ -30,7 +30,8 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
 
   private isMovingEntity = false;
   private mindMapDrag: MindMapDrag | null = null;
-  private mindMapCandidate: { node: ConnectableEntity; startWorld: Vector } | null = null;
+  private mindMapCandidate: { node: ConnectableEntity; selected: ConnectableEntity[]; startWorld: Vector } | null =
+    null;
   private beforeMovePositions: Map<Entity, Vector> | null = null;
   private currentViewLocation = Vector.getZero();
   private hasMovedEntity = false;
@@ -92,8 +93,11 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
 
     this.beforeMovePositions = null;
     this.isMovingEntity = false;
-    for (const object of stageManager.getStageObjects()) object.isSelected = object === candidate.node;
-    const drag = new MindMapDrag(this.project, candidate.node, candidate.startWorld, mode);
+    const drag = new MindMapDrag(this.project, candidate.node, candidate.startWorld, mode, candidate.selected);
+    const selected = new Set(drag.roots);
+    for (const object of stageManager.getStageObjects()) {
+      object.isSelected = object instanceof ConnectableEntity && selected.has(object);
+    }
     this.mindMapDrag = drag;
     if (this.currentViewLocation.distance(this.mouseDownViewLocation) > 5) {
       drag.update(this.project.renderer.transformView2World(this.currentViewLocation));
@@ -193,7 +197,9 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
       }
     }
 
-    if (!Settings.viewerMode) {
+    const pinnedDrag = Settings.persistentDragToConnectMindMap || Settings.persistentDragToConnectMindMapAligned;
+    const selectingWithModifier = pinnedDrag && (event.shiftKey || (isMac ? event.metaKey : event.ctrlKey));
+    if (!Settings.viewerMode && !selectingWithModifier) {
       const node =
         clickedStageObject instanceof ConnectableEntity && !(clickedStageObject instanceof Section)
           ? clickedStageObject
@@ -201,7 +207,10 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
             ? (this.project.stageManager.findBranchDragNodeByLocation(pressWorldLocation) ?? clickedStageObject)
             : null;
       if (node && node.nearestLockedAncestorSection === null && !(node instanceof Section && node.locked)) {
-        this.mindMapCandidate = { node, startWorld: pressWorldLocation };
+        const selected = node.isSelected
+          ? this.project.stageManager.getConnectableEntity().filter((entity) => entity.isSelected)
+          : [node];
+        this.mindMapCandidate = { node, selected, startWorld: pressWorldLocation };
         this.startMindMapDrag(event);
         if (this.mindMapDrag) return;
       }

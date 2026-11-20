@@ -835,11 +835,11 @@ settings:
       Saat diaktifkan, dapat memutar struktur node dengan menyeret garis yang dipilih
       Ini memungkinkan Anda menyesuaikan arah node yang terhubung dengan mudah
   persistentDragToConnectMindMap:
-    title: Tetap Aktifkan Seret untuk Menyambungkan Cabang
-    description: Seret cabang node ke ruang kosong untuk memindahkannya, atau dekati node lain untuk melihat pratinjau dan menyambungkan cabang. Tahan pintasan terkait untuk menangguhkan sementara; lepaskan untuk melanjutkan.
+    title: Seret - Pertahankan Arah
+    description: Seret cabang ke ruang kosong untuk memindahkannya. Saat disambungkan ke node induk, pohon ditata ulang dan arah garis cabang tetap sama. Tahan pintasan untuk menjeda mode ini hingga dilepas.
   persistentDragToConnectMindMapAligned:
-    title: Tetap Aktifkan Seret untuk Menyelaraskan Cabang
-    description: Seret cabang node ke ruang kosong untuk memindahkannya, atau sambungkan ke node lain untuk menyelaraskan arah cabang. Tahan pintasan terkait untuk menangguhkan sementara; lepaskan untuk melanjutkan.
+    title: Seret - Selaraskan
+    description: Seret cabang ke ruang kosong untuk memindahkannya. Saat disambungkan ke node induk, pohon ditata ulang dan garis pohon pada cabang diselaraskan ke sisi sambungan. Tahan pintasan untuk menjeda mode ini hingga dilepas.
   enableCtrlWheelRotateStructure:
     title: Izinkan Rotasi Struktur dengan Ctrl+Scroll Mouse
     description: |
@@ -2218,11 +2218,11 @@ keyBinds:
     title: Tambah Pilih Node Kanan
     description: Setelah ditekan, tambah pilih node kanan
   dragToConnectMindMap:
-    title: Seret untuk Menyambungkan Cabang
-    description: Tahan pintasan ini saat menyeret node. Dekati tepi node tujuan untuk melihat pratinjau koneksi, lalu lepaskan untuk mengganti garis masuk dan menata cabang. Jika mode ini dipasang, tahan pintasan untuk menangguhkannya sementara.
+    title: Seret - Pertahankan Arah
+    description: Tahan pintasan ini saat menyeret node. Dekati tepi node tujuan untuk melihat pratinjau sambungan. Lepaskan untuk menyambungkan node yang ada sebagai anak dan menata ulang pohon sambil mempertahankan arah garis cabang. Jika mode ini disematkan, tahan pintasan untuk menjedanya hingga dilepas.
   dragToConnectMindMapAligned:
-    title: Seret untuk menyambung dan menyelaraskan cabang
-    description: Tahan pintasan ini saat menyeret node. Setelah disambungkan, semua garis pada cabang akan mengarah ke sisi sambungan. Jika mode ini dipasang, tahan pintasan untuk menangguhkannya sementara.
+    title: Seret - Selaraskan
+    description: Tahan pintasan ini saat menyeret node. Lepaskan untuk menyambungkan node yang ada sebagai anak, menata ulang pohon, dan menyelaraskan garis pohon pada cabang ke sisi sambungan. Jika mode ini disematkan, tahan pintasan untuk menjedanya hingga dilepas.
   moveUpSelectedEntities:
     title: Gerakkan Semua Entitas yang Dipilih ke Atas
     description: |
