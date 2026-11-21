@@ -34,7 +34,7 @@ import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import type { WorkspaceFlatRow } from "./workspaceFlat";
 import { fileNameOf } from "./workspaceFlat";
-import { isSameWorkspacePath } from "./workspacePath";
+import { isSameWorkspacePath, reportWorkspaceError } from "./workspacePath";
 
 export type WorkspacePageNode = Extract<WorkspaceNode, { kind: "page" }>;
 export type WorkspaceDirNode = Extract<WorkspaceNode, { kind: "dir" }>;
@@ -91,6 +91,7 @@ interface TreeState {
   clipboard: WorkspaceClipboard | null;
   versionCounts: ReadonlyMap<string, number>;
   selectedPaths: ReadonlySet<string>;
+  renameOnDoubleClick: boolean;
   dropTarget: WorkspaceDropTarget | null;
   /** 手动排序模式（Settings.workspaceSortMode === "custom"）；关掉时拖拽与上移/下移全部禁用 */
   manualOrder: boolean;
@@ -100,9 +101,22 @@ interface TreeState {
 export interface WorkspaceTreeProps extends TreeState {
   nodes: WorkspaceNode[];
   rows: WorkspaceFlatRow[];
+  editingPath?: string;
+  focusRequest: { path: string } | null;
+  finishEdit: (value: string | undefined, restoreFocus: boolean) => Promise<void>;
 }
 
 const INDENT = 12;
+const RENAME_EVENT = "pg-workspace-rename";
+
+export function focusedWorkspaceRenameRow() {
+  const active = document.activeElement;
+  return active?.matches("[data-pg-workspace-renameable]") ? active : null;
+}
+
+export function requestFocusedWorkspaceRename() {
+  focusedWorkspaceRenameRow()?.dispatchEvent(new Event(RENAME_EVENT, { bubbles: true }));
+}
 /** 位移超过这个距离才算拖拽，之前松手都按普通点击处理 */
 const DRAG_START_DISTANCE = 4;
 /** 目录行上下各留 25% 给"排到前面/后面"，中间 50% 是"放进去" */
@@ -287,18 +301,72 @@ function toRowClick(path: string, event: ReactMouseEvent): WorkspaceRowClick {
   return { path, ctrlKey: event.ctrlKey || event.metaKey, shiftKey: event.shiftKey };
 }
 
-export default function WorkspaceTree({ nodes, rows, actions, ...state }: WorkspaceTreeProps) {
+function isRenameClick(
+  event: ReactMouseEvent,
+  path: string,
+  state: Pick<TreeState, "renameOnDoubleClick" | "selectedPaths">,
+) {
+  // 在第二次 click 直接改名，避免随后才收到 dblclick 时已重复展开目录或打开页面。
+  return (
+    state.renameOnDoubleClick &&
+    event.detail === 2 &&
+    state.selectedPaths.size === 1 &&
+    state.selectedPaths.has(path) &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    !event.altKey
+  );
+}
+
+export default function WorkspaceTree({
+  nodes,
+  rows,
+  actions,
+  editingPath,
+  focusRequest,
+  finishEdit,
+  ...state
+}: WorkspaceTreeProps) {
   const { t } = useTranslation("workspace");
   const drag = usePointerDrag(state.manualOrder, rows, state.selectedPaths, actions);
+  const treeRef = useRef<HTMLDivElement>(null);
+  const lastFocusRequest = useRef<typeof focusRequest>(null);
+
+  useEffect(() => {
+    const tree = treeRef.current;
+    if (!tree) return;
+    const renameFocusedRow = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const row = rows.find(({ node }) => node.path === target.dataset.pgWorkspacePath);
+      if (row) actions.renameNode(row.node);
+    };
+    tree.addEventListener(RENAME_EVENT, renameFocusedRow);
+    return () => tree.removeEventListener(RENAME_EVENT, renameFocusedRow);
+  }, [rows, actions]);
+
+  useEffect(() => {
+    if (!focusRequest || focusRequest === lastFocusRequest.current) return;
+    const buttons = treeRef.current?.querySelectorAll<HTMLButtonElement>("[data-pg-workspace-row]");
+    const target =
+      buttons && Array.from(buttons).find((button) => button.dataset.pgWorkspacePath === focusRequest.path);
+    if (!target) return;
+    lastFocusRequest.current = focusRequest;
+    if (document.activeElement === document.body) target.focus({ preventScroll: true });
+  }, [focusRequest, rows]);
+
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div className="flex min-h-full min-w-full flex-col pb-2">
+        <div ref={treeRef} className="flex min-h-full min-w-full flex-col pb-2">
           {rows.length === 0 && nodes.length === 0 && (
             <div className="text-muted-foreground px-3 py-6 text-center text-xs leading-relaxed">{t("emptyHint")}</div>
           )}
           {rows.map((row) =>
-            row.node.kind === "dir" ? (
+            row.node.path === editingPath ? (
+              <EditingRow key={row.node.path} row={row} finishEdit={finishEdit} />
+            ) : row.node.kind === "dir" ? (
               <DirRow key={row.node.path} row={row} {...state} actions={actions} drag={drag} />
             ) : (
               <PageRow key={row.node.path} row={row} {...state} actions={actions} drag={drag} />
@@ -344,6 +412,66 @@ export default function WorkspaceTree({ nodes, rows, actions, ...state }: Worksp
   );
 }
 
+function EditingRow({ row, finishEdit }: Pick<WorkspaceTreeProps, "finishEdit"> & { row: WorkspaceFlatRow }) {
+  const { t } = useTranslation("workspace");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const finishingRef = useRef(false);
+  const isDir = row.node.kind === "dir";
+
+  useEffect(() => {
+    // 右键菜单关闭时会归还焦点，等它退出后再把光标放进输入框。
+    const frame = requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  const finish = async (value: string | undefined, restoreFocus: boolean) => {
+    if (finishingRef.current) return;
+    finishingRef.current = true;
+    try {
+      await finishEdit(value, restoreFocus);
+    } catch (error) {
+      reportWorkspaceError(error);
+      if (restoreFocus) inputRef.current?.focus();
+    } finally {
+      finishingRef.current = false;
+    }
+  };
+
+  return (
+    <div
+      className="bg-accent/60 text-accent-foreground flex h-6 w-full items-center gap-1 rounded-sm pr-2 text-xs"
+      style={{ paddingLeft: 4 + row.depth * INDENT + (isDir ? 0 : 18) }}
+      onContextMenu={(event) => event.stopPropagation()}
+    >
+      {isDir ? (
+        <>
+          <span className="size-3.5 shrink-0" />
+          <Folder className="text-muted-foreground size-3.5 shrink-0" />
+        </>
+      ) : (
+        <FileText className="text-muted-foreground size-3.5 shrink-0" />
+      )}
+      <input
+        ref={inputRef}
+        aria-label={t(isDir ? "renameFolder" : "rename")}
+        className="border-ring bg-background text-foreground h-5 min-w-0 flex-1 rounded-sm border px-1 outline-none"
+        defaultValue={row.node.name}
+        onBlur={(event) => void finish(event.currentTarget.value, false)}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+          if (event.key !== "Enter" && event.key !== "Escape") return;
+          event.preventDefault();
+          event.stopPropagation();
+          void finish(event.key === "Escape" ? undefined : event.currentTarget.value, true);
+        }}
+      />
+    </div>
+  );
+}
+
 /** 上移/下移：非手动排序模式或已在同级首/末项时置灰 */
 function MoveItems({
   row,
@@ -385,6 +513,7 @@ function DirRow({ row, actions, drag, ...state }: TreeState & RowProps) {
           type="button"
           data-pg-workspace-row=""
           data-pg-workspace-path={node.path}
+          data-pg-workspace-renameable={isSelected && !batch ? "" : undefined}
           style={{ paddingLeft: 4 + row.depth * INDENT }}
           className={cn(
             "hover:bg-accent/50 flex h-6 w-full items-center gap-1 rounded-sm pr-2 text-left text-xs",
@@ -395,6 +524,10 @@ function DirRow({ row, actions, drag, ...state }: TreeState & RowProps) {
           onPointerDown={(event) => drag.start(event, row)}
           onClick={(event) => {
             if (actions.shouldIgnoreClick()) return;
+            if (isRenameClick(event, node.path, state)) {
+              actions.renameNode(node);
+              return;
+            }
             const click = toRowClick(node.path, event);
             actions.clickRow(click);
             // 只有普通单击才折叠/展开；Ctrl 和 Shift 是选行，不该顺手改结构
@@ -402,6 +535,7 @@ function DirRow({ row, actions, drag, ...state }: TreeState & RowProps) {
           }}
           onContextMenu={(event) => {
             event.stopPropagation();
+            event.currentTarget.focus({ preventScroll: true });
             actions.contextRow(node.path);
           }}
         >
@@ -469,6 +603,7 @@ function PageRow({ row, actions, drag, ...state }: TreeState & RowProps) {
           type="button"
           data-pg-workspace-row=""
           data-pg-workspace-path={node.path}
+          data-pg-workspace-renameable={isSelected && !batch ? "" : undefined}
           style={{ paddingLeft: 4 + row.depth * INDENT + 18 }}
           className={cn(
             "hover:bg-accent/50 flex h-6 w-full items-center gap-1.5 rounded-sm pr-2 text-left text-xs",
@@ -480,12 +615,17 @@ function PageRow({ row, actions, drag, ...state }: TreeState & RowProps) {
           onPointerDown={(event) => drag.start(event, row)}
           onClick={(event) => {
             if (actions.shouldIgnoreClick()) return;
+            if (isRenameClick(event, node.path, state)) {
+              actions.renameNode(node);
+              return;
+            }
             const click = toRowClick(node.path, event);
             actions.clickRow(click);
             if (!click.shiftKey) actions.openPage(node);
           }}
           onContextMenu={(event) => {
             event.stopPropagation();
+            event.currentTarget.focus({ preventScroll: true });
             actions.contextRow(node.path);
           }}
         >

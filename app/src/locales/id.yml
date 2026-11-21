@@ -705,6 +705,9 @@ settings:
   workspaceTreeOpacity:
     title: Opasitas Latar Pohon File Ruang Kerja
     description: Atur latar tanpa meredupkan teks atau ikon. Fokuskan pohon file untuk memakai Ctrl+Shift+Alt dengan plus atau minus.
+  workspaceRenameOnDoubleClick:
+    title: Klik Ganda untuk Mengganti Nama Item Ruang Kerja
+    description: Klik ganda halaman atau folder untuk mengedit namanya langsung di pohon file.
   clearHistoryWhenManualSave:
     title: Bersihkan Riwayat Otomatis Saat Simpan Manual dengan Pintasan
     description: |
@@ -1953,6 +1956,9 @@ keyBinds:
   toggleWorkspacePanel:
     title: Tampilkan/Sembunyikan Panel Ruang Kerja
     description: Mengatur tampilan pohon file ruang kerja di kiri
+  renameWorkspaceEntry:
+    title: Ganti Nama Item Ruang Kerja
+    description: Ubah langsung nama halaman atau folder yang dipilih di pohon file ruang kerja
   undo:
     title: Batalkan
     description: Batalkan operasi sebelumnya

@@ -141,6 +141,7 @@ export const settingsSchema = z.object({
   activeWorkspaceRoot: z.string().default(""),
   workspaceVersionHistory: z.boolean().default(true),
   workspaceTreeOpacity: z.number().min(0).max(1).default(1),
+  workspaceRenameOnDoubleClick: z.boolean().default(true),
   workspaceSortMode: z
     .union([z.literal("custom"), z.literal("name"), z.literal("createdAt"), z.literal("modifiedAt")])
     .default("custom"),

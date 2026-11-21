@@ -83,12 +83,16 @@ export default function WorkspaceWindow() {
   const [root] = Settings.use("activeWorkspaceRoot");
   const [sortMode, setSortMode] = Settings.use("workspaceSortMode");
   const [treeOpacity] = Settings.use("workspaceTreeOpacity");
+  const [renameOnDoubleClick] = Settings.use("workspaceRenameOnDoubleClick");
   const backgroundColor = `color-mix(in srgb, var(--background) ${treeOpacity * 100}%, transparent)`;
   const [tree, setTree] = useState<WorkspaceNode[]>([]);
   const [collapsedDirs, setCollapsedDirs] = useState<ReadonlySet<string>>(new Set());
   const [versionCounts, setVersionCounts] = useState<ReadonlyMap<string, number>>(new Map());
   const [clipboard, setClipboard] = useState<WorkspaceClipboard | null>(null);
   const [selectedPaths, setSelectedPaths] = useState<ReadonlySet<string>>(new Set());
+  const [editing, setEditing] = useState<{ node: WorkspaceNode; newIn?: string } | null>(null);
+  const [focusRequest, setFocusRequest] = useState<{ path: string } | null>(null);
+  const editBusyRef = useRef(false);
   const [dropTarget, setDropTarget] = useState<WorkspaceDropTarget | null>(null);
   const [moveCopyTarget, setMoveCopyTarget] = useState<{
     paths: string[];
@@ -101,18 +105,22 @@ export default function WorkspaceWindow() {
   const dragOccurredRef = useRef(false);
   const suppressClickUntilRef = useRef(0);
   const dragOverKeyRef = useRef("");
+  const refreshIdRef = useRef(0);
 
   const activeFsPath = activeTab && "uri" in activeTab ? activeTab.uri.fsPath : undefined;
 
   const refresh = useCallback(async () => {
+    const refreshId = ++refreshIdRef.current;
     const currentRoot = WorkspaceManager.root;
     if (!currentRoot) {
+      if (refreshId !== refreshIdRef.current) return;
       setTree([]);
       setVersionCounts(new Map());
       setSelectedPaths(new Set());
       return;
     }
     const nodes = await WorkspaceManager.readTree();
+    if (refreshId !== refreshIdRef.current || WorkspaceManager.root !== currentRoot) return;
     setTree(nodes);
     const pages: WorkspacePageNode[] = [];
     const walk = (list: WorkspaceNode[]) => {
@@ -128,6 +136,7 @@ export default function WorkspaceWindow() {
         counts.set(page.path, (await WorkspaceManager.listVersions(page.path)).length);
       }),
     );
+    if (refreshId !== refreshIdRef.current || WorkspaceManager.root !== currentRoot) return;
     setVersionCounts(counts);
     setClipboard(WorkspaceManager.clipboard);
     // 文件被外部改动后选中的路径可能已经不存在，顺手清掉
@@ -149,7 +158,11 @@ export default function WorkspaceWindow() {
 
   useEffect(() => {
     setCollapsedDirs(new Set(readCollapsedDirs(root)));
+    setTree([]);
+    setVersionCounts(new Map());
     setSelectedPaths(new Set());
+    setEditing(null);
+    setFocusRequest(null);
     anchorPathRef.current = undefined;
   }, [root]);
 
@@ -172,9 +185,23 @@ export default function WorkspaceWindow() {
   }, [refresh]);
 
   const rows = useMemo(
-    () => (root ? flattenWorkspaceTree(tree, collapsedDirs, root) : []),
-    [tree, collapsedDirs, root],
+    () =>
+      root
+        ? flattenWorkspaceTree(
+            tree,
+            collapsedDirs,
+            WorkspacePaths.normalize(root),
+            editing?.newIn === undefined ? undefined : { dirPath: editing.newIn, node: editing.node },
+          )
+        : [],
+    [tree, collapsedDirs, root, editing],
   );
+
+  useEffect(() => {
+    if (editing && !editBusyRef.current && !rows.some((row) => row.node.path === editing.node.path)) {
+      setEditing(null);
+    }
+  }, [editing, rows]);
 
   // 折叠目录里的节点也要能判断出类型（删除/落点校验会用到），所以按整棵树收集而不是可见行
   const kindByPath = useMemo(() => {
@@ -212,7 +239,8 @@ export default function WorkspaceWindow() {
         if (anchorIndex >= 0 && currentIndex >= 0) {
           const start = Math.min(anchorIndex, currentIndex);
           const end = Math.max(anchorIndex, currentIndex);
-          setSelectedPaths(new Set(rows.slice(start, end + 1).map((row) => row.node.path)));
+          const paths = rows.slice(start, end + 1).map((row) => row.node.path);
+          setSelectedPaths(new Set(paths.filter((path) => kindByPath.has(path))));
           return;
         }
       }
@@ -229,7 +257,7 @@ export default function WorkspaceWindow() {
       setSelectedPaths(new Set([click.path]));
       anchorPathRef.current = click.path;
     },
-    [rows],
+    [kindByPath, rows],
   );
 
   /** 右键未选中的行时先把它变成唯一选中，菜单才会指向它 */
@@ -244,43 +272,75 @@ export default function WorkspaceWindow() {
     [selectedPaths],
   );
 
-  const promptNewPage = useCallback(
-    async (dirPath: string) => {
-      const name = await Dialog.input(t("newPage"), "", { placeholder: t("unnamedPage") });
-      if (name === undefined) return;
-      const finalName = name.trim() || t("unnamedPage");
-      const path = await WorkspaceManager.createPage(dirPath, finalName);
-      await openWorkspacePage(path);
-      toast.success(t("pageCreated"));
-    },
-    [t],
-  );
-
-  const createFolder = useCallback(
-    async (dirPath: string) => {
-      await WorkspaceManager.createFolder(dirPath, t("newFolderName"));
-      toast.success(t("folderCreated"));
-    },
-    [t],
-  );
-
-  const promptRenameNode = useCallback(
-    async (node: WorkspaceNode) => {
-      const isDir = node.kind === "dir";
-      const name = await Dialog.input(isDir ? t("renameFolder") : t("rename"), node.name, { defaultValue: node.name });
-      if (name === undefined) return;
-      const trimmed = name.trim();
-      if (!trimmed) {
-        toast.error(t("nameRequired"));
-        return;
+  const beginCreate = useCallback(
+    async (dirPath: string, kind: WorkspaceNode["kind"]) => {
+      const currentRoot = WorkspaceManager.root;
+      if (!currentRoot || editing || editBusyRef.current) return;
+      const parent = WorkspacePaths.normalize(dirPath);
+      const baseName = kind === "dir" ? t("newFolderName") : t("newPage");
+      editBusyRef.current = true;
+      try {
+        const name = await WorkspaceManager.suggestNewName(parent, kind, baseName);
+        if (WorkspaceManager.root !== currentRoot) return;
+        setCollapsedDirs((previous) => {
+          const next = new Set([...previous].filter((path) => !WorkspacePaths.isInside(parent, path)));
+          if (next.size === previous.size) return previous;
+          writeCollapsedDirs(root, [...next]);
+          return next;
+        });
+        const path = WorkspacePaths.join(parent, ".pending-workspace-entry");
+        const node: WorkspaceNode = kind === "dir" ? { kind, name, path, children: [] } : { kind, name, path };
+        setSelectedPaths(new Set());
+        anchorPathRef.current = undefined;
+        setEditing({ node, newIn: parent });
+      } finally {
+        editBusyRef.current = false;
       }
-      if (trimmed === node.name) return;
-      // 统一走 PageOps：无论页面还是目录，都会先存盘关掉受影响的标签再改路径
-      const newPath = await renameWorkspaceNode(node.path, trimmed);
-      setSelectedPaths(new Set([newPath]));
-      anchorPathRef.current = newPath;
     },
-    [t],
+    [editing, root, t],
+  );
+
+  const beginRename = useCallback(
+    (node: WorkspaceNode) => {
+      if (editing || editBusyRef.current) return;
+      setSelectedPaths(new Set([node.path]));
+      anchorPathRef.current = node.path;
+      setEditing({ node });
+    },
+    [editing],
+  );
+
+  const finishEdit = useCallback(
+    async (value: string | undefined, restoreFocus: boolean) => {
+      const currentRoot = WorkspaceManager.root;
+      if (!editing || editBusyRef.current || currentRoot !== WorkspacePaths.normalize(root)) return;
+      const { node, newIn } = editing;
+      const name = value?.trim() || node.name;
+      const isNew = newIn !== undefined;
+      editBusyRef.current = true;
+      let path = node.path;
+      try {
+        if (isNew) {
+          path = await (node.kind === "dir"
+            ? WorkspaceManager.createFolder(newIn, name)
+            : WorkspaceManager.createPage(newIn, name));
+        } else if (name !== node.name) {
+          path = await renameWorkspaceNode(path, name);
+        }
+        if (WorkspaceManager.root !== currentRoot) return;
+        setEditing(null);
+        setSelectedPaths((previous) => (previous.size === 0 || previous.has(node.path) ? new Set([path]) : previous));
+        if (anchorPathRef.current === undefined || anchorPathRef.current === node.path) anchorPathRef.current = path;
+        if (restoreFocus) setFocusRequest({ path });
+        if (isNew) {
+          toast.success(t(node.kind === "dir" ? "folderCreated" : "pageCreated"));
+          if (node.kind === "page") openWorkspacePage(path).catch(reportWorkspaceError);
+        }
+      } finally {
+        editBusyRef.current = false;
+      }
+    },
+    [editing, root, t],
   );
 
   const deleteEntries = useCallback(
@@ -424,14 +484,12 @@ export default function WorkspaceWindow() {
       clickRow,
       contextRow,
       newPage: (dirPath: string) => {
-        promptNewPage(dirPath).catch(reportWorkspaceError);
+        beginCreate(dirPath, "page").catch(reportWorkspaceError);
       },
       newFolder: (dirPath: string) => {
-        createFolder(dirPath).catch(reportWorkspaceError);
+        beginCreate(dirPath, "dir").catch(reportWorkspaceError);
       },
-      renameNode: (node: WorkspaceNode) => {
-        promptRenameNode(node).catch(reportWorkspaceError);
-      },
+      renameNode: beginRename,
       deleteNode: (node: WorkspaceNode) => {
         confirmDelete(node).catch(reportWorkspaceError);
       },
@@ -520,16 +578,15 @@ export default function WorkspaceWindow() {
       },
     }),
     [
+      beginCreate,
+      beginRename,
       clickRow,
       confirmDelete,
       contextRow,
       copyLink,
-      createFolder,
       cutOrCopy,
       dropEntries,
       paste,
-      promptNewPage,
-      promptRenameNode,
       refresh,
       root,
       t,
@@ -705,6 +762,10 @@ export default function WorkspaceWindow() {
           selectedPaths={selectedPaths}
           dropTarget={dropTarget}
           manualOrder={sortMode === "custom"}
+          editingPath={editing?.node.path}
+          renameOnDoubleClick={renameOnDoubleClick}
+          focusRequest={focusRequest}
+          finishEdit={finishEdit}
           actions={actions}
         />
       </div>
@@ -727,12 +788,13 @@ export default function WorkspaceWindow() {
 
 /** 已经开着就只聚焦，别开第二个（快捷键和菜单都会调它） */
 export function findWorkspaceTab(): Tab | undefined {
-  return store.get(tabsAtom).find(isWorkspaceTab);
+  return store.get(tabsAtom).find((tab) => !tab.closing && isWorkspaceTab(tab));
 }
 
 WorkspaceWindow.open = () => {
   const existing = findWorkspaceTab();
   if (existing) {
+    dockWorkspacePanel(existing.id);
     TabWorkspace.focus(existing.id);
     return;
   }

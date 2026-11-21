@@ -34,8 +34,6 @@ const HISTORY_DIR = ".flux-graph/history";
 /** 自定义排序文件：key 是相对根目录的目录路径（"" 为根），value 是该目录下的文件名数组 */
 const ORDER_DIR = ".flux-graph";
 const ORDER_FILE = ".flux-graph/order.json";
-/** 文件夹重名后缀用全角括号，和用户看到的「新建文件夹（1）」一致 */
-const FOLDER_SUFFIX = (index: number) => `（${index}）`;
 const DEFAULT_FOLDER_NAME = "新建文件夹";
 /** 同一页面两次快照的最小间隔，避免自动保存把历史冲刷掉 */
 const SNAPSHOT_INTERVAL_MS = 30_000;
@@ -108,6 +106,8 @@ export class WorkspaceManagerClass {
   };
   private unwatch?: () => void;
   private watchingRoot?: string;
+  private watchTask?: Promise<void>;
+  private watchUnavailableRoot?: string;
   private changeTimer?: ReturnType<typeof setTimeout>;
   private readonly snapshotTimes = new Map<string, number>();
 
@@ -163,24 +163,36 @@ export class WorkspaceManagerClass {
       this.stopWatching();
       return;
     }
-    if (this.watchingRoot === root && this.unwatch) return;
+    if (this.watchingRoot === root && (this.unwatch || this.watchTask || this.watchUnavailableRoot === root)) {
+      return;
+    }
     await this.startWatching();
   }
 
-  /** 新建空 .prg：PROJECT.newDraft() → uri → init → save；重名自动加 " (2)"；返回新路径 */
+  async suggestNewName(dirPath: string, kind: WorkspaceNode["kind"], name: string): Promise<string> {
+    this.requireRoot();
+    const dir = WorkspacePaths.normalize(dirPath);
+    if (kind === "page") {
+      const path = await this.uniqueTitlePath(dir, this.sanitizeName(name), ".prg");
+      return WorkspacePaths.nameOf(path);
+    }
+    return WorkspacePaths.baseName(await this.uniqueTitlePath(dir, this.sanitizeFolderName(name)));
+  }
+
+  /** 新建空 .prg，返回实际保存的路径 */
   async createPage(dirPath: string, name: string): Promise<string> {
     this.requireRoot();
     const dir = WorkspacePaths.normalize(dirPath);
     const baseName = this.sanitizeName(name);
     await mkdir(dir, { recursive: true });
-    const target = await this.uniquePath(dir, baseName);
+    const target = await this.uniqueTitlePath(dir, baseName, ".prg");
     const project = Project.newDraft();
     project.uri = URI.file(target);
     loadAllServicesBeforeInit(project);
     try {
       await project.init();
       loadAllServicesAfterInit(project);
-      project.stageManager.add(new TextNode(project, { text: baseName }));
+      project.stageManager.add(new TextNode(project, { text: WorkspacePaths.nameOf(target) }));
       await project.save({ includeThumbnail: false });
     } finally {
       await project.dispose();
@@ -210,7 +222,7 @@ export class WorkspaceManagerClass {
       this.emit("change");
       return casingTarget;
     }
-    const target = await this.uniquePath(WorkspacePaths.dirname(source), baseName);
+    const target = await this.uniqueTitlePath(WorkspacePaths.dirname(source), baseName, ".prg");
     await this.movePageFile(source, target);
     await this.pruneOrder([WorkspacePaths.dirname(source)]);
     this.emit("change");
@@ -252,7 +264,7 @@ export class WorkspaceManagerClass {
         ? i18next.t("workspace.newFolderName", { defaultValue: DEFAULT_FOLDER_NAME })
         : this.sanitizeFolderName(name);
     await mkdir(dir, { recursive: true });
-    const target = await this.uniqueFolderPath(dir, baseName);
+    const target = await this.uniqueTitlePath(dir, baseName);
     await mkdir(target, { recursive: true });
     await this.appendOrder(dir, WorkspacePaths.baseName(target));
     this.emit("change");
@@ -268,7 +280,7 @@ export class WorkspaceManagerClass {
     const target =
       baseName.toLowerCase() === currentName.toLowerCase()
         ? WorkspacePaths.join(parent, baseName)
-        : await this.uniqueFolderPath(parent, baseName);
+        : await this.uniqueTitlePath(parent, baseName);
     await rename(source, target);
     await this.pruneOrder([parent]);
     this.emit("change");
@@ -308,7 +320,7 @@ export class WorkspaceManagerClass {
     await mkdir(dir, { recursive: true });
     let target: string;
     if (folder) {
-      target = await this.uniqueFolderPath(dir, WorkspacePaths.baseName(source));
+      target = await this.uniqueTitlePath(dir, WorkspacePaths.baseName(source));
       await rename(source, target);
     } else {
       target = await this.uniquePath(dir, WorkspacePaths.nameOf(source));
@@ -329,7 +341,7 @@ export class WorkspaceManagerClass {
     await mkdir(dir, { recursive: true });
     let target: string;
     if (folder) {
-      target = await this.uniqueFolderPath(dir, WorkspacePaths.baseName(source));
+      target = await this.uniqueTitlePath(dir, WorkspacePaths.baseName(source));
       await this.copyTree(source, target);
     } else {
       target = await this.uniquePath(dir, WorkspacePaths.nameOf(source));
@@ -746,12 +758,11 @@ export class WorkspaceManagerClass {
     return candidate;
   }
 
-  /** 文件夹重名时依次尝试「名字（1）」「名字（2）」……（全角括号，与页面用的 " (2)" 区分） */
-  private async uniqueFolderPath(dirPath: string, name: string): Promise<string> {
-    let candidate = WorkspacePaths.join(dirPath, name);
+  private async uniqueTitlePath(dirPath: string, name: string, extension = ""): Promise<string> {
+    let candidate = WorkspacePaths.join(dirPath, `${name}${extension}`);
     let counter = 1;
     while (await exists(candidate)) {
-      candidate = WorkspacePaths.join(dirPath, `${name}${FOLDER_SUFFIX(counter)}`);
+      candidate = WorkspacePaths.join(dirPath, `${name}（${counter}）${extension}`);
       counter += 1;
     }
     return candidate;
@@ -805,23 +816,41 @@ export class WorkspaceManagerClass {
 
   private async startWatching(): Promise<void> {
     const root = this.root;
-    this.stopWatching();
-    if (!root) return;
-    this.watchingRoot = root;
-    try {
-      const unwatch = await watch(root, () => this.scheduleChangeEmit(), { recursive: true, delayMs: 500 });
-      if (this.watchingRoot !== root) {
-        unwatch();
-        return;
-      }
-      this.unwatch = unwatch;
-    } catch (error) {
-      toast.error(i18next.t("workspace.watchUnavailable", { defaultValue: String(error) }));
+    if (!root) {
+      this.stopWatching();
+      return;
     }
+    if (this.watchingRoot === root && (this.unwatch || this.watchTask || this.watchUnavailableRoot === root)) {
+      await this.watchTask;
+      return;
+    }
+    this.stopWatching();
+    this.watchingRoot = root;
+    this.watchUnavailableRoot = undefined;
+
+    const task = (async () => {
+      try {
+        const unwatch = await watch(root, () => this.scheduleChangeEmit(), { recursive: true, delayMs: 500 });
+        if (this.watchingRoot !== root) {
+          unwatch();
+          return;
+        }
+        this.unwatch = unwatch;
+      } catch (error) {
+        if (this.watchingRoot === root) {
+          this.watchUnavailableRoot = root;
+        }
+        toast.error(i18next.t("workspace.watchUnavailable", { defaultValue: String(error) }));
+      }
+    })();
+    this.watchTask = task;
+    await task;
+    if (this.watchTask === task) this.watchTask = undefined;
   }
 
   private stopWatching(): void {
     this.watchingRoot = undefined;
+    this.watchUnavailableRoot = undefined;
     if (this.changeTimer !== undefined) {
       clearTimeout(this.changeTimer);
       this.changeTimer = undefined;

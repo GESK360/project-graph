@@ -14,6 +14,7 @@ export function flattenWorkspaceTree(
   nodes: WorkspaceNode[],
   collapsedDirs: ReadonlySet<string>,
   root: string,
+  pending?: { dirPath: string; node: WorkspaceNode },
 ): WorkspaceFlatRow[] {
   const rows: WorkspaceFlatRow[] = [];
   const walk = (list: WorkspaceNode[], depth: number, dirPath: string) => {
@@ -23,6 +24,9 @@ export function flattenWorkspaceTree(
         walk(node.children, depth + 1, node.path);
       }
     });
+    if (pending?.dirPath === dirPath) {
+      rows.push({ node: pending.node, depth, dirPath, siblings: list, indexInSiblings: list.length });
+    }
   };
   walk(nodes, 0, root);
   return rows;

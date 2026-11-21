@@ -87,6 +87,11 @@ function dockToSideGroup(tabId: string, edge: FixedSideEdge) {
 
 /** 工作空间文件树固定停靠在自己的组里，点页面打开的新工程不会挤进这个组 */
 export function dockWorkspacePanel(tabId: string) {
+  const tab = store.get(tabsAtom).find((candidate) => candidate.id === tabId);
+  if (tab?.layout !== "docked") {
+    if (tab) tab.layout = "docked";
+    store.set(tabsAtom, [...store.get(tabsAtom)]);
+  }
   return dockToFixedGroup(tabId, FIXED_SIDE_GROUP_IDS.workspace);
 }
 

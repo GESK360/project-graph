@@ -1,12 +1,13 @@
 import { loadAllServicesAfterInit, loadAllServicesBeforeInit } from "@/core/loadAllServices";
 import { Project, ProjectState } from "@/core/Project";
-import { onOpenFile } from "@/core/service/GlobalMenu";
+import { onOpenFile, waitForOpeningFiles } from "@/core/service/GlobalMenu";
 import { TabWorkspace } from "@/core/TabWorkspace";
 import { activeResourceTabAtom, activeTabAtom, store, tabsAtom } from "@/state";
 import { URI } from "vscode-uri";
 import { WorkspaceManager, WorkspacePaths } from "./WorkspaceManager";
 
 const OPEN_SOURCE = "工作空间文件树";
+const deletingEntries = new Map<string, Promise<void>>();
 
 function findOpenProject(path: string): Project | undefined {
   const target = WorkspacePaths.normalize(path);
@@ -40,6 +41,7 @@ async function closeBeforePathChange(project: Project | undefined): Promise<void
 /** 打开/聚焦页面；内部调 onOpenFile(URI.file(path), "工作空间文件树") */
 export async function openWorkspacePage(path: string): Promise<void> {
   const target = WorkspacePaths.normalize(path);
+  if ([...deletingEntries.keys()].some((entry) => WorkspacePaths.isInside(target, entry))) return;
   const opened = findOpenProject(target);
   if (opened) {
     TabWorkspace.focus(opened.id);
@@ -50,9 +52,7 @@ export async function openWorkspacePage(path: string): Promise<void> {
 
 /** 删除：若该文件已打开 → TabWorkspace.close；确认框由 UI 负责 */
 export async function deleteWorkspacePage(path: string): Promise<void> {
-  const opened = findOpenProject(path);
-  if (opened) await TabWorkspace.close(opened.id);
-  await WorkspaceManager.deletePage(path);
+  await deleteWorkspaceEntry(path, (target) => WorkspaceManager.deletePage(target));
 }
 
 /** 重命名：若已打开 → save → close → rename → 重新打开新路径；返回新路径 */
@@ -78,14 +78,14 @@ export async function copyWorkspacePage(path: string, targetDir: string): Promis
 }
 
 /** 目录下（含子目录）所有已打开的页面 */
-function findOpenProjectsUnder(path: string): Project[] {
+function findOpenProjectsUnder(path: string, includeClosing = false): Project[] {
   const target = WorkspacePaths.normalize(path);
   return store
     .get(tabsAtom)
     .filter(
       (tab): tab is Project =>
         tab instanceof Project &&
-        !tab.closing &&
+        (includeClosing || !tab.closing) &&
         tab.uri.scheme === "file" &&
         WorkspacePaths.isInside(WorkspacePaths.normalize(tab.uri.fsPath), target),
     );
@@ -135,10 +135,25 @@ export async function moveWorkspaceNode(path: string, targetDir: string): Promis
 
 /** 整棵目录递归删除；目录里已打开的页面先关掉，否则它们会继续往已删除的路径回写 */
 export async function deleteWorkspaceFolder(path: string): Promise<void> {
-  for (const project of findOpenProjectsUnder(path)) {
-    await TabWorkspace.close(project.id);
+  await deleteWorkspaceEntry(path, (target) => WorkspaceManager.deleteFolder(target));
+}
+
+async function deleteWorkspaceEntry(path: string, remove: (target: string) => Promise<void>): Promise<void> {
+  const target = WorkspacePaths.normalize(path);
+  for (const [entry, pending] of deletingEntries) {
+    if (WorkspacePaths.isInside(target, entry)) return pending;
   }
-  await WorkspaceManager.deleteFolder(path);
+  const task = (async () => {
+    await waitForOpeningFiles((uri) => uri.scheme === "file" && WorkspacePaths.isInside(uri.fsPath, target));
+    await Promise.all(findOpenProjectsUnder(target, true).map((project) => TabWorkspace.close(project.id)));
+    await remove(target);
+  })();
+  deletingEntries.set(target, task);
+  try {
+    await task;
+  } finally {
+    deletingEntries.delete(target);
+  }
 }
 
 /** 批量移动：返回落成的新路径；中途失败时已移动的项保留（与 Manager 语义一致） */

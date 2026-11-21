@@ -323,7 +323,13 @@ export const categories = {
       "autoBackupCustomPath2",
     ],
     autoImport: ["autoImportTxtFileWhenOpenPrg", "imageImportOrder"],
-    workspace: ["activeWorkspaceRoot", "autoSaveOnSwitch", "workspaceVersionHistory", "workspaceTreeOpacity"],
+    workspace: [
+      "activeWorkspaceRoot",
+      "autoSaveOnSwitch",
+      "workspaceVersionHistory",
+      "workspaceTreeOpacity",
+      "workspaceRenameOnDoubleClick",
+    ],
   },
   control: {
     mouse: [

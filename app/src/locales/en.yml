@@ -520,6 +520,9 @@ settings:
   workspaceTreeOpacity:
     title: Workspace File Tree Background Opacity
     description: Adjust the background without dimming text or icons. Focus the file tree to use Ctrl+Shift+Alt with plus or minus.
+  workspaceRenameOnDoubleClick:
+    title: Double-click to Rename Workspace Items
+    description: Double-click a page or folder to edit its name directly in the file tree.
   activeWorkspaceRoot:
     title: Workspace Folder
     description: |
@@ -2070,6 +2073,9 @@ keyBinds:
   toggleWorkspacePanel:
     title: Toggle Workspace Panel
     description: Show or hide the workspace file tree on the left
+  renameWorkspaceEntry:
+    title: Rename Workspace Item
+    description: Edit the name of the selected page or folder directly in the workspace file tree
   newDraft:
     title: Create New Draft
     description: "Create a new draft file and switch to this file.\nIf the current

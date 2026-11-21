@@ -1827,6 +1827,20 @@ export const allKeyBinds: KeyBindItem[] = [
     },
   },
   {
+    id: "renameWorkspaceEntry",
+    defaultKey: "F2",
+    icon: FolderTree,
+    ignoreRepeat: true,
+    when: async () => {
+      const { focusedWorkspaceRenameRow } = await import("@/components/workspace/WorkspaceTree");
+      return !!focusedWorkspaceRenameRow();
+    },
+    onPress: async () => {
+      const { requestFocusedWorkspaceRename } = await import("@/components/workspace/WorkspaceTree");
+      requestFocusedWorkspaceRename();
+    },
+  },
+  {
     id: "openCurrentProjectFileFolder",
     defaultKey: "C-S-l",
     icon: Folder,

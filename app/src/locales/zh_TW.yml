@@ -734,6 +734,9 @@ settings:
   workspaceTreeOpacity:
     title: 工作空間文件樹背景透明度
     description: 僅調整背景，不影響文字和圖標。點擊文件樹後，可用 Ctrl+Shift+Alt 和加號或減號調整。
+  workspaceRenameOnDoubleClick:
+    title: 雙擊文件樹項目重命名
+    description: 雙擊同一個頁面或文件夾時，直接在文件樹中編輯名稱。
   activeWorkspaceRoot:
     title: 當前工作空間目錄
     description: |
@@ -1669,6 +1672,9 @@ keyBinds:
   toggleWorkspacePanel:
     title: 顯示/隱藏工作空間面板
     description: 切換左側工作空間文件樹的顯示狀態
+  renameWorkspaceEntry:
+    title: 重命名文件樹項目
+    description: 在工作空間文件樹中直接編輯單選頁面或文件夾的名稱
   undo:
     title: 撤銷
     description: 撤銷上一次操作

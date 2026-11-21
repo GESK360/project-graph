@@ -43,6 +43,7 @@ type OpeningProject = {
 };
 
 const openingProjects = new Map<string, OpeningProject>();
+const openingFiles = new Map<string, { uri: URI; task: Promise<Project | undefined> }>();
 
 function getOpeningProject(ownershipId: string) {
   const existing = openingProjects.get(ownershipId);
@@ -195,12 +196,36 @@ export async function onOpenFile(uri?: URI, source: string = "unknown"): Promise
     uri = URI.file(path);
   }
 
+  const key = uri.toString();
+  const pending = openingFiles.get(key);
+  if (pending) return pending.task;
+
+  const task = openFile(uri, source);
+  openingFiles.set(key, { uri, task });
+  try {
+    return await task;
+  } finally {
+    openingFiles.delete(key);
+  }
+}
+
+export async function waitForOpeningFiles(matches: (uri: URI) => boolean): Promise<void> {
+  const pending = [...openingFiles.values()].filter(({ uri }) => matches(uri));
+  // 即使打开失败，也要等打开流程完成清理后，才能删除原路径。
+  await Promise.allSettled(pending.map(({ task }) => task));
+}
+
+async function openFile(uri: URI, source: string): Promise<Project | undefined> {
+  const matchesUri = (tab: unknown): tab is Project | Extension =>
+    (tab instanceof Project || tab instanceof Extension) && tab.uri.toString() === uri.toString();
+  const closingTab = store.get(tabsAtom).find((tab) => tab.closing && matchesUri(tab));
+  if (closingTab) {
+    const { TabWorkspace } = await import("@/core/TabWorkspace");
+    await TabWorkspace.close(closingTab.id);
+  }
   const textuallyMatchingTab = store
     .get(tabsAtom)
-    .find(
-      (tab): tab is Project | Extension =>
-        (tab instanceof Project || tab instanceof Extension) && tab.uri.toString() === uri.toString(),
-    );
+    .find((tab): tab is Project | Extension => !tab.closing && matchesUri(tab));
   if (textuallyMatchingTab) {
     focusExistingTab(textuallyMatchingTab);
     return textuallyMatchingTab as any;
