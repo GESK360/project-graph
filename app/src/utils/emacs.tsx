@@ -144,7 +144,11 @@ const shiftedCodeKeys: Record<string, string[]> = {
 /**
  * 检测一个emacs格式的快捷键是否匹配一个事件
  */
-export function matchSingleEmacsKey(key: string, event: KeyboardEvent | MouseEvent | WheelEvent): boolean {
+export function matchSingleEmacsKey(
+  key: string,
+  event: KeyboardEvent | MouseEvent | WheelEvent,
+  heldKeys?: ReadonlySet<string>,
+): boolean {
   const parsedKey = parseSingleEmacsKey(key);
 
   const matchModifiers =
@@ -154,6 +158,16 @@ export function matchSingleEmacsKey(key: string, event: KeyboardEvent | MouseEve
     parsedKey.meta === event.metaKey;
 
   let matchKey = false;
+  const chord = parseHeldKeyChord(parsedKey.key);
+  if (chord) {
+    return (
+      matchModifiers &&
+      event instanceof KeyboardEvent &&
+      !event.repeat &&
+      heldKeys?.has(chord[1]) === true &&
+      getChordKey(event) === chord[2]
+    );
+  }
   if (event instanceof KeyboardEvent) {
     const eventKey = event.key.toLowerCase();
     if (eventKey in transformedKeys) {
@@ -177,6 +191,17 @@ export function matchSingleEmacsKey(key: string, event: KeyboardEvent | MouseEve
   return matchModifiers && matchKey;
 }
 
+export function parseHeldKeyChord(key: string) {
+  return /^([a-z0-9])\+([a-z0-9])$/.exec(key);
+}
+
+export function getChordKey(event: KeyboardEvent): string | undefined {
+  // Option can produce a different character (or a dead key) for the same key on macOS.
+  const physical = /^(?:Key([A-Z])|(?:Digit|Numpad)([0-9]))$/.exec(event.code);
+  if (physical) return (physical[1] ?? physical[2]).toLowerCase();
+  return /^[a-z0-9]$/i.test(event.key) ? event.key.toLowerCase() : undefined;
+}
+
 /**
  * 把windows/linux格式的快捷键转换为Mac格式
  * @param key
@@ -195,7 +220,11 @@ export function transEmacsKeyWinToMac(key: string): string {
  * @param events [KeyboardEvent, KeyboardEvent], 最大长度20，刚才触发的一系列事件
  * @returns 是否匹配上了
  */
-export function matchEmacsKeyPress(key: string, events: (KeyboardEvent | MouseEvent | WheelEvent)[]): boolean {
+export function matchEmacsKeyPress(
+  key: string,
+  events: (KeyboardEvent | MouseEvent | WheelEvent)[],
+  heldKeysByEvent?: WeakMap<KeyboardEvent, ReadonlySet<string>>,
+): boolean {
   const seq = key.trim().split(/\s+/);
   if (seq.length === 0 || events.length < seq.length) return false;
 
@@ -203,7 +232,10 @@ export function matchEmacsKeyPress(key: string, events: (KeyboardEvent | MouseEv
   for (let i = 0; i < seq.length; i++) {
     const seqIdx = seq.length - 1 - i; // 从 seq 尾部开始
     const eventIdx = events.length - 1 - i; // 从 events 尾部开始
-    if (!matchSingleEmacsKey(seq[seqIdx], events[eventIdx])) {
+    const event = events[eventIdx];
+    if (
+      !matchSingleEmacsKey(seq[seqIdx], event, event instanceof KeyboardEvent ? heldKeysByEvent?.get(event) : undefined)
+    ) {
       return false;
     }
   }
@@ -215,11 +247,14 @@ export function matchEmacsKeyPress(key: string, events: (KeyboardEvent | MouseEv
  * @param event KeyboardEvent | MouseEvent | WheelEvent
  * @returns "C-s", "C-<MWU>" 等格式
  */
-export function formatEmacsKey(event: KeyboardEvent | MouseEvent | WheelEvent): string {
+export function formatEmacsKey(event: KeyboardEvent | MouseEvent | WheelEvent, chordPrefix?: string): string {
   let key = "";
   if (event instanceof KeyboardEvent) {
     const eventKey = event.key.toLowerCase();
-    if (eventKey in transformedKeys) {
+    const chordKey = chordPrefix === undefined ? undefined : getChordKey(event);
+    if (chordKey && chordPrefix) {
+      key = `${chordPrefix}+${chordKey}`;
+    } else if (eventKey in transformedKeys) {
       key = transformedKeys[eventKey as keyof typeof transformedKeys];
     } else {
       key = event.key.toLowerCase();

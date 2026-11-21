@@ -1,6 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { formatEmacsKey } from "@/utils/emacs";
+import { formatEmacsKey, getChordKey } from "@/utils/emacs";
 import { formatKeyBindSequence, formatSigalKeyForDisplay, getModifierDisplayTexts } from "@/utils/keyDisplay";
 import { Check, Delete, Info } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -24,11 +24,22 @@ export default function KeyBind({
   const { t } = useTranslation("keyBinds");
 
   const endInputRef = useRef<() => void>(() => {});
+  const pendingChordKey = useRef<KeyboardEvent | null>(null);
+
+  const handleKeyUp = useCallback((event: KeyboardEvent) => {
+    if (event.code === pendingChordKey.current?.code) pendingChordKey.current = null;
+  }, []);
+
+  const clearPendingChordKey = useCallback(() => {
+    pendingChordKey.current = null;
+  }, []);
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
       event.preventDefault();
+      event.stopPropagation();
       if (["Control", "Alt", "Shift", "Meta"].includes(event.key)) return;
+      if (event.repeat || event.isComposing) return;
       if (isContinuous) {
         // 持续型：只允许单键，录入第一个键后立即完成
         const singleKey = formatEmacsKey(event);
@@ -43,13 +54,32 @@ export default function KeyBind({
           onChange(singleKey);
         }, 0);
       } else {
-        setValue((prev) => `${prev} ${formatEmacsKey(event)}`);
+        const previous = pendingChordKey.current;
+        const key = getChordKey(event);
+        const prefix =
+          previous &&
+          previous.ctrlKey === event.ctrlKey &&
+          previous.altKey === event.altKey &&
+          previous.shiftKey === event.shiftKey &&
+          previous.metaKey === event.metaKey
+            ? getChordKey(previous)
+            : undefined;
+        if (prefix && key && prefix !== key) {
+          const chord = formatEmacsKey(event, prefix);
+          setValue((prev) => [...prev.trim().split(/\s+/).slice(0, -1), chord].join(" "));
+          pendingChordKey.current = null;
+        } else {
+          setValue((prev) => `${prev} ${formatEmacsKey(event)}`);
+          pendingChordKey.current =
+            key && (event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) ? event : null;
+        }
       }
     },
     [isContinuous, onChange], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const handleMouseDown = useCallback((event: MouseEvent) => {
+    pendingChordKey.current = null;
     event.preventDefault();
     event.stopPropagation();
     if (event.button !== 0) {
@@ -63,37 +93,47 @@ export default function KeyBind({
   }, []);
 
   const handleWheel = useCallback((event: WheelEvent) => {
+    pendingChordKey.current = null;
     event.preventDefault();
     event.stopPropagation();
     setValue((prev) => `${prev} ${formatEmacsKey(event)}`);
   }, []);
 
   const startInput = useCallback(() => {
+    clearPendingChordKey();
     document.addEventListener("keydown", handleKeyDown);
+    if (!isContinuous) {
+      document.addEventListener("keyup", handleKeyUp);
+      window.addEventListener("blur", clearPendingChordKey);
+    }
     document.addEventListener("mousedown", handleMouseDown);
     document.addEventListener("mouseup", handleMouseUp);
     document.addEventListener("wheel", handleWheel);
     setChoosing(true);
     setValue("");
-  }, [handleKeyDown, handleMouseDown, handleMouseUp, handleWheel]);
+  }, [clearPendingChordKey, handleKeyDown, handleKeyUp, handleMouseDown, handleMouseUp, handleWheel, isContinuous]);
 
   const endInputCallback = useCallback(() => {
     document.removeEventListener("keydown", handleKeyDown);
+    document.removeEventListener("keyup", handleKeyUp);
+    window.removeEventListener("blur", clearPendingChordKey);
     document.removeEventListener("mousedown", handleMouseDown);
     document.removeEventListener("mouseup", handleMouseUp);
     document.removeEventListener("wheel", handleWheel);
     setChoosing(false);
     onChange(value.trim());
-  }, [handleKeyDown, handleMouseDown, handleMouseUp, handleWheel, value, onChange]);
+  }, [clearPendingChordKey, handleKeyDown, handleKeyUp, handleMouseDown, handleMouseUp, handleWheel, value, onChange]);
 
   useEffect(() => {
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("blur", clearPendingChordKey);
       document.removeEventListener("mousedown", handleMouseDown);
       document.removeEventListener("mouseup", handleMouseUp);
       document.removeEventListener("wheel", handleWheel);
     };
-  }, [handleKeyDown, handleMouseDown, handleMouseUp, handleWheel]);
+  }, [clearPendingChordKey, handleKeyDown, handleKeyUp, handleMouseDown, handleMouseUp, handleWheel]);
 
   // 保持 ref 最新
   endInputRef.current = endInputCallback;
@@ -116,7 +156,7 @@ export default function KeyBind({
       <Button onClick={startInput} variant={choosing ? "outline" : "default"} className="gap-0">
         {value
           ? formatKeyBindSequence(value.trim()).map((item, index) => (
-              <span key={index} className="not-first:before:content-[',_'] flex gap-1 font-bold">
+              <span key={index} className="flex gap-1 font-bold not-first:before:content-[',_']">
                 {item.modifiers.map((modifier, modIndex) => (
                   <span className="bg-card text-foreground rounded-sm px-1 font-semibold" key={modIndex}>
                     {modifier}
@@ -153,7 +193,7 @@ export function RenderKey({ data }: { data: ReturnType<typeof import("@/utils/em
   const modifiers = getModifierDisplayTexts(data);
   const keyShow = formatSigalKeyForDisplay(data.key);
   return (
-    <span className="not-first:before:content-[',_'] flex gap-1 font-bold">
+    <span className="flex gap-1 font-bold not-first:before:content-[',_']">
       {modifiers.map((modifier, index) => (
         <span className="bg-card text-foreground rounded-sm px-1 font-semibold" key={index}>
           {modifier}

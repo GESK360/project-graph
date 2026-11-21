@@ -1528,6 +1528,36 @@ keys:
   wheeldown: Scroll Wheel Down
 
 keyBinds:
+  toggleLeftMouseDrawingMode:
+    title: Toggle left mouse button mode
+    description: Switch between selecting and moving, and drawing.
+  toggleRightMouseDragMode:
+    title: Toggle right mouse button drag mode
+    description: Switch between cutting objects and panning the view.
+  moveMindMapSiblingUp:
+    title: Move branch up one position
+    description: In branch drag mode, swap with the previous sibling node or group on the same side.
+  moveMindMapSiblingDown:
+    title: Move branch down one position
+    description: In branch drag mode, swap with the next sibling node or group on the same side.
+  selectHandwritingPen1: { title: Select pen preset 1 }
+  selectHandwritingPen2: { title: Select pen preset 2 }
+  selectHandwritingPen3: { title: Select pen preset 3 }
+  selectHandwritingPen4: { title: Select pen preset 4 }
+  selectHandwritingPen5: { title: Select pen preset 5 }
+  selectHandwritingPen6: { title: Select pen preset 6 }
+  selectHandwritingPen7: { title: Select pen preset 7 }
+  selectHandwritingPen8: { title: Select pen preset 8 }
+  selectHandwritingPen9: { title: Select pen preset 9 }
+  selectHandwritingEraser1: { title: Select eraser preset 1 }
+  selectHandwritingEraser2: { title: Select eraser preset 2 }
+  selectHandwritingEraser3: { title: Select eraser preset 3 }
+  selectHandwritingEraser4: { title: Select eraser preset 4 }
+  selectHandwritingEraser5: { title: Select eraser preset 5 }
+  selectHandwritingEraser6: { title: Select eraser preset 6 }
+  selectHandwritingEraser7: { title: Select eraser preset 7 }
+  selectHandwritingEraser8: { title: Select eraser preset 8 }
+  selectHandwritingEraser9: { title: Select eraser preset 9 }
   title: Key Bindings
   none: No Key Binding. Click to Bind
   test:
@@ -2227,6 +2257,8 @@ effects:
   RectanglePushInEffect:
     title: Quadrilateral Vertex Morphing
 keyBindsGroup:
+  leftMouseModeCheckout:
+    title: Mouse Modes
   ui:
     title: UI Controls
     description: "Used for controlling UI functions\n"

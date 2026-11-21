@@ -22,6 +22,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { KeyBindsUI } from "@/core/service/controlService/shortcutKeysEngine/KeyBindsUI";
 import { allKeyBinds, getKeyBindTypeById } from "@/core/service/controlService/shortcutKeysEngine/shortcutKeysRegister";
+import { handwritingPresetShortcuts } from "@/core/service/controlService/shortcutKeysEngine/handwritingPresetShortcuts";
 import Fuse from "fuse.js";
 import { AlertCircle, AlignStartVertical, Focus, LineSquiggle, TextCursorInput } from "lucide-react";
 
@@ -649,7 +650,12 @@ export const shortcutKeysGroups: ShortcutKeysGroup[] = [
   {
     title: "draw",
     icon: <LineSquiggle />,
-    keys: ["selectEntityByPenStroke", "penStrokeWidthIncrease", "penStrokeWidthDecrease"],
+    keys: [
+      ...handwritingPresetShortcuts.map(({ id }) => id),
+      "selectEntityByPenStroke",
+      "penStrokeWidthIncrease",
+      "penStrokeWidthDecrease",
+    ],
   },
   {
     title: "select",
@@ -687,6 +693,8 @@ export const shortcutKeysGroups: ShortcutKeysGroup[] = [
     keys: [
       "dragToConnectMindMap",
       "dragToConnectMindMapAligned",
+      "moveMindMapSiblingUp",
+      "moveMindMapSiblingDown",
       "moveUpSelectedEntities",
       "moveDownSelectedEntities",
       "moveLeftSelectedEntities",
@@ -766,6 +774,8 @@ export const shortcutKeysGroups: ShortcutKeysGroup[] = [
     icon: <MousePointer />,
     keys: [
       "checkoutLeftMouseToSelectAndMove",
+      "toggleLeftMouseDrawingMode",
+      "toggleRightMouseDragMode",
       "checkoutLeftMouseToDrawing",
       "checkoutLeftMouseToConnectAndCutting",
       "checkoutLeftMouseToConnectAndCuttingOnlyPressed",

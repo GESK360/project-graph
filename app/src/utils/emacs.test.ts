@@ -11,7 +11,7 @@ vi.hoisted(() => {
   vi.stubGlobal("WheelEvent", class {});
 });
 
-import { matchSingleEmacsKey } from "./emacs";
+import { formatEmacsKey, matchEmacsKeyPress, matchSingleEmacsKey } from "./emacs";
 
 const key = (init: Record<string, unknown>) => new (KeyboardEvent as any)(init) as KeyboardEvent;
 const cas = { ctrlKey: true, altKey: true, shiftKey: true };
@@ -31,5 +31,23 @@ describe("matchSingleEmacsKey", () => {
   it("C-A-S-+ 与 C-A-S-- 互不误触", () => {
     expect(matchSingleEmacsKey("C-A-S--", key({ ...cas, key: "+", code: "Equal" }))).toBe(false);
     expect(matchSingleEmacsKey("C-A-S-+", key({ ...cas, key: "_", code: "Minus" }))).toBe(false);
+  });
+  it("matches a held letter plus a number without also matching the plain letter", () => {
+    const prefix = key({ key: "p", code: "KeyP", altKey: true });
+    const digit = key({ key: "3", code: "Digit3", altKey: true });
+    const heldKeys = new WeakMap([[digit, new Set(["p"])]]);
+    expect(matchSingleEmacsKey("p", prefix)).toBe(false);
+    expect(matchEmacsKeyPress("A-p+3", [prefix, digit], heldKeys)).toBe(true);
+    expect(matchEmacsKeyPress("A-p+3", [prefix, digit])).toBe(false);
+    expect(matchEmacsKeyPress("A-e+3", [prefix, digit], heldKeys)).toBe(false);
+    expect(matchEmacsKeyPress("A-p+2", [prefix, digit], heldKeys)).toBe(false);
+  });
+
+  it("records and matches a chord even when Option changes the typed character", () => {
+    const digit = key({ key: "¡", code: "Digit1", altKey: true });
+    expect(formatEmacsKey(digit, "e")).toBe("A-e+1");
+    expect(matchSingleEmacsKey("A-e+1", digit, new Set(["e"]))).toBe(true);
+    expect(matchSingleEmacsKey("A-e+1", key({ key: "1", code: "Digit1" }), new Set(["e"]))).toBe(false);
+    expect(matchSingleEmacsKey("A-e+1", key({ ...digit, repeat: true }), new Set(["e"]))).toBe(false);
   });
 });

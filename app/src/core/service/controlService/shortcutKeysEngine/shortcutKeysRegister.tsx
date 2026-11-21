@@ -1,6 +1,10 @@
 import { Dialog } from "@/components/ui/dialog";
 import { Project, ProjectState } from "@/core/Project";
 import { AssetsRepository } from "@/core/service/AssetsRepository";
+import {
+  isPersistentMindMapDragEnabled,
+  moveMindMapSibling,
+} from "@/core/service/controlService/controller/concrete/MindMapDrag";
 import { MouseLocation } from "@/core/service/controlService/MouseLocation";
 import { ViewFlashEffect } from "@/core/service/feedbackService/effectEngine/concrete/ViewFlashEffect";
 import { ViewOutlineFlashEffect } from "@/core/service/feedbackService/effectEngine/concrete/ViewOutlineFlashEffect";
@@ -100,6 +104,7 @@ import {
   Bot,
   Box,
   Brush,
+  Eraser,
   Bug,
   Camera,
   ChevronFirst,
@@ -273,6 +278,7 @@ import {
   openCurrentProjectFolder,
 } from "../../GlobalMenu";
 import { KeyBindsUI } from "./KeyBindsUI";
+import { handwritingPresetShortcuts } from "./handwritingPresetShortcuts";
 
 export type KeyBindWhen = (project?: Project) => boolean | Promise<boolean>;
 
@@ -286,6 +292,7 @@ interface KeyBindItem {
   isGlobal?: boolean;
   // 是否是持续型快捷键
   isContinuous?: boolean;
+  ignoreRepeat?: boolean;
   // 默认是否启用
   defaultEnabled?: boolean;
   icon: ForwardRefExoticComponent<Omit<LucideProps, "ref"> & RefAttributes<SVGSVGElement>>;
@@ -293,6 +300,46 @@ interface KeyBindItem {
 
 const whenAlways: KeyBindWhen = () => true;
 const whenHasProject: KeyBindWhen = (project) => !!project;
+const whenCanChangeDrawingMode: KeyBindWhen = (project) => !!project && !Settings.viewerMode;
+const whenCanReorderMindMap: KeyBindWhen = (project) =>
+  !!project &&
+  Settings.mouseLeftMode === "selectAndMove" &&
+  isPersistentMindMapDragEnabled() &&
+  !project.controller.isMouseDown[0];
+
+function handwritingPresetKeyBind({
+  kind,
+  slot,
+  id,
+  defaultKey,
+}: (typeof handwritingPresetShortcuts)[number]): KeyBindItem {
+  const isPen = kind === "Pen";
+  return {
+    id,
+    defaultKey,
+    icon: isPen ? Brush : Eraser,
+    when: (project) =>
+      !!project &&
+      !Settings.viewerMode &&
+      slot <= (isPen ? Settings.handwritingPens : Settings.handwritingErasers).length,
+    ignoreRepeat: true,
+    onPress: (project) => {
+      const preset = (isPen ? Settings.handwritingPens : Settings.handwritingErasers)[slot - 1];
+      if (!project || !preset) return;
+      if (!isPen) Settings.handwritingEraserId = preset.id;
+      Settings.handwritingActiveTool = isPen ? preset.id : "eraser";
+      project.controller.setHandwritingMode(true);
+    },
+  };
+}
+
+function reorderSelectedMindMapSibling(project: Project, direction: -1 | 1) {
+  const selected = project.stageManager.getSelectedEntities();
+  if (selected.length === 1 && selected[0] instanceof ConnectableEntity) {
+    moveMindMapSibling(project, selected[0], direction);
+  }
+}
+
 const whenHasOpacityTarget: KeyBindWhen = async (project) => {
   if (project) return true;
   const focusedTab = store.get(activeTabAtom);
@@ -1112,6 +1159,22 @@ export const allKeyBinds: KeyBindItem[] = [
     onPress: () => {},
   },
   {
+    id: "moveMindMapSiblingUp",
+    defaultKey: "C-S-arrowup",
+    icon: ArrowUp,
+    when: whenCanReorderMindMap,
+    ignoreRepeat: true,
+    onPress: (project) => reorderSelectedMindMapSibling(project!, -1),
+  },
+  {
+    id: "moveMindMapSiblingDown",
+    defaultKey: "C-S-arrowdown",
+    icon: ArrowDown,
+    when: whenCanReorderMindMap,
+    ignoreRepeat: true,
+    onPress: (project) => reorderSelectedMindMapSibling(project!, 1),
+  },
+  {
     id: "moveUpSelectedEntities",
     defaultKey: "C-arrowup",
     icon: ArrowUp,
@@ -1841,6 +1904,25 @@ export const allKeyBinds: KeyBindItem[] = [
   },
 
   /*------- 鼠标模式切换 -------*/
+  {
+    id: "toggleLeftMouseDrawingMode",
+    defaultKey: "o",
+    icon: MousePointer,
+    when: whenCanChangeDrawingMode,
+    ignoreRepeat: true,
+    onPress: (project) => project!.controller.setHandwritingMode(Settings.mouseLeftMode !== "draw"),
+  },
+  {
+    id: "toggleRightMouseDragMode",
+    defaultKey: "p",
+    icon: Scissors,
+    when: whenCanChangeDrawingMode,
+    ignoreRepeat: true,
+    onPress: () => {
+      Settings.mouseRightDragBackground = Settings.mouseRightDragBackground === "cut" ? "moveCamera" : "cut";
+    },
+  },
+  ...handwritingPresetShortcuts.map(handwritingPresetKeyBind),
   {
     id: "checkoutLeftMouseToSelectAndMove",
     defaultKey: "v v v",

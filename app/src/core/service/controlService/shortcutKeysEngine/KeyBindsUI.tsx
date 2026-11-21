@@ -2,7 +2,9 @@ import { Project } from "@/core/Project";
 import { activeResourceTabAtom, activeTabAtom, store } from "@/state";
 import {
   formatEmacsKey,
+  getChordKey,
   matchEmacsKeyPress,
+  parseHeldKeyChord,
   parseSingleEmacsKey,
   transEmacsKeyWinToMac,
   transformedKeys,
@@ -27,6 +29,7 @@ export interface UIKeyBind {
   icon?: KeyBindIcon;
   // 是否是持续型快捷键
   isContinuous?: boolean;
+  ignoreRepeat?: boolean;
   onRelease?: (project?: Project) => void;
 }
 
@@ -43,6 +46,8 @@ export interface KeyBindInputInterceptor {
  */
 export namespace KeyBindsUI {
   const userEventQueue = new Queue<KeyboardEvent | MouseEvent | WheelEvent>();
+  const heldChordKeys = new Set<string>();
+  const heldKeysByEvent = new WeakMap<KeyboardEvent, ReadonlySet<string>>();
 
   function enqueue(event: MouseEvent | KeyboardEvent | WheelEvent) {
     // 队列里面最多20个（因为秘籍键长度最大20）
@@ -246,6 +251,7 @@ export namespace KeyBindsUI {
         keybind.isContinuous,
         keybind.when,
         keybind.icon,
+        keybind.ignoreRepeat,
       );
     }
     await store.save();
@@ -264,12 +270,14 @@ export namespace KeyBindsUI {
     isContinuous?: boolean,
     when: KeyBindWhen = () => true,
     icon?: KeyBindIcon,
+    ignoreRepeat?: boolean,
   ) {
+    const keyBind: UIKeyBind = { id, key, isEnabled, onPress, onRelease, when, isContinuous, icon, ignoreRepeat };
     if (registerSet.has(id)) {
       // 检查是否已经是同 ID 的快捷键，如果是，则更新它（用于扩展重新认领逻辑）
       const index = allUIKeyBinds.findIndex((kb) => kb.id === id);
       if (index !== -1) {
-        allUIKeyBinds[index] = { id, key, isEnabled, onPress, onRelease, when, isContinuous, icon };
+        allUIKeyBinds[index] = keyBind;
         notifyKeyBindChange(id, allUIKeyBinds[index]);
         return;
       }
@@ -277,7 +285,6 @@ export namespace KeyBindsUI {
       return;
     }
     registerSet.add(id);
-    const keyBind: UIKeyBind = { id, key, isEnabled, onPress, onRelease, when, isContinuous, icon };
     allUIKeyBinds.push(keyBind);
 
     // 通知监听器有新的快捷键注册
@@ -460,11 +467,17 @@ export namespace KeyBindsUI {
   // 跟踪当前按下的持续型快捷键（存放 id，防止重复触发）
   const pressedContinuousKeyBindIds = new Set<string>();
 
+  function clearPendingKeyInputs() {
+    heldChordKeys.clear();
+    userEventQueue.clear();
+  }
+
   export function uiStartListen() {
     window.addEventListener("mousedown", onMouseDown);
     window.addEventListener("mouseup", onMouseUp);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", clearPendingKeyInputs);
     window.addEventListener("wheel", onWheel, { passive: true });
   }
 
@@ -473,9 +486,11 @@ export namespace KeyBindsUI {
     window.removeEventListener("mouseup", onMouseUp);
     window.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("keyup", onKeyUp);
+    window.removeEventListener("blur", clearPendingKeyInputs);
     window.removeEventListener("wheel", onWheel);
     pressedSingleKeyBinds.clear();
     pressedContinuousKeyBindIds.clear();
+    clearPendingKeyInputs();
   }
 
   /**
@@ -483,14 +498,11 @@ export namespace KeyBindsUI {
    * 当有文本输入元素获得焦点时，不处理键盘事件
    */
   function shouldProcessKeyboardEvent() {
-    return !(
-      document.activeElement?.tagName === "INPUT" ||
-      document.activeElement?.tagName === "TEXTAREA" ||
-      document.activeElement?.getAttribute("contenteditable") === "true"
-    );
+    const active = document.activeElement;
+    return !(active?.matches("input, textarea, select") || (active instanceof HTMLElement && active.isContentEditable));
   }
 
-  async function check(): Promise<boolean> {
+  async function check(event: KeyboardEvent | MouseEvent | WheelEvent): Promise<boolean> {
     // 如果有文本输入元素获得焦点，不处理键盘事件
     if (!shouldProcessKeyboardEvent()) {
       // 清空队列，防止事件积累
@@ -501,29 +513,32 @@ export namespace KeyBindsUI {
     const activeProject = tab instanceof Project ? tab : undefined;
 
     // 收集所有匹配的快捷键，按序列长度降序尝试执行，只执行最长匹配
-    const matched: { uiKeyBind: (typeof allUIKeyBinds)[number]; seqLength: number }[] = [];
+    const matched: { uiKeyBind: UIKeyBind; seqLength: number; chordCount: number }[] = [];
     for (const uiKeyBind of allUIKeyBinds) {
       if (!uiKeyBind.isEnabled) continue;
       if (uiKeyBind.isContinuous) continue;
-      if (matchEmacsKeyPress(uiKeyBind.key, userEventQueue.arrayList)) {
-        const seqLength = uiKeyBind.key.trim().split(/\s+/).length;
-        matched.push({ uiKeyBind, seqLength });
+      if (uiKeyBind.ignoreRepeat && event instanceof KeyboardEvent && event.repeat) continue;
+      if (matchEmacsKeyPress(uiKeyBind.key, userEventQueue.arrayList, heldKeysByEvent)) {
+        const steps = uiKeyBind.key.trim().split(/\s+/);
+        const chordCount = steps.filter((step) => parseHeldKeyChord(parseSingleEmacsKey(step).key)).length;
+        matched.push({ uiKeyBind, seqLength: steps.length, chordCount });
       }
     }
     // 按序列长度降序排列，优先尝试最长匹配
-    matched.sort((a, b) => b.seqLength - a.seqLength);
+    matched.sort((a, b) => b.seqLength - a.seqLength || b.chordCount - a.chordCount);
 
-    let maxExecutedLength = -1;
-    for (const { uiKeyBind, seqLength } of matched) {
-      if (maxExecutedLength >= 0 && seqLength < maxExecutedLength) break;
+    let executed: (typeof matched)[number] | undefined;
+    for (const candidate of matched) {
+      const { uiKeyBind, seqLength, chordCount } = candidate;
+      if (executed && (seqLength < executed.seqLength || chordCount < executed.chordCount)) break;
       if (!(await uiKeyBind.when(activeProject))) continue;
       uiKeyBind.onPress(uiKeyBind.id.startsWith("ext:") && activeProject ? proxy(activeProject) : activeProject);
       if (uiKeyBind.onRelease && uiKeyBind.key.length === 1) {
         pressedSingleKeyBinds.add(uiKeyBind.key);
       }
-      maxExecutedLength = seqLength;
+      executed = candidate;
     }
-    if (maxExecutedLength >= 0) {
+    if (executed) {
       userEventQueue.clear();
       return true;
     }
@@ -536,7 +551,7 @@ export namespace KeyBindsUI {
       event.preventDefault();
       return;
     }
-    await check();
+    await check(event);
   }
   async function onMouseUp(event: MouseEvent) {
     for (const interceptor of inputInterceptors) {
@@ -545,14 +560,19 @@ export namespace KeyBindsUI {
   }
   async function onKeyDown(event: KeyboardEvent) {
     // 如果有文本输入元素获得焦点，不处理键盘事件
-    if (!shouldProcessKeyboardEvent()) {
+    if (event.isComposing || !shouldProcessKeyboardEvent()) {
       // 清空队列，防止事件积累
-      userEventQueue.clear();
+      clearPendingKeyInputs();
       return;
     }
     if (["control", "alt", "shift", "meta"].includes(event.key.toLowerCase())) return;
 
     const activeProject = getFocusedProject();
+    const chordKey = getChordKey(event);
+    if (chordKey && !event.repeat) {
+      if (heldChordKeys.size > 0) heldKeysByEvent.set(event, new Set(heldChordKeys));
+      heldChordKeys.add(chordKey);
+    }
 
     enqueue(event);
     if (await interceptInput(event)) {
@@ -587,7 +607,7 @@ export namespace KeyBindsUI {
     // 持续型路径处理后，不 return——序列型照常入队检测（两者不冲突）
 
     // ——序列型快捷键路径——
-    const sequenceExecuted = await check();
+    const sequenceExecuted = await check(event);
 
     // 只要有快捷键被执行，就阻止浏览器默认行为（防止 Tab 跳焦点、方向键滚动页面等）
     if (continuousExecuted || sequenceExecuted) {
@@ -595,6 +615,8 @@ export namespace KeyBindsUI {
     }
   }
   async function onKeyUp(event: KeyboardEvent) {
+    const chordKey = getChordKey(event);
+    if (chordKey) heldChordKeys.delete(chordKey);
     // 如果有文本输入元素获得焦点，不处理键盘事件
     if (!isMac && !shouldProcessKeyboardEvent()) {
       return;
@@ -638,7 +660,7 @@ export namespace KeyBindsUI {
   async function onWheel(event: WheelEvent) {
     enqueue(event);
     if (await interceptInput(event)) return;
-    await check();
+    await check(event);
   }
 
   /**

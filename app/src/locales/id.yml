@@ -1876,6 +1876,36 @@ visualSettingsGroup:
     title: Pengaturan Latar Belakang
 
 keyBinds:
+  toggleLeftMouseDrawingMode:
+    title: Alihkan mode tombol kiri tetikus
+    description: Beralih antara memilih dan memindahkan, dan menggambar.
+  toggleRightMouseDragMode:
+    title: Alihkan mode seret tombol kanan tetikus
+    description: Beralih antara memotong objek dan menggeser tampilan.
+  moveMindMapSiblingUp:
+    title: Geser cabang satu posisi ke atas
+    description: Dalam mode seret cabang, tukar posisi dengan simpul atau grup sebelumnya pada sisi yang sama.
+  moveMindMapSiblingDown:
+    title: Geser cabang satu posisi ke bawah
+    description: Dalam mode seret cabang, tukar posisi dengan simpul atau grup berikutnya pada sisi yang sama.
+  selectHandwritingPen1: { title: Pilih pena 1 }
+  selectHandwritingPen2: { title: Pilih pena 2 }
+  selectHandwritingPen3: { title: Pilih pena 3 }
+  selectHandwritingPen4: { title: Pilih pena 4 }
+  selectHandwritingPen5: { title: Pilih pena 5 }
+  selectHandwritingPen6: { title: Pilih pena 6 }
+  selectHandwritingPen7: { title: Pilih pena 7 }
+  selectHandwritingPen8: { title: Pilih pena 8 }
+  selectHandwritingPen9: { title: Pilih pena 9 }
+  selectHandwritingEraser1: { title: Pilih penghapus 1 }
+  selectHandwritingEraser2: { title: Pilih penghapus 2 }
+  selectHandwritingEraser3: { title: Pilih penghapus 3 }
+  selectHandwritingEraser4: { title: Pilih penghapus 4 }
+  selectHandwritingEraser5: { title: Pilih penghapus 5 }
+  selectHandwritingEraser6: { title: Pilih penghapus 6 }
+  selectHandwritingEraser7: { title: Pilih penghapus 7 }
+  selectHandwritingEraser8: { title: Pilih penghapus 8 }
+  selectHandwritingEraser9: { title: Pilih penghapus 9 }
   title: Pengikatan Pintasan
   none: Tidak Ada Pintasan
   test:

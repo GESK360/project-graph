@@ -71,6 +71,94 @@ function isMovableBranch(branch: ConnectableEntity[]) {
   );
 }
 
+function getMovedBranchEntities(branch: ConnectableEntity[]): Set<Entity> {
+  const moved = new Set<Entity>(branch);
+  for (const node of moved) {
+    if (node instanceof Section) {
+      for (const member of node.children) moved.add(member);
+    }
+  }
+  return moved;
+}
+
+function moveWithoutSectionReflow(project: Project, move: () => void) {
+  // Intermediate positions must not resize containing sections while the branches are being moved.
+  project.sectionMoveDepth++;
+  try {
+    move();
+  } finally {
+    project.sectionMoveDepth--;
+  }
+}
+
+function getBranchSide(edge: LineEdge): MindMapSide {
+  const anchoredSide = sides.find((side) => edgeOnSide[side](edge));
+  return (
+    anchoredSide ??
+    getMindMapSide(
+      edge.target.collisionBox.getRectangle().center.subtract(edge.source.collisionBox.getRectangle().center),
+    )
+  );
+}
+
+export function moveMindMapSibling(project: Project, node: ConnectableEntity, direction: -1 | 1) {
+  const { graphMethods, stageManager, sectionMethods, entityMoveManager, historyManager } = project;
+  const isTreeEdge = (edge: Edge): edge is LineEdge => edge instanceof LineEdge && edge.lineType !== "dashed";
+  const parents = graphMethods.getIncomingEdges(node).filter(isTreeEdge);
+  if (parents.length !== 1) return;
+  const [incoming] = parents;
+  const parent = incoming.source;
+  const side = getBranchSide(incoming);
+  const axis = isHorizontal(side) ? "y" : "x";
+  const center = (member: ConnectableEntity) => member.collisionBox.getRectangle().center[axis];
+  const siblings = [
+    ...new Set(
+      graphMethods
+        .getOutgoingEdges(parent)
+        .filter(isTreeEdge)
+        .filter((edge) => getBranchSide(edge) === side)
+        .map((edge) => edge.target),
+    ),
+  ]
+    .filter(
+      (member) =>
+        !stageManager.isHiddenByBranchCollapse(member) && !sectionMethods.isEntityHiddenByBigTitleSection(member),
+    )
+    .sort((a, b) => center(a) - center(b));
+  const index = siblings.indexOf(node);
+  const neighbor = siblings[index + direction];
+  if (index < 0 || !neighbor || center(neighbor) === center(node)) return;
+
+  const [first, second] = direction < 0 ? [neighbor, node] : [node, neighbor];
+  const firstBranch = graphMethods.getSuccessorSet(first, true, true);
+  const secondBranch = graphMethods.getSuccessorSet(second, true, true);
+  if (!isMovableBranch(firstBranch) || !isMovableBranch(secondBranch)) return;
+  const firstMoved = getMovedBranchEntities(firstBranch);
+  const secondMoved = getMovedBranchEntities(secondBranch);
+  if (firstMoved.has(parent) || secondMoved.has(parent) || [...firstMoved].some((entity) => secondMoved.has(entity)))
+    return;
+
+  const bounds = (members: ConnectableEntity[]) =>
+    Rectangle.getBoundingRectangle(members.map((member) => member.collisionBox.getRectangle()));
+  const firstBounds = bounds(firstBranch);
+  const secondBounds = bounds(secondBranch);
+  const firstEnd = firstBounds.location[axis] + firstBounds.size[axis];
+  const secondStart = secondBounds.location[axis];
+  const gap = center(second) - center(first);
+  // Swap the two occupied intervals when they are disjoint so branches of different sizes keep their spacing.
+  const firstDelta = firstEnd <= secondStart ? secondStart + secondBounds.size[axis] - firstEnd : gap;
+  const secondDelta = firstEnd <= secondStart ? firstBounds.location[axis] - secondStart : -gap;
+  const offset = (delta: number) => (axis === "y" ? new Vector(0, delta) : new Vector(delta, 0));
+  moveWithoutSectionReflow(project, () => {
+    entityMoveManager.moveWithChildren(first, offset(firstDelta), true);
+    entityMoveManager.moveWithChildren(second, offset(secondDelta), true);
+  });
+  if ([...firstMoved, ...secondMoved].some((entity) => entity instanceof Section || entity.parentSection)) {
+    stageManager.updateReferences();
+  }
+  historyManager.recordStep();
+}
+
 export function reflowMindMapTree(project: Project, node: ConnectableEntity, previousCenter?: Vector) {
   const [root] = project.graphMethods.getRoots(node, true);
   if (!root) return;
@@ -115,12 +203,7 @@ function reflowBranch(
     edge.sourceRectangleRate = source.clone();
     edge.targetRectangleRate = target.clone();
   }
-  project.sectionMoveDepth++;
-  try {
-    autoLayoutFastTree.autoLayoutFastTreeMode(root);
-  } finally {
-    project.sectionMoveDepth--;
-  }
+  moveWithoutSectionReflow(project, () => autoLayoutFastTree.autoLayoutFastTreeMode(root));
   if (unanchored.length || tree.some((member) => member instanceof Section || member.parentSection)) {
     stageManager.updateReferences();
   }
@@ -222,7 +305,7 @@ export class MindMapDrag {
     const carried = new Map(
       candidates.map((candidate) => [
         candidate,
-        this.getMovedEntities(graphMethods.getSuccessorSet(candidate, true, true)),
+        getMovedBranchEntities(graphMethods.getSuccessorSet(candidate, true, true)),
       ]),
     );
     this.roots = candidates.filter(
@@ -296,7 +379,7 @@ export class MindMapDrag {
 
   private getDropSection(ghostCenter: Vector, branch: ConnectableEntity[]): Section | null {
     const { sectionMethods, stageManager } = this.project;
-    const movedEntities = this.getMovedEntities(branch);
+    const movedEntities = getMovedBranchEntities(branch);
     return (
       sectionMethods
         .getSectionsByInnerLocation(ghostCenter, movedEntities)
@@ -309,28 +392,8 @@ export class MindMapDrag {
     );
   }
 
-  private getMovedEntities(branch: ConnectableEntity[]): Set<Entity> {
-    const moved = new Set<Entity>(branch);
-    for (const node of moved) {
-      if (node instanceof Section) {
-        for (const member of node.children) moved.add(member);
-      }
-    }
-    return moved;
-  }
-
   private canReplaceIncomingEdges(edges: Edge[]) {
     return edges.every((edge) => !this.project.sectionMethods.isObjectBeLockedBySection(edge));
-  }
-
-  private moveWithoutSectionReflow(move: () => void) {
-    // Intermediate layout positions must not resize old sections or push neighboring nodes around.
-    this.project.sectionMoveDepth++;
-    try {
-      move();
-    } finally {
-      this.project.sectionMoveDepth--;
-    }
   }
 
   public update(world: Vector) {
@@ -501,7 +564,7 @@ export class MindMapDrag {
       const ghostCenter = this.node.collisionBox.getRectangle().center.add(offset);
       const targetSection = this.getDropSection(ghostCenter, branch);
       const refreshSections = targetSection || branch.some((node) => node instanceof Section || node.parentSection);
-      this.moveWithoutSectionReflow(() => entityMoveManager.moveWithChildrenOf(this.roots, offset, true));
+      moveWithoutSectionReflow(this.project, () => entityMoveManager.moveWithChildrenOf(this.roots, offset, true));
       if (targetSection || this.roots.some((root) => root.parentSection)) this.setBranchSection(branch, targetSection);
       if (refreshSections) stageManager.updateReferences();
       historyManager.recordStep();
@@ -532,7 +595,7 @@ export class MindMapDrag {
     const targetSection = parent.parentSection;
     const branches = roots.map((root) => graphMethods.getSuccessorSet(root, true, true));
     const incoming = roots.flatMap((root) => graphMethods.getIncomingEdges(root));
-    this.moveWithoutSectionReflow(() => {
+    moveWithoutSectionReflow(this.project, () => {
       roots.forEach((root, index) => this.positionBranch(root, branches[index], parent, side));
     });
     this.setBranchSection(branches.flat(), targetSection);
@@ -550,7 +613,7 @@ export class MindMapDrag {
         true,
       );
     }
-    this.moveWithoutSectionReflow(() => {
+    moveWithoutSectionReflow(this.project, () => {
       const laidOut = this.layoutDestinationTree(attachment);
       const excluded = new Set(roots);
       for (const [index, root] of roots.entries()) {

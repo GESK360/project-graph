@@ -1570,6 +1570,36 @@ visualSettingsGroup:
     title: 背景设置
 
 keyBinds:
+  toggleLeftMouseDrawingMode:
+    title: 切换左键模式
+    description: 在「选择并移动」和「画图」之间切换。
+  toggleRightMouseDragMode:
+    title: 切换右键拖拽背景模式
+    description: 在「斩断并删除物体」和「移动视野」之间切换。
+  moveMindMapSiblingUp:
+    title: 同级分支上移一位
+    description: 在分支拖拽模式下，与同侧的上一个同级节点或分组框换位。
+  moveMindMapSiblingDown:
+    title: 同级分支下移一位
+    description: 在分支拖拽模式下，与同侧的下一个同级节点或分组框换位。
+  selectHandwritingPen1: { title: 选择第 1 支画笔 }
+  selectHandwritingPen2: { title: 选择第 2 支画笔 }
+  selectHandwritingPen3: { title: 选择第 3 支画笔 }
+  selectHandwritingPen4: { title: 选择第 4 支画笔 }
+  selectHandwritingPen5: { title: 选择第 5 支画笔 }
+  selectHandwritingPen6: { title: 选择第 6 支画笔 }
+  selectHandwritingPen7: { title: 选择第 7 支画笔 }
+  selectHandwritingPen8: { title: 选择第 8 支画笔 }
+  selectHandwritingPen9: { title: 选择第 9 支画笔 }
+  selectHandwritingEraser1: { title: 选择第 1 个橡皮 }
+  selectHandwritingEraser2: { title: 选择第 2 个橡皮 }
+  selectHandwritingEraser3: { title: 选择第 3 个橡皮 }
+  selectHandwritingEraser4: { title: 选择第 4 个橡皮 }
+  selectHandwritingEraser5: { title: 选择第 5 个橡皮 }
+  selectHandwritingEraser6: { title: 选择第 6 个橡皮 }
+  selectHandwritingEraser7: { title: 选择第 7 个橡皮 }
+  selectHandwritingEraser8: { title: 选择第 8 个橡皮 }
+  selectHandwritingEraser9: { title: 选择第 9 个橡皮 }
   title: 快捷键绑定
   none: 未绑定快捷键
   test:

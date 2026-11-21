@@ -16,7 +16,7 @@ import { Rectangle } from "@graphif/shapes";
 import { describe, expect, it, vi } from "vitest";
 import { ControllerEntityClickSelectAndMoveClass } from "./ControllerEntityClickSelectAndMove";
 import { ControllerNodeConnectionClass } from "./ControllerNodeConnection";
-import { MindMapDrag, mindMapPorts, reflowMindMapTree } from "./MindMapDrag";
+import { MindMapDrag, mindMapPorts, moveMindMapSibling, reflowMindMapTree } from "./MindMapDrag";
 import { ControllerUtils } from "./utilsControl";
 
 vi.mock("@/core/Project", () => ({ Project: class {}, service: () => () => {} }));
@@ -143,6 +143,61 @@ function setup() {
   });
   return { project, parent, root, node, section, edges, recordStep, pressingKeySet, changeEdgesConnectLocation };
 }
+
+describe("mind-map sibling shortcuts", () => {
+  it("swaps the third and second branches and can swap them back", () => {
+    const { project, parent, node, edges, recordStep } = setup();
+    const siblings = Array.from({ length: 5 }, (_, i) => node(250, -60 + i * 45));
+    const otherSide = node(-190, 30);
+    const descendant = node(480, 30);
+    edges.push(
+      ...siblings.map((child) => new LineEdge(project, { associationList: [parent, child] })),
+      new LineEdge(project, { associationList: [parent, otherSide] }),
+      new LineEdge(project, { associationList: [siblings[2], descendant] }),
+    );
+    const originalEdges = [...edges];
+    const y = (member: ConnectableEntity) => member.collisionBox.getRectangle().top;
+    const order = () => [...siblings].sort((a, b) => y(a) - y(b)).map((member) => siblings.indexOf(member) + 1);
+    moveMindMapSibling(project, siblings[2], -1);
+    expect(order()).toEqual([1, 3, 2, 4, 5]);
+    expect(y(descendant)).toBe(y(siblings[2]));
+    expect(y(otherSide)).toBe(30);
+    expect(edges).toEqual(originalEdges);
+    expect(recordStep).toHaveBeenCalledOnce();
+
+    moveMindMapSibling(project, siblings[2], 1);
+    expect(order()).toEqual([1, 2, 3, 4, 5]);
+    expect(y(descendant)).toBe(30);
+    moveMindMapSibling(project, siblings[0], -1);
+    expect(recordStep).toHaveBeenCalledTimes(2);
+  });
+
+  it("moves section contents and keeps spacing for branches of different heights", () => {
+    const { project, parent, node, section, edges, recordStep } = setup();
+    const first = node(250, -80);
+    const inner = node(270, 65);
+    const group = section(inner, node(270, 115));
+    const { source, target } = mindMapPorts.right;
+    for (const branch of [first, group]) {
+      edges.push(
+        new LineEdge(project, {
+          associationList: [parent, branch],
+          sourceRectangleRate: source.clone(),
+          targetRectangleRate: target.clone(),
+        }),
+      );
+    }
+    const rect = (member: ConnectableEntity) => member.collisionBox.getRectangle();
+    const gap = rect(group).top - rect(first).bottom;
+    const innerOffset = rect(inner).top - rect(group).top;
+    const top = rect(first).top;
+    moveMindMapSibling(project, group, -1);
+    expect(rect(group).top).toBe(top);
+    expect(rect(first).top - rect(group).bottom).toBe(gap);
+    expect(rect(inner).top - rect(group).top).toBe(innerOffset);
+    expect(recordStep).toHaveBeenCalledOnce();
+  });
+});
 
 describe("mind-map drag", () => {
   it.each(["preserve", "align"] as const)("spaces and aligns the %s branch inside nested sections", (mode) => {
