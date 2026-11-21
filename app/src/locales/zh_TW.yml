@@ -211,6 +211,14 @@ contextMenu:
   confirm: 確定
   cancel: 取消
 
+tabMenu:
+  pin: 固定標籤頁
+  unpin: 取消固定
+  bulkClose: 批量關閉標籤頁
+  closeLeft: 關閉左側標籤頁
+  closeOthers: 關閉其它標籤頁
+  closeRight: 關閉右側標籤頁
+
 settings:
   title: 設置
   categories:
@@ -241,6 +249,7 @@ settings:
     visual:
       title: 視覺
       basic: 基礎
+      tabManagement: 標籤頁管理
       background: 背景
       node: 節點樣式
       edge: 連線樣式
@@ -318,6 +327,18 @@ settings:
     description: |
       控制“最近打開的文件”面板中是否顯示工程文件縮略圖。
       關閉後可減少界面干擾。
+  showFileOpenSuccessToast:
+    title: 打開文件提示
+    description: 顯示打開文件的進度，以及打開成功後的耗時、舞臺對象和附件數量。
+  tabLimitEnabled:
+    title: 啟用標籤頁上限
+    description: 超限時，優先關閉最早打開的非固定標籤頁。保留當前標籤頁和有未保存更改的工程。
+  tabLimit:
+    title: 標籤頁上限
+    description: 同時保留的頂部標籤頁數量，默認 6 個。
+  tabLimitIncludesPinned:
+    title: 計入固定標籤頁
+    description: 將固定標籤頁計入上限。固定標籤頁仍會被保留。
   showMinimap:
     title: 顯示小地圖
     description: |

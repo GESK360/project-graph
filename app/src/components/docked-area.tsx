@@ -195,7 +195,7 @@ export default function DockedArea({
   isClassroomMode,
 }: {
   onTabClick: (tab: Tab) => void;
-  onTabClose: (tab: Tab) => void;
+  onTabClose: (tab: Tab) => void | boolean | Promise<void | boolean>;
   onTitleBarMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void;
   isClassroomMode: boolean;
 }) {
@@ -268,7 +268,8 @@ export default function DockedArea({
           root?.type === "split" && "border-background outline-border border outline-1 -outline-offset-1",
           root?.type === "split" && activeGroupId === node.id && "outline-primary/60",
         )}
-        onPointerDownCapture={() => {
+        onPointerDownCapture={(event) => {
+          if (!event.currentTarget.contains(event.target as Node)) return;
           if (activeTab && store.get(activeTabAtom) !== activeTab) TabWorkspace.focus(activeTab.id);
         }}
       >
@@ -280,6 +281,8 @@ export default function DockedArea({
               "group [&_[data-pg-tab-bar]]:cursor-inherit pointer-events-auto h-[var(--pg-titlebar-band-h)] cursor-grab active:cursor-grabbing data-[pg-tabs-separate-row]:h-auto",
           )}
           onMouseDown={(event) => {
+            // React portals bubble here even when the menu is outside the title bar in the DOM.
+            if (!event.currentTarget.contains(event.target as Node)) return;
             if (atWindowTop && !(event.target as Element).closest("[data-pg-docked-tab-id]")) {
               onTitleBarMouseDown(event);
             }

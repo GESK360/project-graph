@@ -16,6 +16,7 @@ export abstract class Tab extends React.Component<Record<string, never>, Record<
   floatingRect = new Rectangle(Vector.getZero(), Vector.same(100));
   zIndex = 0;
   closing = false;
+  pinned = false;
   canDock = true;
   closable = true;
   closeOnEscape = true;

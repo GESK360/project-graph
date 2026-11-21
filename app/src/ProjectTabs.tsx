@@ -1,7 +1,7 @@
 import { Vector } from "@graphif/data-structures";
 import { cn } from "@udecode/cn";
 import { useAtomValue } from "jotai";
-import { CircleAlert, CloudUpload, X } from "lucide-react";
+import { CircleAlert, CloudUpload, Pin, X } from "lucide-react";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import TabContextMenu from "./components/tab-context-menu";
@@ -28,7 +28,7 @@ export const ProjectTabs = memo(function ProjectTabs({
   tabs: Tab[];
   activeTab: Tab | undefined;
   onTabClick: (tab: Tab) => void;
-  onTabClose: (tab: Tab) => void;
+  onTabClose: (tab: Tab) => void | boolean | Promise<void | boolean>;
   isClassroomMode: boolean;
 }) {
   const tabsContainerRef = useRef<HTMLDivElement>(null);
@@ -146,6 +146,7 @@ export const ProjectTabs = memo(function ProjectTabs({
             }}
           >
             <span className="flex items-center gap-1 text-xs">
+              {tab.pinned && <Pin aria-hidden="true" className="size-3 shrink-0" />}
               {tab.icon && <tab.icon className="size-3" />}
               {(() => {
                 const name = tab.title;

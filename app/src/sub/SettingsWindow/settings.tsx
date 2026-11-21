@@ -260,6 +260,7 @@ export const categories = {
       "windowBackgroundOpacityAfterCloseClickThrough",
       "uiScalePercent",
     ],
+    tabManagement: ["showFileOpenSuccessToast", "tabLimitEnabled", "tabLimit", "tabLimitIncludesPinned"],
     background: [
       "isRenderCenterPointer",
       "centerCrosshairColor",
@@ -488,6 +489,7 @@ export const categoryIcons = {
   visual: {
     icon: Eye,
     basic: Proportions,
+    tabManagement: RectangleHorizontal,
     background: Layers,
     node: RectangleHorizontal,
     edge: MoveUpRight,

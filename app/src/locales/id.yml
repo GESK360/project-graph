@@ -202,6 +202,14 @@ contextMenu:
   confirm: OK
   cancel: Batal
 
+tabMenu:
+  pin: Sematkan tab
+  unpin: Lepas sematan tab
+  bulkClose: Tutup beberapa tab
+  closeLeft: Tutup tab di sebelah kiri
+  closeOthers: Tutup tab lainnya
+  closeRight: Tutup tab di sebelah kanan
+
 settings:
   title: Pengaturan
   categories:
@@ -231,6 +239,7 @@ settings:
     visual:
       title: Visual
       basic: Dasar
+      tabManagement: Pengelolaan tab
       background: Latar Belakang
       node: Gaya Node
       edge: Gaya Garis
@@ -298,6 +307,18 @@ settings:
     title: Tampilkan Thumbnail di File Terbaru
     description: |
       Mengontrol apakah menampilkan thumbnail proyek di panel "File Terbaru".
+  showFileOpenSuccessToast:
+    title: Notifikasi pembukaan file
+    description: Tampilkan progres, waktu pemuatan, jumlah objek kanvas, dan jumlah lampiran saat membuka file.
+  tabLimitEnabled:
+    title: Aktifkan batas tab
+    description: Tutup tab terlama yang tidak disematkan saat batas terlampaui. Tab aktif dan proyek dengan perubahan yang belum disimpan tetap terbuka.
+  tabLimit:
+    title: Batas tab
+    description: Jumlah tab atas yang dapat dibuka sekaligus. Bawaan 6 tab.
+  tabLimitIncludesPinned:
+    title: Hitung tab yang disematkan
+    description: Sertakan tab yang disematkan dalam batas. Tab yang disematkan tetap terbuka.
   showMinimap:
     title: Tampilkan Peta Mini
     description: |

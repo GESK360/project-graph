@@ -167,7 +167,12 @@ export async function closeEmptyDrafts(except?: Project) {
     .get(tabsAtom)
     .filter(
       (tab): tab is Project =>
-        tab instanceof Project && tab !== except && !tab.closing && tab.isDraft && tab.stage.length === 0,
+        tab instanceof Project &&
+        tab !== except &&
+        !tab.closing &&
+        !tab.pinned &&
+        tab.isDraft &&
+        tab.stage.length === 0,
     );
   await Promise.all(empties.map((tab) => TabWorkspace.close(tab.id)));
 }
@@ -313,136 +318,127 @@ async function openFile(uri: URI, source: string): Promise<Project | undefined> 
     throw e;
   }
 
+  const openToast = Settings.showFileOpenSuccessToast ? toast.loading("正在打开文件...") : undefined;
   try {
-    await toast
-      .promise(
-        async () => {
-          await tab.init();
-          if (tab instanceof Project) {
-            if (tab.projectState !== ProjectState.Saved) {
-              throw new Error("USER_CANCELLED");
-            }
-            loadAllServicesAfterInit(tab);
-            tab.activateOpenRuntimeHost();
-            if (tab.wasUpgraded) {
-              tab.projectState = ProjectState.Unsaved;
-            }
-          }
-        },
-        {
-          loading: "正在打开文件...",
-          success: async () => {
-            const readFileTime = performance.now() - initializationStartedAt;
-            store.set(tabsAtom, [...store.get(tabsAtom), tab]);
-            finishOpeningProject(tab instanceof Project ? tab : undefined);
-            store.set(activeTabAtom, tab);
-            const project = tab instanceof Project ? tab : undefined;
-            await RecentFileManager.addRecentFileByUri(uri);
-            if (
-              isMac &&
-              Settings.showRecentFilesThumbnails &&
-              uri.scheme === "file" &&
-              uri.fsPath.toLowerCase().endsWith(".prg")
-            ) {
-              void ensurePrgThumbnailCached(uri.fsPath);
-            }
-            Telemetry.event("打开文件", {
-              loadServiceTime,
-              readFileTime,
-              source,
-            });
-
-            // 处理同名TXT文件内容（仅在用户直接打开文件且设置项开启时执行，生成双链时跳过）
-            if (
-              project &&
-              Settings.autoImportTxtFileWhenOpenPrg &&
-              source !== "ReferenceBlockNode跳转打开-prg文件" &&
-              source !== "ReferencesWindow跳转打开-prg文件"
-            ) {
-              setTimeout(async () => {
-                try {
-                  // 构建TXT文件路径
-                  const prgPath = uri.fsPath;
-                  const txtPath = prgPath.replace(/\.prg$/, ".txt");
-
-                  // 检查TXT文件是否存在
-                  if (await exists(txtPath)) {
-                    // 读取TXT文件内容
-                    const txtContent = await readFile(txtPath);
-                    const lines = new TextDecoder()
-                      .decode(txtContent)
-                      .split("\n")
-                      .filter((line) => line.trim() !== "");
-
-                    if (lines.length > 0 && tab instanceof Project) {
-                      // 获取舞台上所有实体
-                      const entities = tab.stageManager.getEntities();
-
-                      // 计算外接矩形
-                      let startY = 0;
-                      if (entities.length > 0) {
-                        const boundingRect = Rectangle.getBoundingRectangle(
-                          entities.map((entity: any) => entity.collisionBox.getRectangle()),
-                        );
-                        startY = boundingRect.bottom;
-                      }
-
-                      // 创建并添加文本节点
-                      for (let i = 0; i < lines.length; i++) {
-                        const line = lines[i];
-                        const textNode = new TextNode(tab, {
-                          text: line,
-                          collisionBox: new CollisionBox([
-                            new Rectangle(new Vector(0, startY + i * 100), new Vector(300, 100)),
-                          ]),
-                          sizeAdjust: "auto",
-                        });
-                        tab.stageManager.add(textNode);
-                      }
-
-                      // 清空TXT文件内容，避免下次打开时重复吸入
-                      await writeFile(txtPath, new TextEncoder().encode(""));
-
-                      // 显示Toast提示
-                      toast.success(`已从同名TXT文件导入 ${lines.length} 条内容到舞台左下角`);
-
-                      // 发送遥测
-                      Telemetry.event("txt_content_imported", {
-                        line_count: lines.length,
-                      });
-
-                      // 设置项目状态为未保存
-                      tab.projectState = ProjectState.Unsaved;
-                    }
-                  }
-                } catch (e) {
-                  console.warn("处理TXT文件时发生错误:", e);
-                }
-              }, 200);
-            }
-
-            return `耗时 ${readFileTime}ms${project ? `，共 ${project.stage.length} 个舞台对象，${project.attachments.size} 个附件` : ""}`;
-          },
-          error: (e) => {
-            if (e instanceof Error && e.message === "USER_CANCELLED") {
-              return "已取消打开文件";
-            }
-            Telemetry.event("打开文件失败", {
-              error: String(e),
-            });
-            return `读取时发生错误，已发送错误报告，可在群内联系开发者\n${String(e)}`;
-          },
-        },
-      )
-      .unwrap();
+    await tab.init();
+    if (tab instanceof Project) {
+      if (tab.projectState !== ProjectState.Saved) {
+        throw new Error("USER_CANCELLED");
+      }
+      loadAllServicesAfterInit(tab);
+      tab.activateOpenRuntimeHost();
+      if (tab.wasUpgraded) {
+        tab.projectState = ProjectState.Unsaved;
+      }
+    }
   } catch (e) {
     finishOpeningProject(undefined);
     await tab.dispose();
     if (e instanceof Error && e.message === "USER_CANCELLED") {
-      return undefined; // 用户取消，静默处理
+      if (openToast !== undefined) toast.dismiss(openToast);
+      return undefined;
     }
+    Telemetry.event("打开文件失败", { error: String(e) });
+    toast.error(`读取时发生错误，已发送错误报告，可在群内联系开发者\n${String(e)}`, { id: openToast });
     throw e;
   }
+
+  const readFileTime = performance.now() - initializationStartedAt;
+  store.set(tabsAtom, [...store.get(tabsAtom), tab]);
+  finishOpeningProject(tab instanceof Project ? tab : undefined);
+  store.set(activeTabAtom, tab);
+  const project = tab instanceof Project ? tab : undefined;
+  if (Settings.showFileOpenSuccessToast) {
+    toast.success(
+      `耗时 ${readFileTime.toFixed(1)}ms${project ? `，共 ${project.stage.length} 个舞台对象，${project.attachments.size} 个附件` : ""}`,
+      { id: openToast },
+    );
+  } else if (openToast !== undefined) {
+    toast.dismiss(openToast);
+  }
+  await RecentFileManager.addRecentFileByUri(uri);
+  if (
+    isMac &&
+    Settings.showRecentFilesThumbnails &&
+    uri.scheme === "file" &&
+    uri.fsPath.toLowerCase().endsWith(".prg")
+  ) {
+    void ensurePrgThumbnailCached(uri.fsPath);
+  }
+  Telemetry.event("打开文件", {
+    loadServiceTime,
+    readFileTime,
+    source,
+  });
+
+  // 处理同名TXT文件内容（仅在用户直接打开文件且设置项开启时执行，生成双链时跳过）
+  if (
+    project &&
+    Settings.autoImportTxtFileWhenOpenPrg &&
+    source !== "ReferenceBlockNode跳转打开-prg文件" &&
+    source !== "ReferencesWindow跳转打开-prg文件"
+  ) {
+    setTimeout(async () => {
+      if (tab.closing) return;
+      try {
+        // 构建TXT文件路径
+        const prgPath = uri.fsPath;
+        const txtPath = prgPath.replace(/\.prg$/, ".txt");
+
+        // 检查TXT文件是否存在
+        if (await exists(txtPath)) {
+          // 读取TXT文件内容
+          const txtContent = await readFile(txtPath);
+          const lines = new TextDecoder()
+            .decode(txtContent)
+            .split("\n")
+            .filter((line) => line.trim() !== "");
+
+          if (lines.length > 0 && tab instanceof Project) {
+            // 获取舞台上所有实体
+            const entities = tab.stageManager.getEntities();
+
+            // 计算外接矩形
+            let startY = 0;
+            if (entities.length > 0) {
+              const boundingRect = Rectangle.getBoundingRectangle(
+                entities.map((entity: any) => entity.collisionBox.getRectangle()),
+              );
+              startY = boundingRect.bottom;
+            }
+
+            // 创建并添加文本节点
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i];
+              const textNode = new TextNode(tab, {
+                text: line,
+                collisionBox: new CollisionBox([new Rectangle(new Vector(0, startY + i * 100), new Vector(300, 100))]),
+                sizeAdjust: "auto",
+              });
+              tab.stageManager.add(textNode);
+            }
+
+            // 清空TXT文件内容，避免下次打开时重复吸入
+            await writeFile(txtPath, new TextEncoder().encode(""));
+
+            // 显示Toast提示
+            toast.success(`已从同名TXT文件导入 ${lines.length} 条内容到舞台左下角`);
+
+            // 发送遥测
+            Telemetry.event("txt_content_imported", {
+              line_count: lines.length,
+            });
+
+            // 设置项目状态为未保存
+            tab.projectState = ProjectState.Unsaved;
+          }
+        }
+      } catch (e) {
+        console.warn("处理TXT文件时发生错误:", e);
+      }
+    }, 200);
+  }
+
   return tab as any;
 }
 

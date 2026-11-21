@@ -4,6 +4,7 @@ import { createTabGroup, FIXED_SIDE_GROUP_IDS, removeTabFromGroups, splitTabGrou
 import { store, tabGroupRootAtom } from "@/state";
 import { Provider } from "jotai";
 import React from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
@@ -16,6 +17,7 @@ vi.mock("@/ProjectTabs", () => ({
   ProjectTabs: () => (
     <div data-pg-tab-bar>
       <button data-pg-docked-tab-id="test-tab">Tab</button>
+      {createPortal(<div role="menuitem" data-test-tab-menu-item />, document.body)}
     </div>
   ),
 }));
@@ -122,6 +124,10 @@ it("drags the window from titlebar space while leaving tab mouse events alone", 
   const bar = container.querySelector<HTMLElement>("[data-pg-window-top-tabs]")!;
   await React.act(async () =>
     bar.querySelector("button")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
+  );
+  expect(onTitleBarMouseDown).not.toHaveBeenCalled();
+  await React.act(async () =>
+    document.querySelector("[data-test-tab-menu-item]")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })),
   );
   expect(onTitleBarMouseDown).not.toHaveBeenCalled();
   await React.act(async () => bar.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));

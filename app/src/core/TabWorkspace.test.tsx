@@ -18,7 +18,7 @@ vi.mock("@/components/ui/dialog", () => ({ Dialog: { buttons: vi.fn() } }));
 
 import { Tab } from "./Tab";
 import { createTabGroup, findTabGroupByTabId, FIXED_SIDE_GROUP_IDS } from "./TabGroup";
-import { TabWorkspace } from "./TabWorkspace";
+import { dockWorkspacePanel, TabWorkspace } from "./TabWorkspace";
 
 class TestTab extends Tab {
   getComponent() {
@@ -53,6 +53,53 @@ describe("TabWorkspace", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     document.body.replaceChildren();
+  });
+
+  it("skips fixed tabs across all three context-menu close actions", () => {
+    const left = TabWorkspace.open(new TestTab({}));
+    const pinned = TabWorkspace.open(new TestTab({}));
+    const anchor = TabWorkspace.open(new TestTab({}));
+    const right = TabWorkspace.open(new TestTab({}));
+    TabWorkspace.togglePinned(pinned.id);
+
+    expect(TabWorkspace.canCloseInBulk(pinned)).toBe(false);
+    expect(TabWorkspace.getTabsToClose(anchor.id, "left")).toEqual([left]);
+    expect(TabWorkspace.getTabsToClose(anchor.id, "others")).toEqual([left, right]);
+    expect(TabWorkspace.getTabsToClose(anchor.id, "right")).toEqual([right]);
+
+    TabWorkspace.togglePinned(pinned.id);
+    expect(TabWorkspace.getTabsToClose(anchor.id, "left")).toEqual([left, pinned]);
+  });
+
+  it("docks a floating tab in the editor when the active group is the workspace sidebar", () => {
+    const editor = openTestTab();
+    const sidebar = TabWorkspace.open(new TestTab({}));
+    dockWorkspacePanel(sidebar.id);
+    const floating = new TestTab({});
+    floating.layout = "floating";
+    TabWorkspace.open(floating);
+
+    expect(store.get(activeGroupIdAtom)).toBe(FIXED_SIDE_GROUP_IDS.workspace);
+    expect(TabWorkspace.dock(floating.id)).toBe(true);
+    const groups = store.get(tabGroupRootAtom);
+    expect(findTabGroupByTabId(groups, floating.id)?.id).toBe(findTabGroupByTabId(groups, editor.id)?.id);
+    expect(findTabGroupByTabId(groups, sidebar.id)?.tabIds).toEqual([sidebar.id]);
+  });
+
+  it.each([false, true])("closes old eligible tabs when count pinned is %s", async (includePinned) => {
+    const pinned = TabWorkspace.open(new TestTab({}));
+    TabWorkspace.togglePinned(pinned.id);
+    const unsaved = TabWorkspace.open(new TestTab({}));
+    const oldest = TabWorkspace.open(new TestTab({}));
+    const second = TabWorkspace.open(new TestTab({}));
+    const active = TabWorkspace.open(new TestTab({}));
+
+    TabWorkspace.enforceTabLimit(3, includePinned, (tab) => tab !== unsaved);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(store.get(tabsAtom)).toEqual([pinned, unsaved, ...(includePinned ? [] : [second]), active]);
+    expect(store.get(tabsAtom)).not.toContain(oldest);
+    expect(store.get(activeTabAtom)).toBe(active);
   });
 
   it.each(["horizontal", "vertical"] as const)(

@@ -129,6 +129,46 @@ function removeFromGroup(tabId: string) {
 }
 
 export namespace TabWorkspace {
+  export function togglePinned(id: string) {
+    const tab = get(id);
+    if (!tab || tab.closing || tab.layout !== "docked") return;
+    tab.pinned = !tab.pinned;
+    store.set(tabsAtom, [...store.get(tabsAtom)]);
+  }
+
+  export function canCloseInBulk(tab: Tab) {
+    return tab.closable && !tab.pinned && !tab.closing;
+  }
+
+  export function getTabsToClose(id: string, direction: "left" | "others" | "right") {
+    const group = findTabGroupByTabId(store.get(tabGroupRootAtom), id);
+    if (!group) return [];
+    const index = group.tabIds.indexOf(id);
+    return group.tabIds
+      .filter((tabId, i) => tabId !== id && (direction === "others" || (direction === "left" ? i < index : i > index)))
+      .flatMap((tabId) => {
+        const tab = get(tabId);
+        return tab && canCloseInBulk(tab) ? [tab] : [];
+      });
+  }
+
+  export function enforceTabLimit(limit: number, includePinned: boolean, canAutoClose: (tab: Tab) => boolean) {
+    const mainTabIds = new Set(
+      getTabGroups(store.get(tabGroupRootAtom))
+        .filter((group) => !isFixedSideGroupId(group.id))
+        .flatMap((group) => group.tabIds),
+    );
+    const counted = store
+      .get(tabsAtom)
+      .filter((tab) => mainTabIds.has(tab.id) && !tab.closing && (includePinned || !tab.pinned));
+    const excess = counted.length - limit;
+    if (excess <= 0) return;
+
+    const active = store.get(activeDockedTabAtom);
+    const candidates = counted.filter((tab) => tab !== active && canCloseInBulk(tab) && canAutoClose(tab));
+    for (const tab of candidates.slice(0, excess)) void close(tab.id);
+  }
+
   export function synchronizeGroups() {
     const dockedTabs = store.get(tabsAtom).filter((tab) => tab.layout === "docked" && !tab.closing);
     let root = store.get(tabGroupRootAtom);
@@ -250,7 +290,9 @@ export namespace TabWorkspace {
     removeFromGroup(id);
     tab.layout = "docked";
     let root = store.get(tabGroupRootAtom);
-    const target = findTabGroup(root, groupId ?? store.get(activeGroupIdAtom) ?? "") ?? getTabGroups(root)[0];
+    const activeGroupId = store.get(activeGroupIdAtom) ?? "";
+    const targetGroupId = groupId ?? (isFixedSideGroupId(activeGroupId) ? "" : activeGroupId);
+    const target = findTabGroup(root, targetGroupId) ?? preferMainGroup(root);
     if (target) {
       root = insertTabIntoGroup(root, target.id, id, index);
     } else {

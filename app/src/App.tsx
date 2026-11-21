@@ -57,6 +57,9 @@ export default function App() {
   const [telemetryEventSent, setTelemetryEventSent] = useState(false);
   const [isClassroomMode, setIsClassroomMode] = useAtom(isClassroomModeAtom);
   const [uiScalePercent, setUiScalePercent] = useState(Settings.uiScalePercent);
+  const [tabLimitEnabled] = Settings.use("tabLimitEnabled");
+  const [tabLimit] = Settings.use("tabLimit");
+  const [tabLimitIncludesPinned] = Settings.use("tabLimitIncludesPinned");
 
   const contextMenuTriggerRef = useRef<HTMLDivElement>(null);
 
@@ -212,7 +215,14 @@ export default function App() {
 
   useEffect(() => {
     TabWorkspace.synchronizeGroups();
-  }, [tabs]);
+    if (tabLimitEnabled) {
+      TabWorkspace.enforceTabLimit(
+        tabLimit,
+        tabLimitIncludesPinned,
+        (tab) => !(tab instanceof Project) || (!tab.isSaving && tab.projectState !== ProjectState.Unsaved),
+      );
+    }
+  }, [tabs, tabLimitEnabled, tabLimit, tabLimitIncludesPinned]);
 
   // 关掉最后一个 Project 后：再创建空草稿并弹出欢迎窗（启动时无 Project 由 main 处理，这里只响应 true→false）
   const previousHadProjectRef = useRef(tabs.some((tab) => tab instanceof Project && !tab.closing));
@@ -265,7 +275,10 @@ export default function App() {
         try {
           for (const tab of tabs) {
             console.log("尝试关闭", tab);
-            await closeTab(tab);
+            if (!(await closeTab(tab))) {
+              Telemetry.event("关闭应用提示是否保存文件选择了取消");
+              return;
+            }
           }
         } catch {
           Telemetry.event("关闭应用提示是否保存文件选择了取消");
@@ -321,23 +334,19 @@ export default function App() {
         if (response === "save") {
           await tab.save();
         } else if (response === "cancel") {
-          throw new Error("取消操作");
+          return false;
         }
       }
     }
     await TabWorkspace.close(tab.id);
+    return true;
   };
 
   const handleTabClick = useCallback((tab: Tab) => {
     TabWorkspace.focus(tab.id);
   }, []);
 
-  const handleTabClose = useCallback(
-    async (tab: Tab) => {
-      await closeTab(tab);
-    },
-    [closeTab],
-  );
+  const handleTabClose = useCallback((tab: Tab) => closeTab(tab), [closeTab]);
 
   const zoomStyle = uiScalePercent !== 100 ? ({ zoom: `${uiScalePercent / 100}` } as React.CSSProperties) : undefined;
 

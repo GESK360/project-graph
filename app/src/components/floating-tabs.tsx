@@ -19,7 +19,7 @@ export default function FloatingTabs({
   onTabClose,
 }: {
   zoomStyle?: React.CSSProperties;
-  onTabClose: (tab: Tab) => void | Promise<void>;
+  onTabClose: (tab: Tab) => void | boolean | Promise<void | boolean>;
 }) {
   const floatingTabs = useAtomValue(tabsAtom).filter((tab) => tab.layout === "floating");
   const activeTab = useAtomValue(activeTabAtom);

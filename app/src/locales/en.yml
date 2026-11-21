@@ -176,8 +176,20 @@ about:
   - The team's representative colors are light blue and code green, symbolizing 
     a team culture that combines logical rationality with humor and fun.
 
+tabMenu:
+  pin: Pin tab
+  unpin: Unpin tab
+  bulkClose: Close multiple tabs
+  closeLeft: Close tabs to the left
+  closeOthers: Close other tabs
+  closeRight: Close tabs to the right
+
 settings:
   title: Settings
+  categories:
+    visual:
+      title: Visual
+      tabManagement: Tab management
   tabs:
     about: About
     visual: Visual
@@ -254,6 +266,18 @@ settings:
     title: Show Thumbnails in Recent Files
     description: |
       Controls whether to display project thumbnails in the "Recent Files" panel.
+  showFileOpenSuccessToast:
+    title: File opening notifications
+    description: Show loading progress and report load time, canvas objects, and attachments after a file opens.
+  tabLimitEnabled:
+    title: Enable tab limit
+    description: Close the oldest unpinned tabs when the limit is exceeded. Keep the current tab and projects with unsaved changes.
+  tabLimit:
+    title: Tab limit
+    description: Number of top tabs to keep open. The default is 6.
+  tabLimitIncludesPinned:
+    title: Count pinned tabs
+    description: Include pinned tabs in the limit. Pinned tabs stay open.
   showMinimap:
     title: Show Minimap
     description: |

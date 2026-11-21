@@ -250,6 +250,14 @@ contextMenu:
   editUrlNodeLink: 編輯URL節點的連結
   confirm: 確定
   cancel: 取消
+tabMenu:
+  pin: 固定分頁
+  unpin: 取消固定
+  bulkClose: 批量關閉分頁
+  closeLeft: 關閉左邊分頁
+  closeOthers: 關閉其他分頁
+  closeRight: 關閉右邊分頁
+
 settings:
   title: 設定
   categories:
@@ -279,6 +287,7 @@ settings:
     visual:
       title: 視覺
       basic: 基礎
+      tabManagement: 分頁管理
       background: 背景
       node: 節點樣式
       edge: 連線樣式
@@ -356,6 +365,18 @@ settings:
     description: '控制“最近打開的文件”面板中是否顯示工程文件縮略圖。
 
       關閉後可以少啲界面干擾。'
+  showFileOpenSuccessToast:
+    title: 打開檔案提示
+    description: 顯示打開進度，同埋打開成功後嘅載入時間、舞台物件同附件數量。
+  tabLimitEnabled:
+    title: 啟用分頁上限
+    description: 超出上限會優先關閉最早開啟又未固定嘅分頁。當前分頁同未儲存嘅工程會保留。
+  tabLimit:
+    title: 分頁上限
+    description: 同時保留嘅頂部分頁數量，預設 6 個。
+  tabLimitIncludesPinned:
+    title: 計入固定分頁
+    description: 將固定分頁計入上限。固定分頁會照樣保留。
   showMinimap:
     title: 顯示小地圖
     description: '喺畫布右下角顯示尺寸固定嘅小地圖，綠色框表示當前視野覆蓋嘅範圍。
