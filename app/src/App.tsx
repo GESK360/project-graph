@@ -15,6 +15,7 @@ import { flushSettingsLoadErrors, Settings } from "@/core/service/Settings";
 import { Telemetry } from "@/core/service/Telemetry";
 import { Themes } from "@/core/service/Themes";
 import { globalShortcutManager } from "@/core/service/controlService/shortcutKeysEngine/GlobalShortcutManager";
+import { isReopeningWorkspaceProject } from "@/core/service/workspace/WorkspacePageOps";
 import {
   activeResourceTabAtom,
   activeTabAtom,
@@ -230,7 +231,7 @@ export default function App() {
     const hasOpenProject = tabs.some((tab) => tab instanceof Project && !tab.closing);
     const previousHadProject = previousHadProjectRef.current;
     previousHadProjectRef.current = hasOpenProject;
-    if (previousHadProject && !hasOpenProject) {
+    if (previousHadProject && !hasOpenProject && !isReopeningWorkspaceProject()) {
       void (async () => {
         await onNewDraft();
         WelcomeWindow.open();
@@ -296,7 +297,7 @@ export default function App() {
     for (const tab of tabs) {
       tab.on("state-change", () => {
         // 强制重新渲染一次
-        setTabs([...tabs]);
+        setTabs((currentTabs) => [...currentTabs]);
       });
       tab.on("contextmenu", ({ x, y }) => {
         contextMenuTriggerRef.current?.dispatchEvent(
@@ -306,7 +307,7 @@ export default function App() {
             clientY: y,
           }),
         );
-        setTabs([...tabs]);
+        setTabs((currentTabs) => [...currentTabs]);
       });
     }
 

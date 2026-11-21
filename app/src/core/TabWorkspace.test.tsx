@@ -186,6 +186,25 @@ describe("TabWorkspace", () => {
     expect(store.get(activeResourceTabAtom)).toBe(first);
   });
 
+  it("can remove a relocating tab without animation while awaiting disposal", async () => {
+    const tab = openTestTab();
+    const disposal = Promise.withResolvers<void>();
+    const dispose = vi.spyOn(tab, "dispose").mockReturnValue(disposal.promise);
+    let closed = false;
+    const closing = TabWorkspace.close(tab.id, { animate: false }).then(() => {
+      closed = true;
+    });
+
+    await Promise.resolve();
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(store.get(tabsAtom)).not.toContain(tab);
+    expect(closed).toBe(false);
+
+    disposal.resolve();
+    await closing;
+    expect(closed).toBe(true);
+  });
+
   it("waits for disposal after removing the closing tab", async () => {
     const tab = openTestTab();
     let finishDisposal!: () => void;

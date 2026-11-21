@@ -32,7 +32,6 @@ import {
 } from "./TabGroup";
 
 const outsideListeners = new Map<string, (event: PointerEvent) => void>();
-const closeTimers = new Map<string, ReturnType<typeof setTimeout>[]>();
 const closeTasks = new Map<string, Promise<void>>();
 
 function maxZIndex() {
@@ -367,7 +366,7 @@ export namespace TabWorkspace {
     }
   }
 
-  export async function close(id: string) {
+  export async function close(id: string, { animate = true } = {}) {
     const existingClose = closeTasks.get(id);
     if (existingClose) return existingClose;
     const tab = get(id);
@@ -387,36 +386,26 @@ export namespace TabWorkspace {
     }
     store.set(tabsAtom, [...store.get(tabsAtom)]);
 
-    let disposeTimer!: ReturnType<typeof setTimeout>;
-    const disposePromise = new Promise<void>((resolve, reject) => {
-      disposeTimer = setTimeout(() => {
-        void Promise.resolve()
-          .then(() => tab.dispose())
-          .then(resolve, reject);
-      }, 450);
-    });
-    let removeTimer!: ReturnType<typeof setTimeout>;
-    const removePromise = new Promise<void>((resolve) => {
-      removeTimer = setTimeout(() => {
-        startTransition(() => {
-          const remaining = store.get(tabsAtom).filter((candidate) => candidate !== tab);
-          store.set(tabsAtom, remaining);
-          if (store.get(activeTabAtom) === tab) {
-            const next = remaining.reduce<Tab | undefined>(
-              (highest, candidate) => (!highest || candidate.zIndex > highest.zIndex ? candidate : highest),
-              undefined,
-            );
-            store.set(activeTabAtom, next);
-            if (next && isResourceTab(next)) store.set(activeResourceTabAtom, next);
-          }
-          const docked = firstAvailableDockedTab();
-          if (docked) store.set(activeDockedTabAtom, docked);
-        });
-        closeTimers.delete(id);
-        resolve();
-      }, 500);
-    });
-    closeTimers.set(id, [disposeTimer, removeTimer]);
+    const removeTab = () => {
+      startTransition(() => {
+        const remaining = store.get(tabsAtom).filter((candidate) => candidate !== tab);
+        store.set(tabsAtom, remaining);
+        if (store.get(activeTabAtom) === tab) {
+          const next = remaining.reduce<Tab | undefined>(
+            (highest, candidate) => (!highest || candidate.zIndex > highest.zIndex ? candidate : highest),
+            undefined,
+          );
+          store.set(activeTabAtom, next);
+          if (next && isResourceTab(next)) store.set(activeResourceTabAtom, next);
+        }
+        const docked = firstAvailableDockedTab();
+        if (docked) store.set(activeDockedTabAtom, docked);
+      });
+    };
+    const whenReady = (duration: number) =>
+      animate ? new Promise<void>((resolve) => setTimeout(resolve, duration)) : Promise.resolve();
+    const disposePromise = whenReady(450).then(() => tab.dispose());
+    const removePromise = whenReady(500).then(removeTab);
     const closeTask = Promise.allSettled([disposePromise, removePromise]).then(([disposeResult]) => {
       if (disposeResult.status === "rejected") throw disposeResult.reason;
     });

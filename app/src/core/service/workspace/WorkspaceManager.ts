@@ -218,12 +218,14 @@ export class WorkspaceManagerClass {
     if (baseName.toLowerCase() === currentName.toLowerCase()) {
       const casingTarget = WorkspacePaths.join(WorkspacePaths.dirname(source), `${baseName}.prg`);
       await this.movePageFile(source, casingTarget);
+      await this.updateOrderAfterRename(source, casingTarget);
       await this.pruneOrder([WorkspacePaths.dirname(source)]);
       this.emit("change");
       return casingTarget;
     }
     const target = await this.uniqueTitlePath(WorkspacePaths.dirname(source), baseName, ".prg");
     await this.movePageFile(source, target);
+    await this.updateOrderAfterRename(source, target);
     await this.pruneOrder([WorkspacePaths.dirname(source)]);
     this.emit("change");
     return target;
@@ -282,6 +284,7 @@ export class WorkspaceManagerClass {
         ? WorkspacePaths.join(parent, baseName)
         : await this.uniqueTitlePath(parent, baseName);
     await rename(source, target);
+    await this.updateOrderAfterRename(source, target);
     await this.pruneOrder([parent]);
     this.emit("change");
     return target;
@@ -398,19 +401,18 @@ export class WorkspaceManagerClass {
     return pasted;
   }
 
-  /** 把 path 移到 targetDir，并排在 beforeFileName 之前（省略 = 该目录末尾）。beforeFileName 用文件名，如 "a.prg" */
-  async reorderNode(path: string, targetDir: string, beforeFileName?: string): Promise<void> {
+  /** 将已落在目标目录的节点按拖放顺序一次性写入自定义排序。 */
+  async reorderNodes(paths: string[], targetDir: string, beforeFileName?: string): Promise<void> {
+    if (!paths.length) return;
     const root = this.requireRoot();
     const dir = WorkspacePaths.normalize(targetDir);
-    const moved = await this.moveNode(path, dir);
-    const fileName = WorkspacePaths.baseName(moved);
+    const moved = new Set(paths.map(WorkspacePaths.baseName));
+    if (beforeFileName !== undefined && moved.has(beforeFileName)) return;
     const order = await this.readOrder();
     const key = this.relativeTo(root, dir);
-    // 首次记录排序时先用当前显示顺序铺底，再把被拖的项插到落点
-    const names = (order[key] ?? (await this.defaultOrderNames(dir))).filter((name) => name !== fileName);
+    const names = (order[key] ?? (await this.defaultOrderNames(dir))).filter((name) => !moved.has(name));
     const insertAt = beforeFileName ? names.indexOf(beforeFileName) : -1;
-    if (insertAt >= 0) names.splice(insertAt, 0, fileName);
-    else names.push(fileName);
+    names.splice(insertAt >= 0 ? insertAt : names.length, 0, ...moved);
     order[key] = names;
     await this.writeOrder(order);
     this.emit("change");
@@ -687,19 +689,85 @@ export class WorkspaceManagerClass {
     if (!root) return;
     const order = await this.readOrder();
     let dirty = false;
-    for (const dirPath of new Set(dirPaths.map((item) => this.relativeTo(root, item)))) {
-      const names = order[dirPath];
+    for (const dirPath of new Set(dirPaths)) {
+      const key = this.relativeTo(root, dirPath);
+      const names = order[key];
       if (!names) continue;
-      const kept: string[] = [];
-      for (const name of names) {
-        if (await exists(WorkspacePaths.join(root, dirPath, name))) kept.push(name);
-      }
+      const entries = (await exists(dirPath)) ? await readDir(dirPath) : [];
+      const existing = new Set(entries.map((entry) => entry.name));
+      const kept = names.filter((name) => existing.has(name));
       if (kept.length === names.length) continue;
       dirty = true;
-      if (kept.length === 0) delete order[dirPath];
-      else order[dirPath] = kept;
+      if (kept.length === 0) delete order[key];
+      else order[key] = kept;
     }
     if (dirty) await this.writeOrder(order);
+  }
+
+  /** Preserve the current display order across a rename and update nested order keys. */
+  private async updateOrderAfterRename(source: string, target: string): Promise<void> {
+    const root = this.root;
+    if (!root || Settings.workspaceSortMode !== "custom") return;
+
+    const order = await this.readOrder();
+    const parent = WorkspacePaths.dirname(source);
+    const parentKey = this.relativeTo(root, parent);
+    const oldName = WorkspacePaths.baseName(source);
+    const newName = WorkspacePaths.baseName(target);
+    const currentNames = await this.defaultOrderNames(parent);
+    const normalizeName = (name: string) => name.toLowerCase();
+    const oldNameKey = normalizeName(oldName);
+    const newNameKey = normalizeName(newName);
+
+    if (order[parentKey] && order[parentKey].length > 0) {
+      const existing = new Set(currentNames.map(normalizeName));
+      const names: string[] = [];
+      const seen = new Set<string>();
+      for (const name of order[parentKey]) {
+        const renamed = normalizeName(name) === oldNameKey ? newName : name;
+        const key = normalizeName(renamed);
+        if (!existing.has(key) || seen.has(key)) continue;
+        seen.add(key);
+        names.push(renamed);
+      }
+      for (const name of currentNames) {
+        const key = normalizeName(name);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        names.push(name);
+      }
+      order[parentKey] = names;
+    } else {
+      const namesBeforeRename = currentNames.map((name) =>
+        normalizeName(name) === newNameKey ? oldName : name,
+      );
+      namesBeforeRename.sort((left, right) => {
+        const leftIsDir = !isPagePath(left);
+        const rightIsDir = !isPagePath(right);
+        if (leftIsDir !== rightIsDir) return leftIsDir ? -1 : 1;
+        return left.localeCompare(right);
+      });
+      order[parentKey] = namesBeforeRename.map((name) =>
+        normalizeName(name) === oldNameKey ? newName : name,
+      );
+    }
+
+    const sourcePrefix = isPagePath(source)
+      ? this.relativeTo(root, this.childDirOf(source))
+      : this.relativeTo(root, source);
+    const targetPrefix = isPagePath(target)
+      ? this.relativeTo(root, this.childDirOf(target))
+      : this.relativeTo(root, target);
+    if (sourcePrefix !== targetPrefix) {
+      for (const [key, value] of Object.entries(order)) {
+        if (key !== sourcePrefix && !key.startsWith(`${sourcePrefix}/`)) continue;
+        const renamedKey = targetPrefix + key.slice(sourcePrefix.length);
+        delete order[key];
+        order[renamedKey] = value;
+      }
+    }
+
+    await this.writeOrder(order);
   }
 
   /** 该目录的默认顺序：目录在前，各自 localeCompare 升序 */

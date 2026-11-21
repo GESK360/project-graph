@@ -274,6 +274,13 @@ async function openFile(uri: URI, source: string): Promise<Project | undefined> 
     }
   };
 
+  const findOwnedProject = (ownershipId: string, canonicalPath: string) =>
+    store.get(tabsAtom).find(
+      (candidate): candidate is Project =>
+        candidate instanceof Project &&
+        candidate.projectOwnerIdentity === ownershipId &&
+        candidate.canonicalProjectPath === canonicalPath,
+    );
   let tab: Project | Extension;
   try {
     const result =
@@ -282,28 +289,18 @@ async function openFile(uri: URI, source: string): Promise<Project | undefined> 
             uri.fsPath,
             createTab,
             (ownershipId, canonicalPath) =>
-              openingProjects.has(ownershipId) ||
-              store
-                .get(tabsAtom)
-                .some((candidate) => candidate instanceof Project && candidate.canonicalProjectPath === canonicalPath),
+              openingProjects.has(ownershipId) || findOwnedProject(ownershipId, canonicalPath) !== undefined,
           )
         : { status: "opened" as const, value: await createTab() };
     if (result.status === "already_open") {
-      const opening = getOpeningProject(result.ownershipId);
-      const registered = store
-        .get(tabsAtom)
-        .find(
-          (candidate): candidate is Project =>
-            candidate instanceof Project &&
-            !candidate.closing &&
-            candidate.canonicalProjectPath === result.canonicalPath,
-        );
-      if (registered) {
-        opening.resolve(registered);
-        openingProjects.delete(result.ownershipId);
-      }
-      const existing = registered ?? (await opening.promise);
+      const registered = findOwnedProject(result.ownershipId, result.canonicalPath);
+      const existing = registered ?? (await openingProjects.get(result.ownershipId)?.promise);
       if (!existing) throw new ProjectOwnershipError("PROJECT_BUSY");
+      if (existing.closing) {
+        const { TabWorkspace } = await import("@/core/TabWorkspace");
+        await TabWorkspace.close(existing.id);
+        return await openFile(uri, source);
+      }
       focusExistingTab(existing);
       return existing;
     }

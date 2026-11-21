@@ -239,7 +239,7 @@ async function reserveProjectOwnershipForSave(projectPath: string): Promise<Proj
 export async function loadWithProjectOwnership<T>(
   projectPath: string,
   load: (ownership: ProjectOwnershipLease | undefined) => Promise<T>,
-  hasFrontendOwner: (ownershipId: string, canonicalPath: string) => boolean = () => true,
+  hasFrontendOwner?: (ownershipId: string, canonicalPath: string) => boolean,
 ): Promise<ProjectOwnershipLoadResult<T>> {
   if (!isTauri()) {
     return { status: "opened", value: await load(undefined) };
@@ -254,7 +254,12 @@ export async function loadWithProjectOwnership<T>(
   } catch (error) {
     throw toProjectOwnershipError(error);
   }
-  if (acquisition.status === "already_owned" && hasFrontendOwner(acquisition.ownershipId, acquisition.canonicalPath)) {
+  // IPC replies can arrive out of order. An already_owned reply can claim an
+  // ownerless lease before the original acquired reply reaches the frontend.
+  const ownedByFrontend = hasFrontendOwner
+    ? hasFrontendOwner(acquisition.ownershipId, acquisition.canonicalPath)
+    : acquisition.status === "already_owned";
+  if (ownedByFrontend) {
     return {
       status: "already_open",
       ownershipId: acquisition.ownershipId,

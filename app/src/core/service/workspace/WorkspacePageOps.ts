@@ -8,6 +8,11 @@ import { WorkspaceManager, WorkspacePaths } from "./WorkspaceManager";
 
 const OPEN_SOURCE = "工作空间文件树";
 const deletingEntries = new Map<string, Promise<void>>();
+let reopeningProjects = 0;
+
+export function isReopeningWorkspaceProject(): boolean {
+  return reopeningProjects > 0;
+}
 
 function findOpenProject(path: string): Project | undefined {
   const target = WorkspacePaths.normalize(path);
@@ -26,16 +31,6 @@ async function saveIfNeeded(project: Project | undefined): Promise<void> {
   if (!project) return;
   if (project.projectState === ProjectState.Saved) return;
   await project.save({ includeThumbnail: false });
-}
-
-/**
- * 移动/重命名已打开的工程必须先 save 再 close：
- * 新路径要重新走 ProjectOwnership，旧路径的 ownership 锁必须先释放。
- */
-async function closeBeforePathChange(project: Project | undefined): Promise<void> {
-  if (!project) return;
-  await saveIfNeeded(project);
-  await TabWorkspace.close(project.id);
 }
 
 /** 打开/聚焦页面；内部调 onOpenFile(URI.file(path), "工作空间文件树") */
@@ -57,19 +52,12 @@ export async function deleteWorkspacePage(path: string): Promise<void> {
 
 /** 重命名：若已打开 → save → close → rename → 重新打开新路径；返回新路径 */
 export async function renameWorkspacePage(path: string, newName: string): Promise<string> {
-  const opened = findOpenProject(path);
-  await closeBeforePathChange(opened);
-  const newPath = await WorkspaceManager.renamePage(path, newName);
-  if (opened) await openWorkspacePage(newPath);
-  return newPath;
+  return await withPathChange(path, (source) => WorkspaceManager.renamePage(source, newName));
 }
 
 export async function moveWorkspacePage(path: string, targetDir: string): Promise<string> {
-  const opened = findOpenProject(path);
-  await closeBeforePathChange(opened);
-  const newPath = await WorkspaceManager.movePage(path, targetDir);
-  if (opened) await openWorkspacePage(newPath);
-  return newPath;
+  if (WorkspacePaths.dirname(path) === WorkspacePaths.normalize(targetDir)) return WorkspacePaths.normalize(path);
+  return await withPathChange(path, (source) => WorkspaceManager.movePage(source, targetDir));
 }
 
 export async function copyWorkspacePage(path: string, targetDir: string): Promise<string> {
@@ -104,24 +92,22 @@ function relativePart(parent: string, path: string): string {
  */
 async function withPathChange(path: string, change: (source: string) => Promise<string>): Promise<string> {
   const source = WorkspacePaths.normalize(path);
-  const opened = findOpenProjectsUnder(source);
-  const self = opened.find((project) => WorkspacePaths.normalize(project.uri.fsPath) === source);
-  if (self) {
-    // 页面：只处理它自己（页面的子页目录会跟着改名，路径推算不可靠）
-    await closeBeforePathChange(self);
+  const opened = findOpenProjectsUnder(source, true);
+  if (!opened.length) return await change(source);
+  const reopening = opened.filter((project) => !project.closing);
+  const nested = reopening.map((project) => relativePart(source, project.uri.fsPath));
+  if (reopening.length) reopeningProjects += 1;
+  try {
+    await Promise.all(reopening.map(saveIfNeeded));
+    await Promise.all(opened.map((project) => TabWorkspace.close(project.id, { animate: false })));
     const newPath = await change(source);
-    await openWorkspacePage(newPath);
+    for (const part of nested) {
+      await openWorkspacePage(part ? WorkspacePaths.join(newPath, part) : newPath);
+    }
     return newPath;
+  } finally {
+    if (reopening.length) reopeningProjects -= 1;
   }
-  const nested = opened.map((project) => relativePart(source, project.uri.fsPath));
-  for (const project of opened) {
-    await closeBeforePathChange(project);
-  }
-  const newPath = await change(source);
-  for (const part of nested) {
-    await openWorkspacePage(WorkspacePaths.join(newPath, part));
-  }
-  return newPath;
 }
 
 /** 重命名页面或文件夹（自动判断），返回新路径 */
@@ -130,6 +116,7 @@ export async function renameWorkspaceNode(path: string, newName: string): Promis
 }
 
 export async function moveWorkspaceNode(path: string, targetDir: string): Promise<string> {
+  if (WorkspacePaths.dirname(path) === WorkspacePaths.normalize(targetDir)) return WorkspacePaths.normalize(path);
   return await withPathChange(path, (source) => WorkspaceManager.moveNode(source, targetDir));
 }
 

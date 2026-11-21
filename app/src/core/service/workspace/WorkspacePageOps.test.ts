@@ -1,13 +1,16 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { URI } from "vscode-uri";
 import { Project } from "@/core/Project";
+import { ProjectOwnershipLease } from "@/core/ProjectOwnership";
 import { TabFactory } from "@/core/TabFactory";
 import { TabWorkspace } from "@/core/TabWorkspace";
 import { onOpenFile } from "@/core/service/GlobalMenu";
+import { Settings } from "@/core/service/Settings";
 import { store, tabsAtom } from "@/state";
 import { invoke } from "@tauri-apps/api/core";
-import { WorkspaceManager } from "./WorkspaceManager";
-import { deleteWorkspacePage, openWorkspacePage } from "./WorkspacePageOps";
+import { exists, readFile, rename, stat, writeFile } from "@tauri-apps/plugin-fs";
+import { WorkspaceManager, WorkspacePaths } from "./WorkspaceManager";
+import { deleteWorkspacePage, moveWorkspaceNodes, moveWorkspacePage, openWorkspacePage } from "./WorkspacePageOps";
 
 vi.mock("@/components/global-menu-content", () => ({ default: () => null }));
 vi.mock("@/components/ui/dialog", () => ({ Dialog: { buttons: vi.fn() } }));
@@ -19,14 +22,22 @@ vi.mock("@/core/Project", () => ({
   ProjectState: { Saved: "saved" },
   Project: class {
     constructor(readonly uri: URI) {}
-    id = "page-tab";
+    id = crypto.randomUUID();
     closing = false;
     stage = [];
     attachments = new Map();
     projectState = "saved";
-    attachProjectOwnership = vi.fn();
+    projectOwnerIdentity?: string;
+    canonicalProjectPath?: string;
+    attachProjectOwnership(ownership: { ownershipId: string; canonicalPath: string }) {
+      this.projectOwnerIdentity = ownership.ownershipId;
+      this.canonicalProjectPath = ownership.canonicalPath;
+    }
     activateOpenRuntimeHost = vi.fn();
     init = vi.fn();
+    dispose = vi.fn();
+    loop = vi.fn();
+    pause = vi.fn();
   },
 }));
 vi.mock("@/core/Tab", () => ({ isResourceTab: () => true }));
@@ -52,15 +63,19 @@ vi.mock("@/state", async () => {
   };
 });
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: () => true }));
+vi.mock("@tauri-apps/plugin-fs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/plugin-fs")>()),
+  exists: vi.fn(),
+  mkdir: vi.fn(),
+  readFile: vi.fn(),
+  rename: vi.fn(),
+  stat: vi.fn(),
+  writeFile: vi.fn(),
+}));
 vi.mock("sonner", () => ({
   toast: {
     success: vi.fn(),
-    promise: (load: () => Promise<void>, options: { success: () => Promise<string> }) => ({
-      unwrap: async () => {
-        await load();
-        await options.success();
-      },
-    }),
+    error: vi.fn(),
   },
 }));
 
@@ -81,6 +96,139 @@ it("shares a single load between automatic opening and a click on the same new p
   expect(TabFactory.create).toHaveBeenCalledOnce();
   expect(page?.activateOpenRuntimeHost).toHaveBeenCalledOnce();
   expect(store.get(tabsAtom)).toEqual([page]);
+});
+
+it.each(["single", "batch"])("opens the auto-renamed destination once during a %s move", async (moveMode) => {
+  const dir = "c:/workspace/destination";
+  const original = new Project(URI.file(`${dir}/Example.prg`));
+  const source = new Project(URI.file("c:/workspace/Example.prg"));
+  const sourcePath = WorkspacePaths.normalize(source.uri.fsPath);
+  const originalPath = WorkspacePaths.normalize(original.uri.fsPath);
+  const target = `${dir}/Example (2).prg`;
+  const movedPage = new Project(URI.file(target));
+  const acquired = Promise.withResolvers<{ status: "acquired"; ownershipId: string; canonicalPath: string }>();
+  const init = Promise.withResolvers<void>();
+  const ownership = { ownershipId: "moved-page-owner", canonicalPath: target };
+  const files = new Map([[sourcePath, "moved contents"], [originalPath, "existing contents"]]);
+  const runtimeHosts = new Set<string>();
+
+  store.set(tabsAtom, [original, source]);
+  vi.mocked(TabWorkspace.close).mockImplementation(async () => store.set(tabsAtom, [original]));
+  vi.mocked(exists).mockImplementation(async (path) => files.has(String(path)));
+  vi.mocked(stat).mockResolvedValue({ isDirectory: false } as Awaited<ReturnType<typeof stat>>);
+  vi.mocked(rename).mockImplementation(async (from, to) => {
+    const fromPath = String(from);
+    const toPath = String(to);
+    const contents = files.get(fromPath);
+    if (contents === undefined || files.has(toPath)) throw new Error("Invalid test move");
+    files.set(toPath, contents);
+    files.delete(fromPath);
+  });
+  vi.mocked(movedPage.init).mockReturnValue(init.promise);
+  vi.mocked(TabFactory.create).mockImplementation(async (uri) => {
+    const page = uri.fsPath === movedPage.uri.fsPath ? new Project(uri) : movedPage;
+    vi.mocked(page.activateOpenRuntimeHost).mockImplementation(() => {
+      const canonicalPath = page.canonicalProjectPath!;
+      if (runtimeHosts.has(canonicalPath)) throw new Error("Open Project Runtime Host already exists for this path");
+      runtimeHosts.add(canonicalPath);
+    });
+    return page;
+  });
+  vi.mocked(invoke)
+    .mockReturnValueOnce(acquired.promise)
+    .mockResolvedValueOnce({ status: "already_owned", ...ownership });
+
+  try {
+    const moving =
+      moveMode === "single"
+        ? moveWorkspacePage(sourcePath, dir).then((path) => [path])
+        : moveWorkspaceNodes([sourcePath], dir);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+    const opening = onOpenFile(URI.file(`${dir}/EXAMPLE (2).prg`));
+    await vi.waitFor(() => expect(movedPage.init).toHaveBeenCalledOnce());
+    acquired.resolve({ status: "acquired", ...ownership });
+    init.resolve();
+
+    expect(await moving).toEqual([target]);
+    expect(await opening).toBe(movedPage);
+    expect(TabWorkspace.close).toHaveBeenCalledExactlyOnceWith(source.id, { animate: false });
+    expect(files.get(originalPath)).toBe("existing contents");
+    expect(files.get(target)).toBe("moved contents");
+    expect(files.has(sourcePath)).toBe(false);
+    expect(store.get(tabsAtom)).toEqual([original, movedPage]);
+    expect(TabFactory.create).toHaveBeenCalledOnce();
+    expect(movedPage.activateOpenRuntimeHost).toHaveBeenCalledOnce();
+  } finally {
+    acquired.resolve({ status: "acquired", ...ownership });
+    init.resolve();
+  }
+});
+
+it("keeps the current project open when rearranging it in the same folder", async () => {
+  const page = new Project(uri);
+  store.set(tabsAtom, [page]);
+
+  await expect(moveWorkspacePage(path, "c:/workspace")).resolves.toBe(path);
+  await expect(moveWorkspaceNodes([path], "c:/workspace")).resolves.toEqual([path]);
+  expect(TabWorkspace.close).not.toHaveBeenCalled();
+  expect(TabFactory.create).not.toHaveBeenCalled();
+  expect(rename).not.toHaveBeenCalled();
+  expect(store.get(tabsAtom)).toEqual([page]);
+});
+
+it("orders all moved filenames in one write, including the suffix used to avoid a collision", async () => {
+  const root = "c:/workspace";
+  const targetDir = `${root}/destination`;
+  const orderFile = `${root}/.flux-graph/order.json`;
+  const previousRoot = Settings.activeWorkspaceRoot;
+  Settings.activeWorkspaceRoot = root;
+  vi.mocked(exists).mockResolvedValue(true);
+  vi.mocked(readFile).mockResolvedValue(new TextEncoder().encode(JSON.stringify({ destination: ["Example.prg"] })));
+  try {
+    await WorkspaceManager.reorderNodes(
+      [`${targetDir}/Example (2).prg`, `${targetDir}/Notes.prg`],
+      targetDir,
+      "Example.prg",
+    );
+
+    expect(readFile).toHaveBeenCalledExactlyOnceWith(orderFile);
+    expect(writeFile).toHaveBeenCalledOnce();
+    const [writtenFile, content] = vi.mocked(writeFile).mock.calls[0];
+    expect(writtenFile).toBe(orderFile);
+    expect(JSON.parse(new TextDecoder().decode(content as Uint8Array))).toEqual({
+      destination: ["Example (2).prg", "Notes.prg", "Example.prg"],
+    });
+    expect(stat).not.toHaveBeenCalled();
+    expect(rename).not.toHaveBeenCalled();
+  } finally {
+    Settings.activeWorkspaceRoot = previousRoot;
+  }
+});
+
+it("waits for a closing project before reopening it through a path alias", async () => {
+  const oldPage = new Project(uri);
+  oldPage.attachProjectOwnership(new ProjectOwnershipLease("old-owner", path));
+  oldPage.closing = true;
+  store.set(tabsAtom, [oldPage]);
+  const closed = Promise.withResolvers<void>();
+  vi.mocked(TabWorkspace.close).mockImplementation(async () => {
+    await closed.promise;
+    store.set(tabsAtom, []);
+  });
+  vi.mocked(invoke).mockResolvedValueOnce({ status: "already_owned", ownershipId: "old-owner", canonicalPath: path });
+
+  const opening = onOpenFile(URI.file("c:/WORKSPACE/新建页面.prg"));
+  try {
+    await vi.waitFor(() => expect(TabWorkspace.close).toHaveBeenCalledExactlyOnceWith(oldPage.id));
+    expect(TabFactory.create).not.toHaveBeenCalled();
+    closed.resolve();
+    const reopened = await opening;
+    expect(reopened).toBeDefined();
+    expect(reopened).not.toBe(oldPage);
+    expect(store.get(tabsAtom)).toEqual([reopened]);
+  } finally {
+    closed.resolve();
+  }
 });
 
 it("finishes in-flight opens and releases the old tab before deleting a path that can be reused", async () => {

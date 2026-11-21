@@ -458,17 +458,10 @@ export default function WorkspaceWindow() {
         toast.error(t("dragInvalidTarget"));
         return;
       }
-      // 名字要在移动前取：重名会让落地路径带上「(2)」之类的后缀
-      const originalNames = new Set(paths.map((path) => WorkspacePaths.baseName(path)));
       const moved = await moveEntries(paths, targetDir);
       if (target.type === "drop") return;
-      // 落点在某个文件之前/之后、或者空白处（排到末尾）：记进 order.json，树重读后就是新顺序
       const beforeFileName = target.type === "root" ? undefined : target.beforeFileName;
-      // 落点锚点本身就在被拖的这批里 → 相对顺序没变，不用动 order.json
-      if (beforeFileName !== undefined && originalNames.has(beforeFileName)) return;
-      for (const path of moved) {
-        await WorkspaceManager.reorderNode(path, targetDir, beforeFileName);
-      }
+      await WorkspaceManager.reorderNodes(moved, targetDir, beforeFileName);
     },
     [kindByPath, moveEntries, t],
   );
@@ -599,7 +592,6 @@ export default function WorkspaceWindow() {
     if (!moveCopyTarget) return;
     if (mode === "move") await moveEntries(moveCopyTarget.paths, targetDir);
     else await copyEntries(moveCopyTarget.paths, targetDir);
-    await refresh();
   };
 
   const openFolder = () => {
