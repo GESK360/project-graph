@@ -21,6 +21,8 @@ const ACTIVE_WINDOW_MS = 700;
 const IDLE_CHECK_INTERVAL_MS = 150;
 /** 视野框缩得比该像素还小时按该值绘制，保证始终可见 */
 const MIN_VIEW_RECT_SIZE = 2;
+/** 按下后移动超过该像素才切换为连续拖动，防止轻点手抖打断平滑过渡 */
+const DRAG_THRESHOLD_PX = 3;
 /** 视野框圆角半径 */
 const VIEW_RECT_RADIUS = 4;
 /** 小地图画布最多按 2 倍像素比渲染，再高对缩略图没有意义 */
@@ -89,6 +91,19 @@ export function toMinimapPoint(point: Vector, layout: MinimapLayout): Vector {
 
 export function toMinimapRectangle(rectangle: Rectangle, layout: MinimapLayout): Rectangle {
   return new Rectangle(toMinimapPoint(rectangle.location, layout), rectangle.size.multiply(layout.scale));
+}
+
+export function toWorldPoint(point: Vector, layout: MinimapLayout): Vector {
+  return new Vector((point.x - layout.offset.x) / layout.scale, (point.y - layout.offset.y) / layout.scale);
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+/** 把指针坐标限制在小地图边框内部，拖动时视野中心不会越出小地图范围 */
+export function clampPointToMinimap(point: Vector): Vector {
+  return new Vector(clampNumber(point.x, 0, MINIMAP_WIDTH), clampNumber(point.y, 0, MINIMAP_HEIGHT));
 }
 
 /**
@@ -198,6 +213,36 @@ export function drawViewLayer(context: CanvasRenderingContext2D, viewRectangle: 
   context.restore();
 }
 
+type DragSession = {
+  pointerId: number | undefined;
+  /** 拖动期间冻结布局，避免静态层定时刷新或空画布重算造成坐标系漂移 */
+  layout: MinimapLayout;
+  bounds: DOMRect;
+  startClientX: number;
+  startClientY: number;
+  hasDragged: boolean;
+};
+
+function clientToClampedMinimapPoint(clientX: number, clientY: number, bounds: DOMRect): Vector {
+  return clampPointToMinimap(
+    new Vector(
+      ((clientX - bounds.left) / bounds.width) * MINIMAP_WIDTH,
+      ((clientY - bounds.top) / bounds.height) * MINIMAP_HEIGHT,
+    ),
+  );
+}
+
+function releasePointerCaptureSafely(canvas: HTMLCanvasElement, pointerId: number | undefined) {
+  if (
+    typeof pointerId === "number" &&
+    typeof canvas.hasPointerCapture === "function" &&
+    typeof canvas.releasePointerCapture === "function" &&
+    canvas.hasPointerCapture(pointerId)
+  ) {
+    canvas.releasePointerCapture(pointerId);
+  }
+}
+
 /**
  * 画布右下角的小地图：绿色框表示当前视野，节点与连线按最外侧范围自动缩放
  */
@@ -207,8 +252,20 @@ export default function Minimap({ project }: { project: Project }) {
   const staticCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const layoutRef = useRef<MinimapLayout | null>(null);
+  const dragSessionRef = useRef<DragSession | null>(null);
+  const syncViewLayerRef = useRef<((forceDraw?: boolean) => void) | null>(null);
 
   const enabled = showMinimap && !isClassroomMode;
+
+  const endDrag = (canvas: HTMLCanvasElement | null) => {
+    const session = dragSessionRef.current;
+    if (!session) return;
+    dragSessionRef.current = null;
+    if (canvas) {
+      releasePointerCaptureSafely(canvas, session.pointerId);
+    }
+    syncViewLayerRef.current?.();
+  };
 
   useEffect(() => {
     if (!enabled) return;
@@ -234,6 +291,7 @@ export default function Minimap({ project }: { project: Project }) {
     let lastStageLength = -1;
     let geometry: MinimapGeometry | null = null;
     let lastCamera: number[] | null = null;
+    let lastLayout: MinimapLayout | null = null;
 
     const readCamera = (): number[] => [
       project.camera.location.x,
@@ -249,6 +307,15 @@ export default function Minimap({ project }: { project: Project }) {
         if (current[index] !== lastCamera[index]) return true;
       }
       return false;
+    };
+
+    const layoutChanged = (current: MinimapLayout): boolean => {
+      if (!lastLayout) return true;
+      return (
+        current.scale !== lastLayout.scale ||
+        current.offset.x !== lastLayout.offset.x ||
+        current.offset.y !== lastLayout.offset.y
+      );
     };
 
     const rebuildStaticLayer = (now: number) => {
@@ -274,24 +341,44 @@ export default function Minimap({ project }: { project: Project }) {
       }, IDLE_CHECK_INTERVAL_MS);
     };
 
+    const renderViewIfNeeded = (now: number, forceDraw = false) => {
+      const dragSession = dragSessionRef.current;
+      const activeLayout = dragSession?.layout ?? geometry?.layout ?? null;
+      if (activeLayout === null) return;
+      const camera = readCamera();
+      if (forceDraw || cameraChanged(camera) || layoutChanged(activeLayout)) {
+        drawViewLayer(overlayContext, project.renderer.getCoverWorldRectangle(), activeLayout);
+        lastCamera = camera;
+        lastLayout = activeLayout;
+        activeUntil = Math.max(activeUntil, now + ACTIVE_WINDOW_MS);
+      }
+    };
+
+    const syncViewLayer = (forceDraw = false) => {
+      stopIdleTimer();
+      const now = performance.now();
+      activeUntil = Math.max(activeUntil, now + ACTIVE_WINDOW_MS);
+      renderViewIfNeeded(now, forceDraw);
+      scheduleFrame();
+    };
+    syncViewLayerRef.current = syncViewLayer;
+
     const tick = () => {
       rafId = 0;
       const now = performance.now();
-      const active = now < activeUntil;
+      const hasDragSession = dragSessionRef.current !== null;
+      const active = hasDragSession || now < activeUntil;
 
-      const staticInterval = active ? STATIC_REFRESH_INTERVAL_ACTIVE_MS : STATIC_REFRESH_INTERVAL_IDLE_MS;
-      if (geometry === null || now - lastStaticAt >= staticInterval || project.stage.length !== lastStageLength) {
-        rebuildStaticLayer(now);
+      if (!hasDragSession) {
+        const staticInterval = active ? STATIC_REFRESH_INTERVAL_ACTIVE_MS : STATIC_REFRESH_INTERVAL_IDLE_MS;
+        if (geometry === null || now - lastStaticAt >= staticInterval || project.stage.length !== lastStageLength) {
+          rebuildStaticLayer(now);
+        }
       }
 
-      const camera = readCamera();
-      if (geometry !== null && cameraChanged(camera)) {
-        drawViewLayer(overlayContext, project.renderer.getCoverWorldRectangle(), geometry.layout);
-        lastCamera = camera;
-        activeUntil = now + ACTIVE_WINDOW_MS;
-      }
+      renderViewIfNeeded(now);
 
-      if (performance.now() < activeUntil) {
+      if (hasDragSession || performance.now() < activeUntil) {
         scheduleFrame();
       } else {
         startIdleTimer();
@@ -303,43 +390,104 @@ export default function Minimap({ project }: { project: Project }) {
       rafId = window.requestAnimationFrame(tick);
     }
 
+    const handleWindowBlur = () => endDrag(overlayCanvas);
+    window.addEventListener("blur", handleWindowBlur);
+
     scheduleFrame();
 
     return () => {
+      window.removeEventListener("blur", handleWindowBlur);
       if (rafId) window.cancelAnimationFrame(rafId);
       stopIdleTimer();
+      dragSessionRef.current = null;
+      syncViewLayerRef.current = null;
       layoutRef.current = null;
     };
   }, [enabled, project]);
 
+  const moveCameraDirectly = (worldLocation: Vector) => {
+    project.camera.stopImmediately?.();
+    project.camera.location = worldLocation;
+    project.controller?.resetCountdownTimer?.();
+  };
+
+  const moveCameraSmoothly = (worldLocation: Vector) => {
+    project.camera.bombMove(worldLocation);
+    project.controller?.resetCountdownTimer?.();
+  };
+
   const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (event.button !== 0 || dragSessionRef.current !== null) return;
     const layout = layoutRef.current;
-    if (!layout) return;
+    if (!layout || !Number.isFinite(layout.scale) || layout.scale <= 0) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     if (bounds.width === 0 || bounds.height === 0) return;
-    const x = ((event.clientX - bounds.left) / bounds.width) * MINIMAP_WIDTH;
-    const y = ((event.clientY - bounds.top) / bounds.height) * MINIMAP_HEIGHT;
-    const worldLocation = new Vector((x - layout.offset.x) / layout.scale, (y - layout.offset.y) / layout.scale);
-    project.camera.bombMove(worldLocation);
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    dragSessionRef.current = {
+      pointerId: event.pointerId,
+      layout,
+      bounds,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      hasDragged: false,
+    };
+
+    if (typeof event.pointerId === "number" && typeof event.currentTarget.setPointerCapture === "function") {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+
+    const minimapPoint = clientToClampedMinimapPoint(event.clientX, event.clientY, bounds);
+    moveCameraSmoothly(toWorldPoint(minimapPoint, layout));
+    syncViewLayerRef.current?.();
+  };
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const session = dragSessionRef.current;
+    if (!session || event.pointerId !== session.pointerId) return;
+    if (event.pointerType === "mouse" && (event.buttons & 1) === 0) {
+      endDrag(event.currentTarget);
+      return;
+    }
+
+    const movedDistance = Math.hypot(event.clientX - session.startClientX, event.clientY - session.startClientY);
+    if (!session.hasDragged && movedDistance <= DRAG_THRESHOLD_PX) return;
+
+    session.hasDragged = true;
+    const minimapPoint = clientToClampedMinimapPoint(event.clientX, event.clientY, session.bounds);
+    moveCameraDirectly(toWorldPoint(minimapPoint, session.layout));
+    syncViewLayerRef.current?.();
+  };
+
+  const handlePointerEnd = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const session = dragSessionRef.current;
+    if (!session || event.pointerId !== session.pointerId) return;
+    endDrag(event.currentTarget);
   };
 
   if (!enabled) return null;
 
   return (
     <div
-      className="bg-popover/95 supports-backdrop-blur:bg-popover/80 border-border/50 absolute right-3 bottom-3 overflow-hidden rounded-lg border shadow-xl backdrop-blur-md"
+      className="bg-popover/95 supports-backdrop-blur:bg-popover/80 border-border/50 absolute right-3 bottom-3 overflow-hidden rounded-lg border shadow-xl backdrop-blur-md select-none"
       style={{ width: MINIMAP_WIDTH, height: MINIMAP_HEIGHT }}
     >
       <canvas
         ref={staticCanvasRef}
         style={{ width: MINIMAP_WIDTH, height: MINIMAP_HEIGHT }}
-        className="absolute inset-0 block"
+        className="pointer-events-none absolute inset-0 block"
       />
       <canvas
         ref={overlayCanvasRef}
         style={{ width: MINIMAP_WIDTH, height: MINIMAP_HEIGHT }}
-        className="absolute inset-0 block cursor-pointer"
+        className="absolute inset-0 block cursor-pointer touch-none"
         onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerEnd}
+        onPointerCancel={handlePointerEnd}
+        onLostPointerCapture={handlePointerEnd}
       />
     </div>
   );

@@ -22,7 +22,16 @@ import { Line, Rectangle } from "@graphif/shapes";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Project } from "@/core/Project";
-import Minimap, { collectGeometry, drawStaticLayer, drawViewLayer, MINIMAP_HEIGHT, MINIMAP_WIDTH } from "./minimap";
+import Minimap, {
+  clampPointToMinimap,
+  collectGeometry,
+  drawStaticLayer,
+  drawViewLayer,
+  MINIMAP_HEIGHT,
+  MINIMAP_WIDTH,
+  toMinimapPoint,
+  toWorldPoint,
+} from "./minimap";
 
 type DrawOperation =
   | { type: "clearRect" }
@@ -80,6 +89,13 @@ function createFakeProject(nodeRectangles: Rectangle[], edgeLines: Line[], viewR
     collisionBox: { getRectangle: () => rectangle },
   }));
   const edges = edgeLines.map((line) => ({ isHiddenBySectionCollapse: false, bodyLine: line }));
+  const viewSize = viewRectangle.size.clone();
+  const camera = {
+    location: viewRectangle.center.clone(),
+    currentScale: 1,
+    bombMove: vi.fn(),
+    stopImmediately: vi.fn(),
+  };
   return {
     stage: [...nodeRectangles, ...edgeLines],
     stageManager: {
@@ -87,9 +103,28 @@ function createFakeProject(nodeRectangles: Rectangle[], edgeLines: Line[], viewR
       getEntities: () => entities,
       getEdges: () => edges,
     },
-    renderer: { getCoverWorldRectangle: () => viewRectangle, w: 800, h: 600 },
-    camera: { location: new Vector(0, 0), currentScale: 1, bombMove: vi.fn() },
+    renderer: {
+      getCoverWorldRectangle: () => new Rectangle(camera.location.subtract(viewSize.divide(2)), viewSize.clone()),
+      w: viewSize.x,
+      h: viewSize.y,
+    },
+    camera,
+    controller: {
+      resetCountdownTimer: vi.fn(),
+    },
   } as unknown as Project;
+}
+
+function attachMinimapBounds(overlay: HTMLCanvasElement) {
+  overlay.getBoundingClientRect = () =>
+    ({
+      left: 0,
+      top: 0,
+      right: MINIMAP_WIDTH,
+      bottom: MINIMAP_HEIGHT,
+      width: MINIMAP_WIDTH,
+      height: MINIMAP_HEIGHT,
+    }) as DOMRect;
 }
 
 describe("小地图绘制", () => {
@@ -158,7 +193,10 @@ describe("小地图绘制", () => {
 });
 
 describe("小地图组件", () => {
-  async function renderMinimap(project: Project, beforeUnmount?: (container: HTMLElement) => void) {
+  async function renderMinimap(
+    project: Project,
+    beforeUnmount?: (container: HTMLElement, frames: FrameRequestCallback[]) => void,
+  ) {
     const contexts = [createRecordingContext(), createRecordingContext()];
     let contextIndex = 0;
     const getContext = vi
@@ -183,7 +221,7 @@ describe("小地图组件", () => {
       frames.shift()?.(0);
     });
 
-    beforeUnmount?.(container);
+    beforeUnmount?.(container, frames);
 
     await act(async () => {
       root.unmount();
@@ -223,15 +261,7 @@ describe("小地图组件", () => {
 
     await renderMinimap(project, (container) => {
       const overlay = container.querySelectorAll("canvas")[1] as HTMLCanvasElement;
-      overlay.getBoundingClientRect = () =>
-        ({
-          left: 0,
-          top: 0,
-          right: MINIMAP_WIDTH,
-          bottom: MINIMAP_HEIGHT,
-          width: MINIMAP_WIDTH,
-          height: MINIMAP_HEIGHT,
-        }) as DOMRect;
+      attachMinimapBounds(overlay);
       overlay.dispatchEvent(new MouseEvent("pointerdown", { clientX: clickX, clientY: clickY, bubbles: true }));
     });
 
@@ -240,6 +270,146 @@ describe("小地图组件", () => {
     const movedTo = bombMove.mock.calls[0][0];
     expect(movedTo.x).toBeCloseTo(expectedWorld.x);
     expect(movedTo.y).toBeCloseTo(expectedWorld.y);
+  });
+
+  it("在小地图任意位置按下并拖动时，视野中心始终直接跟随鼠标位置（不拖拽绿框）", async () => {
+    const nodes = [rectangleOf(0, 0, 200, 200), rectangleOf(600, 400, 200, 200)];
+    const view = rectangleOf(100, 100, 300, 240);
+    const project = createFakeProject(nodes, [], view);
+    const layout = collectGeometry(project).layout;
+    const viewCenterOnMinimap = toMinimapPoint(view.center, layout);
+    // 故意从绿框内偏离中心的位置开始拖动，验证直接对准鼠标位置而非保留绿框抓取偏移
+    const startX = viewCenterOnMinimap.x + 14;
+    const startY = viewCenterOnMinimap.y - 8;
+    const midX = startX + 20;
+    const midY = startY + 12;
+    const endX = 140;
+    const endY = 90;
+    const expectedStartWorld = toWorldPoint(new Vector(startX, startY), layout);
+    const expectedMidWorld = toWorldPoint(new Vector(midX, midY), layout);
+    const expectedEndWorld = toWorldPoint(new Vector(endX, endY), layout);
+
+    await renderMinimap(project, (container) => {
+      const overlay = container.querySelectorAll("canvas")[1] as HTMLCanvasElement;
+      attachMinimapBounds(overlay);
+
+      overlay.dispatchEvent(new MouseEvent("pointerdown", { clientX: startX, clientY: startY, bubbles: true }));
+      const bombMove = (project.camera as unknown as { bombMove: { mock: { calls: [Vector][] } } }).bombMove;
+      expect(bombMove.mock.calls).toHaveLength(1);
+      expect(bombMove.mock.calls[0][0].x).toBeCloseTo(expectedStartWorld.x);
+      expect(bombMove.mock.calls[0][0].y).toBeCloseTo(expectedStartWorld.y);
+
+      // 2px 轻微抖动不取消点击的平滑移动
+      overlay.dispatchEvent(new MouseEvent("pointermove", { clientX: startX + 2, clientY: startY, bubbles: true }));
+      expect(project.camera.stopImmediately).not.toHaveBeenCalled();
+
+      // 超过阈值后直接跟随鼠标在小地图上的位置
+      overlay.dispatchEvent(new MouseEvent("pointermove", { clientX: midX, clientY: midY, bubbles: true }));
+      expect(project.camera.stopImmediately).toHaveBeenCalled();
+      expect(project.camera.location.x).toBeCloseTo(expectedMidWorld.x);
+      expect(project.camera.location.y).toBeCloseTo(expectedMidWorld.y);
+
+      overlay.dispatchEvent(new MouseEvent("pointermove", { clientX: endX, clientY: endY, bubbles: true }));
+      expect(project.camera.location.x).toBeCloseTo(expectedEndWorld.x);
+      expect(project.camera.location.y).toBeCloseTo(expectedEndWorld.y);
+
+      overlay.dispatchEvent(new MouseEvent("pointerup", { clientX: endX, clientY: endY, bubbles: true }));
+
+      // 松手后继续移动鼠标，视野不应再跟着动
+      overlay.dispatchEvent(new MouseEvent("pointermove", { clientX: 20, clientY: 20, bubbles: true }));
+    });
+
+    expect(project.controller.resetCountdownTimer).toHaveBeenCalled();
+    expect(project.camera.location.x).toBeCloseTo(expectedEndWorld.x);
+    expect(project.camera.location.y).toBeCloseTo(expectedEndWorld.y);
+  });
+
+  it("鼠标拖出小地图边框外时，视野中心限制在小地图边框内部", async () => {
+    const nodes = [rectangleOf(0, 0, 200, 200), rectangleOf(600, 400, 200, 200)];
+    const view = rectangleOf(100, 100, 200, 160);
+    const project = createFakeProject(nodes, [], view);
+    const layout = collectGeometry(project).layout;
+    const expectedBottomRight = toWorldPoint(clampPointToMinimap(new Vector(300, 220)), layout);
+    const expectedTopLeft = toWorldPoint(clampPointToMinimap(new Vector(-120, -80)), layout);
+
+    await renderMinimap(project, (container) => {
+      const overlay = container.querySelectorAll("canvas")[1] as HTMLCanvasElement;
+      attachMinimapBounds(overlay);
+
+      overlay.dispatchEvent(new MouseEvent("pointerdown", { clientX: 90, clientY: 60, bubbles: true }));
+
+      overlay.dispatchEvent(new MouseEvent("pointermove", { clientX: 300, clientY: 220, bubbles: true }));
+      expect(project.camera.location.x).toBeCloseTo(expectedBottomRight.x);
+      expect(project.camera.location.y).toBeCloseTo(expectedBottomRight.y);
+
+      overlay.dispatchEvent(new MouseEvent("pointermove", { clientX: -120, clientY: -80, bubbles: true }));
+      expect(project.camera.location.x).toBeCloseTo(expectedTopLeft.x);
+      expect(project.camera.location.y).toBeCloseTo(expectedTopLeft.y);
+
+      overlay.dispatchEvent(new MouseEvent("pointerup", { clientX: -120, clientY: -80, bubbles: true }));
+    });
+  });
+
+  it("空画布拖动期间冻结小地图布局，不会因静态层刷新发生漂移", async () => {
+    const view = rectangleOf(-400, -300, 800, 600);
+    const project = createFakeProject([], [], view);
+    const initialLayout = collectGeometry(project).layout;
+    const centerOnMinimap = toMinimapPoint(view.center, initialLayout);
+
+    let now = 1000;
+    const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => now);
+
+    await renderMinimap(project, (container, frames) => {
+      const overlay = container.querySelectorAll("canvas")[1] as HTMLCanvasElement;
+      attachMinimapBounds(overlay);
+
+      overlay.dispatchEvent(
+        new MouseEvent("pointerdown", { clientX: centerOnMinimap.x, clientY: centerOnMinimap.y, bubbles: true }),
+      );
+      overlay.dispatchEvent(
+        new MouseEvent("pointermove", { clientX: centerOnMinimap.x + 20, clientY: centerOnMinimap.y, bubbles: true }),
+      );
+
+      // 推进时间超过 200ms 静态层刷新周期并跑一帧 rAF
+      now += 500;
+      frames.shift()?.(now);
+
+      overlay.dispatchEvent(
+        new MouseEvent("pointermove", { clientX: centerOnMinimap.x + 40, clientY: centerOnMinimap.y, bubbles: true }),
+      );
+      expect(project.camera.location.x).toBeCloseTo(40 / initialLayout.scale);
+
+      overlay.dispatchEvent(
+        new MouseEvent("pointerup", { clientX: centerOnMinimap.x + 40, clientY: centerOnMinimap.y, bubbles: true }),
+      );
+    });
+
+    nowSpy.mockRestore();
+  });
+
+  it("右键不触发移动，窗口失焦会自动结束拖动", async () => {
+    const nodes = [rectangleOf(0, 0, 200, 200), rectangleOf(600, 400, 200, 200)];
+    const view = rectangleOf(100, 100, 200, 160);
+    const project = createFakeProject(nodes, [], view);
+
+    await renderMinimap(project, (container) => {
+      const overlay = container.querySelectorAll("canvas")[1] as HTMLCanvasElement;
+      attachMinimapBounds(overlay);
+
+      // 右键不触发移动
+      overlay.dispatchEvent(new MouseEvent("pointerdown", { clientX: 120, clientY: 80, button: 2, bubbles: true }));
+      expect(project.camera.bombMove).not.toHaveBeenCalled();
+
+      // 拖动途中窗口失焦自动结束拖动
+      overlay.dispatchEvent(new MouseEvent("pointerdown", { clientX: 60, clientY: 60, bubbles: true }));
+      overlay.dispatchEvent(new MouseEvent("pointermove", { clientX: 90, clientY: 60, bubbles: true }));
+      const locationBeforeBlur = project.camera.location.clone();
+      window.dispatchEvent(new Event("blur"));
+
+      overlay.dispatchEvent(new MouseEvent("pointermove", { clientX: 150, clientY: 90, bubbles: true }));
+      expect(project.camera.location.x).toBeCloseTo(locationBeforeBlur.x);
+      expect(project.camera.location.y).toBeCloseTo(locationBeforeBlur.y);
+    });
   });
 
   it("关闭设置后不渲染画布", async () => {

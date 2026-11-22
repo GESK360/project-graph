@@ -11,7 +11,16 @@ vi.mock("@/state", () => ({ isClassroomModeAtom: {} }));
 
 import { Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
-import { createLayout, MINIMAP_HEIGHT, MINIMAP_PADDING, MINIMAP_WIDTH, toMinimapRectangle } from "./minimap";
+import {
+  clampPointToMinimap,
+  createLayout,
+  MINIMAP_HEIGHT,
+  MINIMAP_PADDING,
+  MINIMAP_WIDTH,
+  toMinimapPoint,
+  toMinimapRectangle,
+  toWorldPoint,
+} from "./minimap";
 
 function rectangleOf(left: number, top: number, width: number, height: number) {
   return new Rectangle(new Vector(left, top), new Vector(width, height));
@@ -96,5 +105,31 @@ describe("小地图布局", () => {
     // 节点仍占满小地图
     const mapped = toMinimapRectangle(nodes[0], layout);
     expect(mapped.width).toBeGreaterThan(MINIMAP_WIDTH / 2);
+  });
+
+  it("世界坐标与小地图坐标可以无损互转", () => {
+    const nodes = [rectangleOf(-250, -120, 900, 600)];
+    const layout = createLayout(nodes, rectangleOf(0, 0, 1, 1));
+    const world = new Vector(315, 240);
+
+    const minimapPoint = toMinimapPoint(world, layout);
+    const roundTripped = toWorldPoint(minimapPoint, layout);
+
+    expect(roundTripped.x).toBeCloseTo(world.x);
+    expect(roundTripped.y).toBeCloseTo(world.y);
+  });
+
+  it("指针位置限制在小地图边框内部，不会越出小地图范围", () => {
+    const topLeft = clampPointToMinimap(new Vector(-40, -25));
+    expect(topLeft.x).toBe(0);
+    expect(topLeft.y).toBe(0);
+
+    const bottomRight = clampPointToMinimap(new Vector(MINIMAP_WIDTH + 60, MINIMAP_HEIGHT + 30));
+    expect(bottomRight.x).toBe(MINIMAP_WIDTH);
+    expect(bottomRight.y).toBe(MINIMAP_HEIGHT);
+
+    const inside = clampPointToMinimap(new Vector(75, 42));
+    expect(inside.x).toBe(75);
+    expect(inside.y).toBe(42);
   });
 });

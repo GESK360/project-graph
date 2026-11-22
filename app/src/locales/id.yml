@@ -325,7 +325,7 @@ settings:
       Menampilkan peta mini berukuran tetap di sudut kanan bawah kanvas. Bingkai hijau menandai area yang sedang terlihat.
       Peta mini juga menggambar sumbu x/y dan garis penghubung antar node.
       Peta mini menyesuaikan skala secara otomatis berdasarkan node paling luar, sehingga memudahkan navigasi pada graf besar.
-      Klik peta mini untuk memindahkan tampilan ke posisi tersebut.
+      Klik atau seret pada peta mini untuk memindahkan tampilan.
   autoAdjustLineEndpointsByMouseTrack:
     title: Sesuaikan Posisi Ujung Garis Otomatis Berdasarkan Jejak Mouse
     description: |
