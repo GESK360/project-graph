@@ -547,6 +547,9 @@ settings:
   workspaceRenameOnDoubleClick:
     title: Double-click to Rename Workspace Items
     description: Double-click a page or folder to edit its name directly in the file tree.
+  workspaceShowCreatePageToast:
+    title: New Page Notification
+    description: Show a success notification after creating a page in the workspace file tree.
   activeWorkspaceRoot:
     title: Workspace Folder
     description: |

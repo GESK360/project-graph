@@ -330,6 +330,7 @@ export const categories = {
       "workspaceVersionHistory",
       "workspaceTreeOpacity",
       "workspaceRenameOnDoubleClick",
+      "workspaceShowCreatePageToast",
     ],
   },
   control: {

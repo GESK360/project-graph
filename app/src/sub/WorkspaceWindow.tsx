@@ -23,6 +23,7 @@ import {
   WorkspaceManager,
   WorkspacePaths,
   type WorkspaceClipboard,
+  type WorkspaceCreatePlacement,
   type WorkspaceNode,
 } from "@/core/service/workspace/WorkspaceManager";
 import {
@@ -30,12 +31,13 @@ import {
   copyWorkspacePage,
   deleteWorkspaceFolder,
   deleteWorkspacePage,
+  isReopeningWorkspaceProject,
   moveWorkspaceNodes,
   moveWorkspacePage,
   openWorkspacePage,
   renameWorkspaceNode,
 } from "@/core/service/workspace/WorkspacePageOps";
-import { ComponentTab, Tab } from "@/core/Tab";
+import { ComponentTab, type ResourceTab, Tab } from "@/core/Tab";
 import { dockWorkspacePanel, TabWorkspace } from "@/core/TabWorkspace";
 import { createSubWindow } from "@/core/subWindowOpen";
 import { activeResourceTabAtom, store, tabsAtom } from "@/state";
@@ -44,7 +46,7 @@ import { Rectangle } from "@graphif/shapes";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
 import i18next from "i18next";
-import { useAtom } from "jotai";
+import { useAtom, useStore } from "jotai";
 import {
   ArrowUpDown,
   Copy,
@@ -77,22 +79,52 @@ function isPagePath(path: string) {
   return WorkspacePaths.normalize(path).toLowerCase().endsWith(".prg");
 }
 
+function filePathOfTab(tab: ResourceTab | undefined): string | undefined {
+  return tab && "uri" in tab && tab.uri.scheme === "file" ? WorkspacePaths.normalize(tab.uri.fsPath) : undefined;
+}
+
+function isSameOptionalPath(a: string | undefined, b: string | undefined) {
+  if (a === b) return true;
+  return a !== undefined && b !== undefined && isSameWorkspacePath(a, b);
+}
+
+function findWorkspacePagePath(nodes: WorkspaceNode[], fsPath: string | undefined): string | undefined {
+  if (!fsPath) return undefined;
+  for (const node of nodes) {
+    if (node.kind === "page") {
+      if (isSameWorkspacePath(node.path, fsPath)) return node.path;
+    } else {
+      const found = findWorkspacePagePath(node.children, fsPath);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
 export default function WorkspaceWindow() {
   const { t } = useTranslation("workspace");
+  const jotaiStore = useStore();
   const [activeTab] = useAtom(activeResourceTabAtom);
   const [root] = Settings.use("activeWorkspaceRoot");
   const [sortMode, setSortMode] = Settings.use("workspaceSortMode");
   const [treeOpacity] = Settings.use("workspaceTreeOpacity");
   const [renameOnDoubleClick] = Settings.use("workspaceRenameOnDoubleClick");
+  const [showCreatePageToast] = Settings.use("workspaceShowCreatePageToast");
   const backgroundColor = `color-mix(in srgb, var(--background) ${treeOpacity * 100}%, transparent)`;
   const [tree, setTree] = useState<WorkspaceNode[]>([]);
   const [collapsedDirs, setCollapsedDirs] = useState<ReadonlySet<string>>(new Set());
   const [versionCounts, setVersionCounts] = useState<ReadonlyMap<string, number>>(new Map());
   const [clipboard, setClipboard] = useState<WorkspaceClipboard | null>(null);
   const [selectedPaths, setSelectedPaths] = useState<ReadonlySet<string>>(new Set());
-  const [editing, setEditing] = useState<{ node: WorkspaceNode; newIn?: string } | null>(null);
+  const [editing, setEditing] = useState<{
+    node: WorkspaceNode;
+    newIn?: string;
+    placement?: WorkspaceCreatePlacement;
+  } | null>(null);
   const [focusRequest, setFocusRequest] = useState<{ path: string } | null>(null);
+  const editingRef = useRef(false);
   const editBusyRef = useRef(false);
+  const pendingChangeWhileEditBusyRef = useRef(false);
   const [dropTarget, setDropTarget] = useState<WorkspaceDropTarget | null>(null);
   const [moveCopyTarget, setMoveCopyTarget] = useState<{
     paths: string[];
@@ -107,21 +139,17 @@ export default function WorkspaceWindow() {
   const dragOverKeyRef = useRef("");
   const refreshIdRef = useRef(0);
 
-  const activeFsPath = activeTab && "uri" in activeTab ? activeTab.uri.fsPath : undefined;
+  const activeFsPath = filePathOfTab(activeTab);
+  const prevActiveFsPathRef = useRef<string | undefined>(activeFsPath);
+  const initialSyncedRootRef = useRef("");
+  const internalOpCountRef = useRef(0);
+  const treeOpeningPathsRef = useRef<Set<string>>(new Set());
 
-  const refresh = useCallback(async () => {
-    const refreshId = ++refreshIdRef.current;
-    const currentRoot = WorkspaceManager.root;
-    if (!currentRoot) {
-      if (refreshId !== refreshIdRef.current) return;
-      setTree([]);
-      setVersionCounts(new Map());
-      setSelectedPaths(new Set());
-      return;
-    }
-    const nodes = await WorkspaceManager.readTree();
-    if (refreshId !== refreshIdRef.current || WorkspaceManager.root !== currentRoot) return;
-    setTree(nodes);
+  useEffect(() => {
+    editingRef.current = editing !== null;
+  }, [editing]);
+
+  const syncTreeMetadata = useCallback(async (nodes: WorkspaceNode[], refreshId: number, currentRoot: string) => {
     const pages: WorkspacePageNode[] = [];
     const walk = (list: WorkspaceNode[]) => {
       for (const node of list) {
@@ -156,6 +184,32 @@ export default function WorkspaceWindow() {
     });
   }, []);
 
+  const refresh = useCallback(async () => {
+    const refreshId = ++refreshIdRef.current;
+    const currentRoot = WorkspaceManager.root;
+    if (!currentRoot) {
+      if (refreshId !== refreshIdRef.current) return;
+      setTree([]);
+      setVersionCounts(new Map());
+      setSelectedPaths(new Set());
+      return;
+    }
+    const nodes = await WorkspaceManager.readTree();
+    if (refreshId !== refreshIdRef.current || WorkspaceManager.root !== currentRoot) return;
+    setTree(nodes);
+    if (initialSyncedRootRef.current !== currentRoot) {
+      initialSyncedRootRef.current = currentRoot;
+      const activePath = filePathOfTab(jotaiStore.get(activeResourceTabAtom));
+      prevActiveFsPathRef.current = activePath;
+      const matched = findWorkspacePagePath(nodes, activePath);
+      if (matched && !editingRef.current && !editBusyRef.current) {
+        setSelectedPaths((previous) => (previous.size > 0 ? previous : new Set([matched])));
+        if (anchorPathRef.current === undefined) anchorPathRef.current = matched;
+      }
+    }
+    await syncTreeMetadata(nodes, refreshId, currentRoot);
+  }, [jotaiStore, syncTreeMetadata]);
+
   useEffect(() => {
     setCollapsedDirs(new Set(readCollapsedDirs(root)));
     setTree([]);
@@ -164,6 +218,8 @@ export default function WorkspaceWindow() {
     setEditing(null);
     setFocusRequest(null);
     anchorPathRef.current = undefined;
+    initialSyncedRootRef.current = "";
+    treeOpeningPathsRef.current.clear();
   }, [root]);
 
   useEffect(() => {
@@ -174,13 +230,20 @@ export default function WorkspaceWindow() {
 
   useEffect(() => {
     const onChange = () => {
+      if (editBusyRef.current) {
+        pendingChangeWhileEditBusyRef.current = true;
+        return;
+      }
+      refresh().catch(reportWorkspaceError);
+    };
+    const onRootChange = () => {
       refresh().catch(reportWorkspaceError);
     };
     WorkspaceManager.on("change", onChange);
-    WorkspaceManager.on("root-change", onChange);
+    WorkspaceManager.on("root-change", onRootChange);
     return () => {
       WorkspaceManager.off("change", onChange);
-      WorkspaceManager.off("root-change", onChange);
+      WorkspaceManager.off("root-change", onRootChange);
     };
   }, [refresh]);
 
@@ -191,7 +254,9 @@ export default function WorkspaceWindow() {
             tree,
             collapsedDirs,
             WorkspacePaths.normalize(root),
-            editing?.newIn === undefined ? undefined : { dirPath: editing.newIn, node: editing.node },
+            editing?.newIn === undefined
+              ? undefined
+              : { dirPath: editing.newIn, node: editing.node, placement: editing.placement },
           )
         : [],
     [tree, collapsedDirs, root, editing],
@@ -215,6 +280,55 @@ export default function WorkspaceWindow() {
     walk(tree);
     return map;
   }, [tree]);
+
+  // 外部切换标签页时同步树选中态；树内点击/多选/重命名/移动已自行维护选中集，不能被异步切页覆盖
+  useEffect(() => {
+    const previous = prevActiveFsPathRef.current;
+    if (isSameOptionalPath(previous, activeFsPath)) return;
+    prevActiveFsPathRef.current = activeFsPath;
+
+    const activeKey = activeFsPath?.toLowerCase();
+    if (activeKey && treeOpeningPathsRef.current.delete(activeKey)) return;
+    treeOpeningPathsRef.current.clear();
+
+    if (editBusyRef.current || internalOpCountRef.current > 0 || isReopeningWorkspaceProject()) return;
+
+    const matched = activeFsPath
+      ? [...kindByPath.entries()].find(
+          ([path, kind]) => kind === "page" && isSameWorkspacePath(path, activeFsPath),
+        )?.[0]
+      : undefined;
+
+    if (matched) {
+      setSelectedPaths(new Set([matched]));
+      anchorPathRef.current = matched;
+      return;
+    }
+
+    if (previous) {
+      setSelectedPaths((current) =>
+        current.size === 1 && [...current].every((path) => isSameWorkspacePath(path, previous)) ? new Set() : current,
+      );
+      if (anchorPathRef.current && isSameWorkspacePath(anchorPathRef.current, previous)) {
+        anchorPathRef.current = undefined;
+      }
+    }
+  }, [activeFsPath, kindByPath]);
+
+  const openTreePage = useCallback(
+    (path: string) => {
+      const normalized = WorkspacePaths.normalize(path);
+      const active = filePathOfTab(jotaiStore.get(activeResourceTabAtom));
+      const key = normalized.toLowerCase();
+      const willSwitch = !active || !isSameWorkspacePath(normalized, active);
+      if (willSwitch) treeOpeningPathsRef.current.add(key);
+      openWorkspacePage(path).catch((error) => {
+        if (willSwitch) treeOpeningPathsRef.current.delete(key);
+        reportWorkspaceError(error);
+      });
+    },
+    [jotaiStore],
+  );
 
   const toggleCollapsed = useCallback(
     (dirPath: string) => {
@@ -273,12 +387,14 @@ export default function WorkspaceWindow() {
   );
 
   const beginCreate = useCallback(
-    async (dirPath: string, kind: WorkspaceNode["kind"]) => {
+    async (dirPath: string, kind: WorkspaceNode["kind"], placement?: WorkspaceCreatePlacement) => {
       const currentRoot = WorkspaceManager.root;
       if (!currentRoot || editing || editBusyRef.current) return;
       const parent = WorkspacePaths.normalize(dirPath);
       const baseName = kind === "dir" ? t("newFolderName") : t("newPage");
+      const effectivePlacement = sortMode === "custom" ? placement : undefined;
       editBusyRef.current = true;
+      pendingChangeWhileEditBusyRef.current = false;
       try {
         const name = await WorkspaceManager.suggestNewName(parent, kind, baseName);
         if (WorkspaceManager.root !== currentRoot) return;
@@ -292,12 +408,16 @@ export default function WorkspaceWindow() {
         const node: WorkspaceNode = kind === "dir" ? { kind, name, path, children: [] } : { kind, name, path };
         setSelectedPaths(new Set());
         anchorPathRef.current = undefined;
-        setEditing({ node, newIn: parent });
+        setEditing({ node, newIn: parent, placement: effectivePlacement });
       } finally {
         editBusyRef.current = false;
+        if (pendingChangeWhileEditBusyRef.current) {
+          pendingChangeWhileEditBusyRef.current = false;
+          refresh().catch(reportWorkspaceError);
+        }
       }
     },
-    [editing, root, t],
+    [editing, refresh, root, sortMode, t],
   );
 
   const beginRename = useCallback(
@@ -314,46 +434,78 @@ export default function WorkspaceWindow() {
     async (value: string | undefined, restoreFocus: boolean) => {
       const currentRoot = WorkspaceManager.root;
       if (!editing || editBusyRef.current || currentRoot !== WorkspacePaths.normalize(root)) return;
-      const { node, newIn } = editing;
+      const { node, newIn, placement } = editing;
       const name = value?.trim() || node.name;
       const isNew = newIn !== undefined;
       editBusyRef.current = true;
+      pendingChangeWhileEditBusyRef.current = false;
       let path = node.path;
+      let mutated = false;
       try {
         if (isNew) {
+          refreshIdRef.current += 1;
           path = await (node.kind === "dir"
-            ? WorkspaceManager.createFolder(newIn, name)
-            : WorkspaceManager.createPage(newIn, name));
+            ? WorkspaceManager.createFolder(newIn, name, placement)
+            : WorkspaceManager.createPage(newIn, name, placement));
+          mutated = true;
         } else if (name !== node.name) {
+          refreshIdRef.current += 1;
           path = await renameWorkspaceNode(path, name);
+          prevActiveFsPathRef.current = filePathOfTab(jotaiStore.get(activeResourceTabAtom));
+          mutated = true;
         }
         if (WorkspaceManager.root !== currentRoot) return;
-        setEditing(null);
-        setSelectedPaths((previous) => (previous.size === 0 || previous.has(node.path) ? new Set([path]) : previous));
-        if (anchorPathRef.current === undefined || anchorPathRef.current === node.path) anchorPathRef.current = path;
-        if (restoreFocus) setFocusRequest({ path });
+        const applyFinishedState = () => {
+          setEditing(null);
+          setSelectedPaths((previous) => (previous.size === 0 || previous.has(node.path) ? new Set([path]) : previous));
+          if (anchorPathRef.current === undefined || anchorPathRef.current === node.path) anchorPathRef.current = path;
+          if (restoreFocus) setFocusRequest({ path });
+        };
+        if (mutated) {
+          // 读完最新树后再与 setTree 同批退出编辑态，避免行先消失或重现闪动
+          const refreshId = ++refreshIdRef.current;
+          const nodes = await WorkspaceManager.readTree();
+          if (refreshId !== refreshIdRef.current || WorkspaceManager.root !== currentRoot) return;
+          pendingChangeWhileEditBusyRef.current = false;
+          setTree(nodes);
+          applyFinishedState();
+          syncTreeMetadata(nodes, refreshId, currentRoot).catch(reportWorkspaceError);
+        } else {
+          applyFinishedState();
+        }
         if (isNew) {
-          toast.success(t(node.kind === "dir" ? "folderCreated" : "pageCreated"));
-          if (node.kind === "page") openWorkspacePage(path).catch(reportWorkspaceError);
+          if (node.kind === "dir") toast.success(t("folderCreated"));
+          else if (showCreatePageToast) toast.success(t("pageCreated"));
+          if (node.kind === "page") openTreePage(path);
         }
       } finally {
         editBusyRef.current = false;
+        if (pendingChangeWhileEditBusyRef.current) {
+          pendingChangeWhileEditBusyRef.current = false;
+          refresh().catch(reportWorkspaceError);
+        }
       }
     },
-    [editing, root, t],
+    [editing, jotaiStore, openTreePage, refresh, root, showCreatePageToast, syncTreeMetadata, t],
   );
 
   const deleteEntries = useCallback(
     async (paths: string[]) => {
-      for (const path of paths) {
-        // 目录走 PageOps：它会先把目录里已打开的页面存盘关闭，再递归删除
-        if (kindByPath.get(path) === "dir") await deleteWorkspaceFolder(path);
-        else await deleteWorkspacePage(path);
+      internalOpCountRef.current += 1;
+      try {
+        for (const path of paths) {
+          // 目录走 PageOps：它会先把目录里已打开的页面存盘关闭，再递归删除
+          if (kindByPath.get(path) === "dir") await deleteWorkspaceFolder(path);
+          else await deleteWorkspacePage(path);
+        }
+        prevActiveFsPathRef.current = filePathOfTab(jotaiStore.get(activeResourceTabAtom));
+        setSelectedPaths(new Set());
+        anchorPathRef.current = undefined;
+      } finally {
+        internalOpCountRef.current -= 1;
       }
-      setSelectedPaths(new Set());
-      anchorPathRef.current = undefined;
     },
-    [kindByPath],
+    [jotaiStore, kindByPath],
   );
 
   const confirmDelete = useCallback(
@@ -424,14 +576,20 @@ export default function WorkspaceWindow() {
   /** 单个页面走 PageOps（要处理已打开的标签页），批量或目录走 Manager 的通用节点操作 */
   const moveEntries = useCallback(
     async (paths: string[], targetDir: string) => {
-      const moved =
-        paths.length === 1 && isPagePath(paths[0])
-          ? [await moveWorkspacePage(paths[0], targetDir)]
-          : await moveWorkspaceNodes(paths, targetDir);
-      adoptMovedPaths(moved);
-      return moved;
+      internalOpCountRef.current += 1;
+      try {
+        const moved =
+          paths.length === 1 && isPagePath(paths[0])
+            ? [await moveWorkspacePage(paths[0], targetDir)]
+            : await moveWorkspaceNodes(paths, targetDir);
+        prevActiveFsPathRef.current = filePathOfTab(jotaiStore.get(activeResourceTabAtom));
+        adoptMovedPaths(moved);
+        return moved;
+      } finally {
+        internalOpCountRef.current -= 1;
+      }
     },
-    [adoptMovedPaths],
+    [adoptMovedPaths, jotaiStore],
   );
 
   const copyEntries = useCallback(
@@ -469,18 +627,18 @@ export default function WorkspaceWindow() {
   const actions = useMemo(
     () => ({
       openPage: (node: WorkspacePageNode) => {
-        openWorkspacePage(node.path).catch(reportWorkspaceError);
+        openTreePage(node.path);
       },
       toggleDir: (node: Extract<WorkspaceNode, { kind: "dir" }>) => {
         toggleCollapsed(node.path);
       },
       clickRow,
       contextRow,
-      newPage: (dirPath: string) => {
-        beginCreate(dirPath, "page").catch(reportWorkspaceError);
+      newPage: (dirPath: string, placement?: WorkspaceCreatePlacement) => {
+        beginCreate(dirPath, "page", placement).catch(reportWorkspaceError);
       },
-      newFolder: (dirPath: string) => {
-        beginCreate(dirPath, "dir").catch(reportWorkspaceError);
+      newFolder: (dirPath: string, placement?: WorkspaceCreatePlacement) => {
+        beginCreate(dirPath, "dir", placement).catch(reportWorkspaceError);
       },
       renameNode: beginRename,
       deleteNode: (node: WorkspaceNode) => {
@@ -579,6 +737,7 @@ export default function WorkspaceWindow() {
       copyLink,
       cutOrCopy,
       dropEntries,
+      openTreePage,
       paste,
       refresh,
       root,

@@ -767,6 +767,9 @@ settings:
   workspaceRenameOnDoubleClick:
     title: 連按兩下文件樹項目改名
     description: 連按同一個頁面或資料夾兩下，就可以直接喺文件樹改名。
+  workspaceShowCreatePageToast:
+    title: 新增頁面提示
+    description: 喺工作空間文件樹新增頁面後顯示成功提示。
   clearHistoryWhenManualSave:
     title: 使用快捷鍵手動儲存時，自動清空歷史紀錄
     description: '當使用Ctrl+S快捷鍵手動儲存檔案時，自動清空操作歷史紀錄。

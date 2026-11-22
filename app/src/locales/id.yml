@@ -729,6 +729,9 @@ settings:
   workspaceRenameOnDoubleClick:
     title: Klik Ganda untuk Mengganti Nama Item Ruang Kerja
     description: Klik ganda halaman atau folder untuk mengedit namanya langsung di pohon file.
+  workspaceShowCreatePageToast:
+    title: Notifikasi Halaman Baru
+    description: Tampilkan notifikasi berhasil setelah membuat halaman di pohon file ruang kerja.
   clearHistoryWhenManualSave:
     title: Bersihkan Riwayat Otomatis Saat Simpan Manual dengan Pintasan
     description: |

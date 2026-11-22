@@ -758,6 +758,9 @@ settings:
   workspaceRenameOnDoubleClick:
     title: 雙擊文件樹項目重命名
     description: 雙擊同一個頁面或文件夾時，直接在文件樹中編輯名稱。
+  workspaceShowCreatePageToast:
+    title: 新建頁面提示
+    description: 在工作空間文件樹中新建頁面後顯示成功提示。
   activeWorkspaceRoot:
     title: 當前工作空間目錄
     description: |

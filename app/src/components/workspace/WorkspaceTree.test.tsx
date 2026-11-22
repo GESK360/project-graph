@@ -176,3 +176,74 @@ it.each<WorkspaceNode>([node, { kind: "page", name: "作业", path: `${parent}/�
     expect(activate).toHaveBeenCalledTimes(2);
   },
 );
+
+it("applies selected styling only to selectedPaths even when another page is active", async () => {
+  const page: WorkspaceNode = { kind: "page", name: "为什么", path: `${parent}/为什么.prg` };
+  const dir: WorkspaceNode = { kind: "dir", name: "时间草稿", path: `${parent}/时间草稿`, children: [] };
+  const rows = flattenWorkspaceTree([page, dir], new Set([dir.path]), parent);
+
+  await act(async () =>
+    root.render(
+      <WorkspaceTree
+        nodes={[page, dir]}
+        rows={rows}
+        root={parent}
+        actions={actions}
+        collapsedDirs={new Set([dir.path])}
+        selectedPaths={new Set([dir.path])}
+        activeFsPath={page.path}
+        clipboard={null}
+        versionCounts={new Map()}
+        dropTarget={null}
+        manualOrder={false}
+        renameOnDoubleClick={true}
+        focusRequest={null}
+        finishEdit={vi.fn()}
+      />,
+    ),
+  );
+
+  const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>("[data-pg-workspace-row]"));
+  const pageButton = buttons.find((button) => button.dataset.pgWorkspacePath === page.path)!;
+  const dirButton = buttons.find((button) => button.dataset.pgWorkspacePath === dir.path)!;
+
+  expect(pageButton.getAttribute("aria-current")).toBe("page");
+  expect(pageButton.className).not.toContain("bg-accent/60");
+  expect(dirButton.className).toContain("bg-accent/60");
+});
+
+it("places pending created entries right after the anchor page or at the start of a folder", () => {
+  const firstPage: WorkspaceNode = { kind: "page", name: "06生", path: `${parent}/06生.prg` };
+  const anchorPage: WorkspaceNode = { kind: "page", name: "为什么", path: `${parent}/为什么.prg` };
+  const childA: WorkspaceNode = { kind: "page", name: "子页A", path: `${parent}/时间草稿/子页A.prg` };
+  const childB: WorkspaceNode = { kind: "page", name: "子页B", path: `${parent}/时间草稿/子页B.prg` };
+  const dir: WorkspaceNode = { kind: "dir", name: "时间草稿", path: `${parent}/时间草稿`, children: [childA, childB] };
+  const pendingPage: WorkspaceNode = { kind: "page", name: "新建页面", path: `${parent}/.pending` };
+
+  const afterPageRows = flattenWorkspaceTree([firstPage, anchorPage, dir], new Set([dir.path]), parent, {
+    dirPath: parent,
+    node: pendingPage,
+    placement: { type: "after", fileName: "为什么.prg" },
+  });
+  expect(afterPageRows.map((row) => row.node.path)).toEqual([
+    firstPage.path,
+    anchorPage.path,
+    pendingPage.path,
+    dir.path,
+  ]);
+
+  const pendingChild: WorkspaceNode = { kind: "page", name: "新建页面", path: `${dir.path}/.pending` };
+  const insideDirRows = flattenWorkspaceTree([firstPage, anchorPage, dir], new Set(), parent, {
+    dirPath: dir.path,
+    node: pendingChild,
+    placement: { type: "start" },
+  });
+  expect(insideDirRows.map((row) => row.node.path)).toEqual([
+    firstPage.path,
+    anchorPage.path,
+    dir.path,
+    pendingChild.path,
+    childA.path,
+    childB.path,
+  ]);
+});

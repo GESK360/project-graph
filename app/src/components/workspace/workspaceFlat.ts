@@ -1,4 +1,4 @@
-import type { WorkspaceNode } from "@/core/service/workspace/WorkspaceManager";
+import type { WorkspaceCreatePlacement, WorkspaceNode } from "@/core/service/workspace/WorkspaceManager";
 
 /** 当前展开状态下的一次前序遍历结果：多选、拖拽落点、快捷键都按这个顺序算 */
 export interface WorkspaceFlatRow {
@@ -10,21 +10,42 @@ export interface WorkspaceFlatRow {
   indexInSiblings: number;
 }
 
+export interface WorkspacePendingRow {
+  dirPath: string;
+  node: WorkspaceNode;
+  placement?: WorkspaceCreatePlacement;
+}
+
 export function flattenWorkspaceTree(
   nodes: WorkspaceNode[],
   collapsedDirs: ReadonlySet<string>,
   root: string,
-  pending?: { dirPath: string; node: WorkspaceNode },
+  pending?: WorkspacePendingRow,
 ): WorkspaceFlatRow[] {
   const rows: WorkspaceFlatRow[] = [];
   const walk = (list: WorkspaceNode[], depth: number, dirPath: string) => {
+    const hasPendingHere = pending?.dirPath === dirPath;
+    let inserted = false;
+    if (hasPendingHere && pending.placement?.type === "start") {
+      rows.push({ node: pending.node, depth, dirPath, siblings: list, indexInSiblings: 0 });
+      inserted = true;
+    }
     list.forEach((node, indexInSiblings) => {
       rows.push({ node, depth, dirPath, siblings: list, indexInSiblings });
       if (node.kind === "dir" && !collapsedDirs.has(node.path)) {
         walk(node.children, depth + 1, node.path);
       }
+      if (
+        hasPendingHere &&
+        !inserted &&
+        pending.placement?.type === "after" &&
+        fileNameOf(node).toLowerCase() === pending.placement.fileName.toLowerCase()
+      ) {
+        rows.push({ node: pending.node, depth, dirPath, siblings: list, indexInSiblings: indexInSiblings + 1 });
+        inserted = true;
+      }
     });
-    if (pending?.dirPath === dirPath) {
+    if (hasPendingHere && !inserted) {
       rows.push({ node: pending.node, depth, dirPath, siblings: list, indexInSiblings: list.length });
     }
   };

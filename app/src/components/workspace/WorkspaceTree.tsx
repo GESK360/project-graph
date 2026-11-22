@@ -5,7 +5,11 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import type { WorkspaceClipboard, WorkspaceNode } from "@/core/service/workspace/WorkspaceManager";
+import type {
+  WorkspaceClipboard,
+  WorkspaceCreatePlacement,
+  WorkspaceNode,
+} from "@/core/service/workspace/WorkspaceManager";
 import { cn } from "@/utils/cn";
 import {
   ArrowDown,
@@ -58,8 +62,8 @@ export interface WorkspaceTreeActions {
   clickRow: (click: WorkspaceRowClick) => void;
   /** 右键某行时先确保它被选中，菜单才会作用在它（或它所在的选择集）上 */
   contextRow: (path: string) => void;
-  newPage: (dirPath: string) => void;
-  newFolder: (dirPath: string) => void;
+  newPage: (dirPath: string, placement?: WorkspaceCreatePlacement) => void;
+  newFolder: (dirPath: string, placement?: WorkspaceCreatePlacement) => void;
   renameNode: (node: WorkspaceNode) => void;
   deleteNode: (node: WorkspaceNode) => void;
   moveUp: (path: string) => void;
@@ -442,7 +446,10 @@ function EditingRow({ row, finishEdit }: Pick<WorkspaceTreeProps, "finishEdit"> 
 
   return (
     <div
-      className="bg-accent/60 text-accent-foreground flex h-6 w-full items-center gap-1 rounded-sm pr-2 text-xs"
+      className={cn(
+        "bg-accent/60 text-accent-foreground flex h-6 w-full items-center rounded-sm pr-2 text-xs",
+        isDir ? "gap-1" : "gap-1.5",
+      )}
       style={{ paddingLeft: 4 + row.depth * INDENT + (isDir ? 0 : 18) }}
       onContextMenu={(event) => event.stopPropagation()}
     >
@@ -576,11 +583,11 @@ function DirRow({ row, actions, drag, ...state }: TreeState & RowProps) {
           {t("moveOrCopy")}
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => actions.newPage(node.path)}>
+        <ContextMenuItem onSelect={() => actions.newPage(node.path, { type: "start" })}>
           <FilePlus />
           {t("newPage")}
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => actions.newFolder(node.path)}>
+        <ContextMenuItem onSelect={() => actions.newFolder(node.path, { type: "start" })}>
           <FolderPlus />
           {t("createFolder")}
         </ContextMenuItem>
@@ -601,14 +608,14 @@ function PageRow({ row, actions, drag, ...state }: TreeState & RowProps) {
       <ContextMenuTrigger asChild>
         <button
           type="button"
+          aria-current={isActive ? "page" : undefined}
           data-pg-workspace-row=""
           data-pg-workspace-path={node.path}
           data-pg-workspace-renameable={isSelected && !batch ? "" : undefined}
           style={{ paddingLeft: 4 + row.depth * INDENT + 18 }}
           className={cn(
             "hover:bg-accent/50 flex h-6 w-full items-center gap-1.5 rounded-sm pr-2 text-left text-xs",
-            isActive && "bg-accent/60 text-accent-foreground",
-            isSelected && !isActive && "bg-accent/60",
+            isSelected && "bg-accent/60 text-accent-foreground",
             isCutPath(state.clipboard, node.path) && "opacity-50",
             rowDropClass(state.dropTarget, node.path),
           )}
@@ -673,11 +680,11 @@ function PageRow({ row, actions, drag, ...state }: TreeState & RowProps) {
           {t("moveOrCopy")}
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => actions.newPage(row.dirPath)}>
+        <ContextMenuItem onSelect={() => actions.newPage(row.dirPath, { type: "after", fileName: fileNameOf(node) })}>
           <FilePlus />
           {t("newPage")}
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => actions.newFolder(row.dirPath)}>
+        <ContextMenuItem onSelect={() => actions.newFolder(row.dirPath, { type: "after", fileName: fileNameOf(node) })}>
           <FolderPlus />
           {t("createFolder")}
         </ContextMenuItem>

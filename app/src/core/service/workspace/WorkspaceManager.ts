@@ -28,6 +28,9 @@ export type WorkspaceClipboard = { mode: "cut" | "copy"; paths: string[] };
 /** 与 Settings.workspaceSortMode 一一对应；custom 之外的模式都由界面禁用拖拽与上移下移 */
 export type WorkspaceSortMode = "custom" | "name" | "createdAt" | "modifiedAt";
 
+/** 新建节点在自定义排序（无）里的插入位置；省略表示追加到目录末尾 */
+export type WorkspaceCreatePlacement = { type: "start" } | { type: "after"; fileName: string };
+
 type WorkspaceEvent = "change" | "root-change";
 
 const HISTORY_DIR = ".flux-graph/history";
@@ -180,7 +183,7 @@ export class WorkspaceManagerClass {
   }
 
   /** 新建空 .prg，返回实际保存的路径 */
-  async createPage(dirPath: string, name: string): Promise<string> {
+  async createPage(dirPath: string, name: string, placement?: WorkspaceCreatePlacement): Promise<string> {
     this.requireRoot();
     const dir = WorkspacePaths.normalize(dirPath);
     const baseName = this.sanitizeName(name);
@@ -197,7 +200,7 @@ export class WorkspaceManagerClass {
     } finally {
       await project.dispose();
     }
-    await this.appendOrder(dir, WorkspacePaths.baseName(target));
+    await this.insertOrder(dir, WorkspacePaths.baseName(target), placement);
     this.emit("change");
     return target;
   }
@@ -258,7 +261,7 @@ export class WorkspaceManagerClass {
   }
 
   /** dirPath 下新建空目录；name 省略时用「新建文件夹」，重名依次「新建文件夹（1）」…… */
-  async createFolder(dirPath: string, name?: string): Promise<string> {
+  async createFolder(dirPath: string, name?: string, placement?: WorkspaceCreatePlacement): Promise<string> {
     this.requireRoot();
     const dir = WorkspacePaths.normalize(dirPath);
     const baseName =
@@ -268,7 +271,7 @@ export class WorkspaceManagerClass {
     await mkdir(dir, { recursive: true });
     const target = await this.uniqueTitlePath(dir, baseName);
     await mkdir(target, { recursive: true });
-    await this.appendOrder(dir, WorkspacePaths.baseName(target));
+    await this.insertOrder(dir, WorkspacePaths.baseName(target), placement);
     this.emit("change");
     return target;
   }
@@ -636,14 +639,46 @@ export class WorkspaceManagerClass {
     await writeFile(WorkspacePaths.join(root, ORDER_FILE), content);
   }
 
-  /** 新建出来的项追加到该目录末尾；首次记录时先按当前显示顺序铺底，否则新项会插到所有项之前 */
-  private async appendOrder(dirPath: string, fileName: string): Promise<void> {
+  /** 新建出来的项写入自定义排序：无指定落点时追加末尾；首次记录或存在未入表项时先按当前显示顺序铺底 */
+  private async insertOrder(dirPath: string, fileName: string, placement?: WorkspaceCreatePlacement): Promise<void> {
     const root = this.root;
     if (!root) return;
     const order = await this.readOrder();
     const key = this.relativeTo(root, dirPath);
-    const current = order[key] ?? (await this.defaultOrderNames(dirPath));
-    order[key] = [...current.filter((name) => name !== fileName), fileName];
+    const defaults = await this.defaultOrderNames(dirPath);
+    const normalizeName = (name: string) => name.toLowerCase();
+    const fileKey = normalizeName(fileName);
+    const existing = new Set(defaults.map(normalizeName));
+    const names: string[] = [];
+    const seen = new Set<string>([fileKey]);
+    for (const name of order[key] ?? []) {
+      const nameKey = normalizeName(name);
+      if (!existing.has(nameKey) || seen.has(nameKey)) continue;
+      seen.add(nameKey);
+      names.push(name);
+    }
+    for (const name of defaults) {
+      const nameKey = normalizeName(name);
+      if (seen.has(nameKey)) continue;
+      seen.add(nameKey);
+      names.push(name);
+    }
+
+    const effectivePlacement =
+      placement && (Settings.workspaceSortMode === undefined || Settings.workspaceSortMode === "custom")
+        ? placement
+        : undefined;
+    if (effectivePlacement?.type === "start") {
+      names.unshift(fileName);
+    } else if (effectivePlacement?.type === "after") {
+      const anchorKey = normalizeName(effectivePlacement.fileName);
+      const anchorIndex = names.findIndex((name) => normalizeName(name) === anchorKey);
+      if (anchorIndex >= 0) names.splice(anchorIndex + 1, 0, fileName);
+      else names.push(fileName);
+    } else {
+      names.push(fileName);
+    }
+    order[key] = names;
     await this.writeOrder(order);
   }
 
@@ -777,9 +812,10 @@ export class WorkspaceManagerClass {
       .filter((entry) => isVisibleEntry(entry.name))
       .filter((entry) => entry.isDirectory || (entry.isFile && entry.name.toLowerCase().endsWith(".prg")))
       .map((entry) => ({ name: entry.name, isDir: entry.isDirectory }));
+    const displayName = (item: { name: string; isDir: boolean }) => (item.isDir ? item.name : item.name.slice(0, -4));
     listed.sort((left, right) => {
       if (left.isDir !== right.isDir) return left.isDir ? -1 : 1;
-      return left.name.localeCompare(right.name);
+      return displayName(left).localeCompare(displayName(right));
     });
     return listed.map((item) => item.name);
   }

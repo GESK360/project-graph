@@ -8,7 +8,7 @@ import { onOpenFile } from "@/core/service/GlobalMenu";
 import { Settings } from "@/core/service/Settings";
 import { store, tabsAtom } from "@/state";
 import { invoke } from "@tauri-apps/api/core";
-import { exists, readFile, rename, stat, writeFile } from "@tauri-apps/plugin-fs";
+import { exists, readDir, readFile, rename, stat, writeFile } from "@tauri-apps/plugin-fs";
 import { WorkspaceManager, WorkspacePaths } from "./WorkspaceManager";
 import { deleteWorkspacePage, moveWorkspaceNodes, moveWorkspacePage, openWorkspacePage } from "./WorkspacePageOps";
 
@@ -21,10 +21,14 @@ vi.mock("@/core/OpenProjectRuntimeHost", () => ({ ensureOpenProjectRuntimeBridge
 vi.mock("@/core/Project", () => ({
   ProjectState: { Saved: "saved" },
   Project: class {
-    constructor(readonly uri: URI) {}
+    static newDraft() {
+      return new this(URI.parse("draft:/new"));
+    }
+    constructor(public uri: URI) {}
     id = crypto.randomUUID();
     closing = false;
     stage = [];
+    stageManager = { add: vi.fn() };
     attachments = new Map();
     projectState = "saved";
     projectOwnerIdentity?: string;
@@ -35,6 +39,7 @@ vi.mock("@/core/Project", () => ({
     }
     activateOpenRuntimeHost = vi.fn();
     init = vi.fn();
+    save = vi.fn();
     dispose = vi.fn();
     loop = vi.fn();
     pause = vi.fn();
@@ -67,6 +72,7 @@ vi.mock("@tauri-apps/plugin-fs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tauri-apps/plugin-fs")>()),
   exists: vi.fn(),
   mkdir: vi.fn(),
+  readDir: vi.fn(),
   readFile: vi.fn(),
   rename: vi.fn(),
   stat: vi.fn(),
@@ -268,5 +274,80 @@ it("finishes in-flight opens and releases the old tab before deleting a path tha
     load.resolve();
     closing.resolve();
     remove.mockRestore();
+  }
+});
+
+it("inserts newly created pages and folders right after the anchor page or at the start of a folder in custom sort mode", async () => {
+  const root = "c:/workspace";
+  const folder = `${root}/时间草稿`;
+  const orderFile = `${root}/.flux-graph/order.json`;
+  const previousRoot = Settings.activeWorkspaceRoot;
+  const previousSortMode = Settings.workspaceSortMode;
+  let storedOrder: Record<string, string[]> = {
+    "": ["06生.prg", "为什么.prg", "时间草稿"],
+    时间草稿: ["旧子页1.prg", "旧子页2.prg"],
+  };
+  const diskEntries = new Map<string, Array<{ name: string; isDirectory: boolean; isFile: boolean }>>([
+    [
+      root,
+      [
+        { name: "06生.prg", isDirectory: false, isFile: true },
+        { name: "为什么.prg", isDirectory: false, isFile: true },
+        { name: "时间草稿", isDirectory: true, isFile: false },
+        { name: "1321424321.prg", isDirectory: false, isFile: true },
+      ],
+    ],
+    [
+      folder,
+      [
+        { name: "旧子页1.prg", isDirectory: false, isFile: true },
+        { name: "旧子页2.prg", isDirectory: false, isFile: true },
+      ],
+    ],
+  ]);
+
+  Settings.activeWorkspaceRoot = root;
+  Settings.workspaceSortMode = "custom";
+  vi.mocked(exists).mockImplementation(async (target) => {
+    const p = String(target);
+    if (p === orderFile || diskEntries.has(p)) return true;
+    const parent = WorkspacePaths.dirname(p);
+    const name = WorkspacePaths.baseName(p);
+    return (diskEntries.get(parent) ?? []).some((entry) => entry.name.toLowerCase() === name.toLowerCase());
+  });
+  vi.mocked(readDir).mockImplementation(async (dir) => (diskEntries.get(String(dir)) ?? []) as any);
+  vi.mocked(readFile).mockImplementation(async () => new TextEncoder().encode(JSON.stringify(storedOrder)));
+  vi.mocked(writeFile).mockImplementation(async (_file, content) => {
+    storedOrder = JSON.parse(new TextDecoder().decode(content as Uint8Array));
+  });
+
+  try {
+    // 1. 右键页面「为什么」新建页面 -> 插入到「为什么.prg」正后方（且补齐未入表的 1321424321.prg）
+    diskEntries.get(root)!.push({ name: "新页面.prg", isDirectory: false, isFile: true });
+    vi.mocked(exists).mockImplementationOnce(async () => false);
+    await WorkspaceManager.createPage(root, "新页面", { type: "after", fileName: "为什么.prg" });
+    expect(storedOrder[""]).toEqual(["06生.prg", "为什么.prg", "新页面.prg", "时间草稿", "1321424321.prg"]);
+
+    // 2. 右键页面「新页面」新建文件夹 -> 插入到「新页面.prg」正后方
+    diskEntries.get(root)!.push({ name: "新文件夹", isDirectory: true, isFile: false });
+    vi.mocked(exists).mockImplementationOnce(async () => false);
+    await WorkspaceManager.createFolder(root, "新文件夹", { type: "after", fileName: "新页面.prg" });
+    expect(storedOrder[""]).toEqual(["06生.prg", "为什么.prg", "新页面.prg", "新文件夹", "时间草稿", "1321424321.prg"]);
+
+    // 3. 右键文件夹「时间草稿」新建页面 -> 插入到该文件夹子项第 1 位
+    diskEntries.get(folder)!.push({ name: "首子页.prg", isDirectory: false, isFile: true });
+    vi.mocked(exists).mockImplementationOnce(async () => false);
+    await WorkspaceManager.createPage(folder, "首子页", { type: "start" });
+    expect(storedOrder["时间草稿"]).toEqual(["首子页.prg", "旧子页1.prg", "旧子页2.prg"]);
+
+    // 4. 非「无」排序模式下，不按指定落点插队，沿用追加到末尾
+    Settings.workspaceSortMode = "name";
+    diskEntries.get(folder)!.push({ name: "名称模式页.prg", isDirectory: false, isFile: true });
+    vi.mocked(exists).mockImplementationOnce(async () => false);
+    await WorkspaceManager.createPage(folder, "名称模式页", { type: "start" });
+    expect(storedOrder["时间草稿"]).toEqual(["首子页.prg", "旧子页1.prg", "旧子页2.prg", "名称模式页.prg"]);
+  } finally {
+    Settings.activeWorkspaceRoot = previousRoot;
+    Settings.workspaceSortMode = previousSortMode;
   }
 });
