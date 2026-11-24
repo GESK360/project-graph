@@ -1570,6 +1570,9 @@ keyBinds:
   moveMindMapSiblingDown:
     title: Move branch down one position
     description: In branch drag mode, swap with the next sibling node or group on the same side.
+  toggleHandwritingPenEraser:
+    title: Toggle brush and eraser
+    description: Switch between the last used brush preset and the last used eraser preset.
   selectHandwritingPen1: { title: Select pen preset 1 }
   selectHandwritingPen2: { title: Select pen preset 2 }
   selectHandwritingPen3: { title: Select pen preset 3 }
@@ -2295,6 +2298,9 @@ keyBindsGroup:
   ui:
     title: UI Controls
     description: "Used for controlling UI functions\n"
+  pen:
+    title: Brush
+    description: "Brush and eraser related functions\n"
   draw:
     title: Drawing
     description: "Drawing related functions\n"

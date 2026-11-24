@@ -15,7 +15,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog } from "@/components/ui/dialog";
 import type { Project } from "@/core/Project";
-import { getSelectedHandwritingEraser, Settings, type HandwritingEraser } from "@/core/service/Settings";
+import {
+  getSelectedHandwritingEraser,
+  getSelectedHandwritingPen,
+  Settings,
+  type HandwritingEraser,
+} from "@/core/service/Settings";
 import { cn } from "@/utils/cn";
 import { Copy, Eraser, Pencil, Trash2, type LucideIcon } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -115,6 +120,7 @@ export function HandwritingTools({ project }: { project: Project }) {
   };
 
   const selectTool = (id: string) => {
+    if (id !== "eraser") Settings.handwritingPenId = id;
     Settings.handwritingActiveTool = id;
     project.controller.setHandwritingMode(true);
   };
@@ -127,8 +133,10 @@ export function HandwritingTools({ project }: { project: Project }) {
 
   const deletePen = (penId: string) => {
     if (Settings.handwritingPens.length <= 1) return;
+    const wasSelectedPen = getSelectedHandwritingPen().id === penId;
     const remaining = Settings.handwritingPens.filter((pen) => pen.id !== penId);
     Settings.handwritingPens = remaining;
+    if (wasSelectedPen) Settings.handwritingPenId = remaining[0].id;
     if (Settings.handwritingActiveTool === penId) Settings.handwritingActiveTool = remaining[0].id;
   };
 

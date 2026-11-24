@@ -1,6 +1,11 @@
 import { Project } from "@/core/Project";
 import { ControllerClass } from "@/core/service/controlService/controller/ControllerClass";
-import { getSelectedHandwritingEraser, Settings, type HandwritingEraser } from "@/core/service/Settings";
+import {
+  getSelectedHandwritingEraser,
+  getSelectedHandwritingPen,
+  Settings,
+  type HandwritingEraser,
+} from "@/core/service/Settings";
 import { PenStroke, PenStrokeSegment } from "@/core/stage/stageObject/entity/PenStroke";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import { CursorNameEnum } from "@/types/cursors";
@@ -271,7 +276,7 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
 
   public setCurrentStrokeColor(color: Color) {
     const activeTool =
-      Settings.handwritingActiveTool === "eraser" ? Settings.handwritingPens[0]?.id : Settings.handwritingActiveTool;
+      Settings.handwritingActiveTool === "eraser" ? getSelectedHandwritingPen()?.id : Settings.handwritingActiveTool;
     if (!activeTool) return;
     const activePen = Settings.handwritingPens.find((pen) => pen.id === activeTool);
     if (!activePen) return;
@@ -299,6 +304,21 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
   public getCurrentEraser(): HandwritingEraser | undefined {
     if (this._isUsing) return this.activeEraser;
     if (Settings.handwritingActiveTool === "eraser") return getSelectedHandwritingEraser();
+  }
+
+  public togglePenAndEraser() {
+    if (Settings.handwritingActiveTool === "eraser") {
+      const pen = getSelectedHandwritingPen();
+      if (pen) Settings.handwritingActiveTool = pen.id;
+    } else {
+      const eraser = getSelectedHandwritingEraser();
+      if (eraser) Settings.handwritingEraserId = eraser.id;
+      Settings.handwritingActiveTool = "eraser";
+    }
+    if (Settings.mouseLeftMode !== "draw") {
+      this.project.controller.setHandwritingMode(true);
+    }
+    this.project.controller.resetCountdownTimer();
   }
 
   private eraseAlong(eraserStart: Vector, eraserEnd: Vector, eraser: HandwritingEraser) {

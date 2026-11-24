@@ -1519,6 +1519,10 @@ keyBindsGroup:
     title: UI控制
     description: |
       用于控制UI的一些功能
+  pen:
+    title: 画笔
+    description: |
+      画笔与橡皮相关功能
   draw:
     title: 涂鸦
     description: |
@@ -1609,6 +1613,9 @@ keyBinds:
   moveMindMapSiblingDown:
     title: 同级分支下移一位
     description: 在分支拖拽模式下，与同侧的下一个同级节点或分组框换位。
+  toggleHandwritingPenEraser:
+    title: 切换画笔和橡皮
+    description: 在上次使用的画笔和上次使用的橡皮之间切换。
   selectHandwritingPen1: { title: 选择第 1 支画笔 }
   selectHandwritingPen2: { title: 选择第 2 支画笔 }
   selectHandwritingPen3: { title: 选择第 3 支画笔 }

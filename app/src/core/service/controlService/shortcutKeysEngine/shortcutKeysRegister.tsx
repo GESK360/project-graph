@@ -326,7 +326,8 @@ function handwritingPresetKeyBind({
     onPress: (project) => {
       const preset = (isPen ? Settings.handwritingPens : Settings.handwritingErasers)[slot - 1];
       if (!project || !preset) return;
-      if (!isPen) Settings.handwritingEraserId = preset.id;
+      if (isPen) Settings.handwritingPenId = preset.id;
+      else Settings.handwritingEraserId = preset.id;
       Settings.handwritingActiveTool = isPen ? preset.id : "eraser";
       project.controller.setHandwritingMode(true);
     },
@@ -1937,6 +1938,16 @@ export const allKeyBinds: KeyBindItem[] = [
     },
   },
   ...handwritingPresetShortcuts.map(handwritingPresetKeyBind),
+  {
+    id: "toggleHandwritingPenEraser",
+    defaultKey: "C-u",
+    icon: ArrowLeftRight,
+    when: whenCanChangeDrawingMode,
+    ignoreRepeat: true,
+    onPress: (project) => {
+      project?.controller?.penStrokeDrawing?.togglePenAndEraser();
+    },
+  },
   {
     id: "checkoutLeftMouseToSelectAndMove",
     defaultKey: "v v v",

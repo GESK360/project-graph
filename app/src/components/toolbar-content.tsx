@@ -1,4 +1,4 @@
-import { Settings } from "@/core/service/Settings";
+import { getSelectedHandwritingPen, Settings } from "@/core/service/Settings";
 import { Button } from "./ui/button";
 import { Toolbar } from "./ui/toolbar";
 import { MousePointer, Pencil, Waypoints } from "lucide-react";
@@ -100,16 +100,18 @@ const DrawingColorLine: React.FC = () => {
     const refreshCurrentColor = () => {
       const activePen =
         Settings.handwritingPens.find((pen) => pen.id === Settings.handwritingActiveTool) ??
-        Settings.handwritingPens[0];
+        getSelectedHandwritingPen();
       setCurrentDrawColor(activePen ? Color.fromCss(activePen.color) : new Color(...Settings.autoFillPenStrokeColor));
     };
     ColorManager.getUserEntityFillColors().then(setUserColorList);
     const unwatchPens = Settings.watch("handwritingPens", refreshCurrentColor);
     const unwatchTool = Settings.watch("handwritingActiveTool", refreshCurrentColor);
+    const unwatchPenId = Settings.watch("handwritingPenId", refreshCurrentColor);
     refreshCurrentColor();
     return () => {
       unwatchPens();
       unwatchTool();
+      unwatchPenId();
     };
   }, []);
 
@@ -117,7 +119,7 @@ const DrawingColorLine: React.FC = () => {
     Settings.autoFillPenStrokeColor = color.toArray();
     Settings.autoFillPenStrokeColorEnable = true;
     const activeTool = Settings.handwritingActiveTool;
-    const activePenId = activeTool === "eraser" ? Settings.handwritingPens[0]?.id : activeTool;
+    const activePenId = activeTool === "eraser" ? getSelectedHandwritingPen().id : activeTool;
     if (activePenId) {
       Settings.handwritingPens = Settings.handwritingPens.map((pen) =>
         pen.id === activePenId ? { ...pen, color: color.toHexStringWithoutAlpha().toUpperCase() } : pen,

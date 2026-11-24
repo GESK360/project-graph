@@ -32,6 +32,7 @@ import { isMac } from "@/utils/platform";
 import { createStore } from "@/utils/store";
 import {
   AppWindow,
+  Brush,
   Dot,
   FileOutput,
   FileQuestion,
@@ -649,14 +650,14 @@ export const shortcutKeysGroups: ShortcutKeysGroup[] = [
     ],
   },
   {
+    title: "pen",
+    icon: <Brush />,
+    keys: ["toggleHandwritingPenEraser", ...handwritingPresetShortcuts.map(({ id }) => id)],
+  },
+  {
     title: "draw",
     icon: <LineSquiggle />,
-    keys: [
-      ...handwritingPresetShortcuts.map(({ id }) => id),
-      "selectEntityByPenStroke",
-      "penStrokeWidthIncrease",
-      "penStrokeWidthDecrease",
-    ],
+    keys: ["selectEntityByPenStroke", "penStrokeWidthIncrease", "penStrokeWidthDecrease"],
   },
   {
     title: "select",

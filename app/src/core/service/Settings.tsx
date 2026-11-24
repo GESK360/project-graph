@@ -286,6 +286,7 @@ export const settingsSchema = z.object({
     .min(1)
     .default([{ id: "pen-1", color: "#2563EB", width: 5 }]),
   handwritingActiveTool: z.string().default("pen-1"),
+  handwritingPenId: z.string().default("pen-1"),
   handwritingErasers: z
     .array(eraserPresetSchema)
     .min(1)
@@ -1048,6 +1049,10 @@ if (rawSettings.handwritingErasers === undefined) {
     },
   ];
 }
+if (rawSettings.handwritingPenId === undefined) {
+  const activePen = savedSettings.handwritingPens.find((pen) => pen.id === savedSettings.handwritingActiveTool);
+  savedSettings.handwritingPenId = activePen?.id ?? savedSettings.handwritingPens[0].id;
+}
 if (rawSettings.windowBackgroundAlpha === 0.28) {
   savedSettings.windowBackgroundAlpha = 0.72;
   await store.set("windowBackgroundAlpha", 0.72);
@@ -1203,12 +1208,28 @@ export const Settings = new Proxy<
   },
 );
 
+export type HandwritingPen = Settings["handwritingPens"][number];
+
+export function getSelectedHandwritingPen(): HandwritingPen {
+  return Settings.handwritingPens.find((pen) => pen.id === Settings.handwritingPenId) ?? Settings.handwritingPens[0];
+}
+
 export function getSelectedHandwritingEraser(): HandwritingEraser {
   return (
     Settings.handwritingErasers.find((eraser) => eraser.id === Settings.handwritingEraserId) ??
     Settings.handwritingErasers[0]
   );
 }
+
+Settings.watch("handwritingActiveTool", (tool) => {
+  if (
+    tool !== "eraser" &&
+    Settings.handwritingPenId !== tool &&
+    Settings.handwritingPens.some((pen) => pen.id === tool)
+  ) {
+    Settings.handwritingPenId = tool;
+  }
+});
 
 Settings.watch("persistentDragToConnectMindMap", (enabled) => {
   if (enabled && Settings.persistentDragToConnectMindMapAligned) {

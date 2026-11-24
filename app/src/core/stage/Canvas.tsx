@@ -39,7 +39,14 @@ export class Canvas {
       // 必须在 shouldRedirectKeyboardEvent 判断之前执行，否则输入框聚焦时会被跳过
       const key = event.key;
       if (
-        (event.ctrlKey && (key === "f" || key === "F" || key === "g" || key === "G" || key === "r" || key === "R")) ||
+        (event.ctrlKey &&
+          (key === "f" ||
+            key === "F" ||
+            key === "g" ||
+            key === "G" ||
+            key === "r" ||
+            key === "R" ||
+            (!event.altKey && !event.metaKey && !event.shiftKey && (key === "u" || key === "U")))) ||
         key === "F3" ||
         key === "F5" ||
         key === "F7"

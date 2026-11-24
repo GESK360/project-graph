@@ -1492,6 +1492,10 @@ keyBindsGroup:
     title: Kontrol UI
     description: |
       Untuk mengontrol beberapa fungsi UI
+  pen:
+    title: Kuas
+    description: |
+      Fungsi terkait kuas dan penghapus
   draw:
     title: Coretan
     description: |
@@ -1915,6 +1919,9 @@ keyBinds:
   moveMindMapSiblingDown:
     title: Geser cabang satu posisi ke bawah
     description: Dalam mode seret cabang, tukar posisi dengan simpul atau grup berikutnya pada sisi yang sama.
+  toggleHandwritingPenEraser:
+    title: Alihkan kuas dan penghapus
+    description: Beralih antara preset kuas yang terakhir digunakan dan preset penghapus yang terakhir digunakan.
   selectHandwritingPen1: { title: Pilih pena 1 }
   selectHandwritingPen2: { title: Pilih pena 2 }
   selectHandwritingPen3: { title: Pilih pena 3 }
