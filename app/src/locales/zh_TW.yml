@@ -134,6 +134,8 @@ stageTable:
   imagesCell:
     add: 添加圖片
     remove: 移除圖片
+    countLabel: "{{count}} 張圖片"
+    emptyLabel: 無圖片
   dateCell:
     clear: 清除
   selectCell:
@@ -141,6 +143,73 @@ stageTable:
     createPrefix: 創建
     removeOption: 移除選項
     emptyHint: 輸入名稱並回車創建選項
+  sortFilter:
+    sortAsc: 升序
+    sortDesc: 降序
+    clearSort: 清除排序
+    filterTitle: 篩選
+    sortTitle: 排序
+    searchPlaceholder: 搜索篩選項...
+    selectAll: 全選
+    clearFilter: 清除篩選
+    clearAllFilters: 清除全部篩選
+    emptyValue: (空白)
+    noFilterMatch: 沒有符合篩選條件的行
+    noActiveFilters: 當前未設置篩選條件
+    noSortActive: 默認順序
+    columnFilterAria: 排序與篩選
+    toggleSortAria: 切換升序或降序
+  selection:
+    selectAllAria: 全選表格
+    rowsCount: 已選 {{count}} 行
+    colsCount: 已選 {{count}} 列
+    cellsCount: 已選 {{count}} 格
+    allSelected: 已全選 ({{count}} 行)
+  formulaEditor:
+    title: 編輯公式
+    editFormula: 編輯公式
+    clickToSetFormula: 點擊設置公式...
+    solidifyHint: 切換類型時將把當前計算結果固化為靜態數據，不會丟失已有值。
+    doubleClickHint: 雙擊編輯公式
+    unsetFormula: 雙擊設置公式
+    currentTable: 當前表
+    deletedColumn: 已刪除列
+    formatLabel: 顯示格式
+    formatAuto: 自動
+    formatDateIso: 年-月-日
+    formatDateSlash: 年/月/日
+    formatDateMdy: 月/日/年
+    formatDateTime: 日期時間
+    formatNumInt: 整數
+    formatNum2: 兩位小數
+    formatNumComma: 千分位
+    formatNumPct: 百分比
+    inputAria: 公式輸入框
+    placeholder: 輸入公式，例如 POWER(2, [答對次數]) - 1 + [延期]，點擊下方列或函數可直接插入
+    syntaxValid: 語法正確
+    tipHint: 點擊下方列或函數插入，支持 Tab 快速插入當前高亮項
+    previewLabel: 實時預覽
+    emptyPreview: (空)
+    searchPlaceholder: 搜索列、函數或運算符...
+    noSearchMatch: 沒有匹配的列或函數
+    groups:
+      columns: 列
+      table: 整表引用
+      common: 常用函數
+      number: 數字函數
+      logic: 邏輯函數
+      text: 文本函數
+      date: 日期與時間函數
+      list: 列表函數
+      operator: 運算符
+    columnDocPrefix: 當前表
+    columnDocMid: 內的一列，通過引用
+    columnDocSuffix: ，可以獲取當前表下當前行的該列對應的值。
+    currentPreviewRowValue: 當前預覽行的值
+    relationTipTitle: 圖譜關係列進階用法（支持跨節點屬性穿透）
+    tableRefDoc: 引用當前畫布整張表的全部行，可搭配列屬性、FILTER、COUNTIF、SUMIF 等進行全表統計。
+    examplesLabel: 示例
+    shortcutHint: Tab 插入高亮項 · Ctrl+Enter 保存公式
   fallbackLabels:
     unnamedNode: 未命名節點
     unnamedSection: 未命名分組框
@@ -364,6 +433,12 @@ settings:
       cpu: CPU
       render: 渲染
       experimental: 開發中的功能
+    stageTable:
+      title: 多維表格
+      basic: 基礎
+  stageTableAutoFocusCanvasOnSelect:
+    title: 選中行或單元格時自動調整畫布視野
+    description: 開啟後，在多維表格中選中行或單元格時會自動將畫布視野調整到對應的節點；關閉後僅同步選中狀態，不自動移動畫布視野。
   language:
     title: 語言
     options:

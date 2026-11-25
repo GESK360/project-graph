@@ -197,7 +197,12 @@ export namespace QuickSettingsManager {
    * 验证设置项是否可以加入快捷栏（boolean/enum/number 且有图标）
    */
   export function isValidQuickSetting(settingKey: string): boolean {
-    if (isBranchControl(settingKey) || settingKey === "mouseLeftMode" || settingKey === "mouseRightDragBackground") {
+    if (
+      isBranchControl(settingKey) ||
+      settingKey === "mouseLeftMode" ||
+      settingKey === "mouseRightDragBackground" ||
+      settingKey === "drawingPaletteOpen"
+    ) {
       return false;
     }
     const type = getSettingType(settingKey);

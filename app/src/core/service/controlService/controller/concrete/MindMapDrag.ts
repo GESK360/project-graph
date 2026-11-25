@@ -1,6 +1,6 @@
 import type { Project } from "@/core/Project";
 import { Settings } from "@/core/service/Settings";
-import type { ConnectableEntity } from "@/core/stage/stageObject/abstract/ConnectableEntity";
+import { ConnectableEntity } from "@/core/stage/stageObject/abstract/ConnectableEntity";
 import type { Entity } from "@/core/stage/stageObject/abstract/StageEntity";
 import type { StageObject } from "@/core/stage/stageObject/abstract/StageObject";
 import { Edge } from "@/core/stage/stageObject/association/Edge";
@@ -159,11 +159,71 @@ export function moveMindMapSibling(project: Project, node: ConnectableEntity, di
   historyManager.recordStep();
 }
 
+export function alignMindMapSubtreeEdges(project: Project, root: ConnectableEntity, side: MindMapSide) {
+  const { graphMethods, stageManager } = project;
+  const branch = graphMethods.getSuccessorSet(root, true, true);
+  if (!isMovableBranch(branch)) return;
+  const branchNodes = new Set(branch);
+  const treeEdges = stageManager
+    .getLineEdges()
+    .filter((edge) => edge.lineType !== "dashed" && branchNodes.has(edge.source) && branchNodes.has(edge.target));
+  if (treeEdges.length > 0) {
+    const [sourceDirection, targetDirection] = edgeDirections[side];
+    stageManager.changeEdgesConnectLocation(treeEdges, sourceDirection, true);
+    stageManager.changeEdgesConnectLocation(treeEdges, targetDirection);
+  }
+}
+
 export function reflowMindMapTree(project: Project, node: ConnectableEntity, previousCenter?: Vector) {
   const [root] = project.graphMethods.getRoots(node, true);
   if (!root) return;
   if (!reflowBranch(project, root, node, previousCenter) && node instanceof Section) {
     reflowBranch(project, node, node, previousCenter, true);
+  }
+}
+
+export function reflowMindMapTreesForEntities(
+  project: Project,
+  entities: Iterable<Entity | null | undefined>,
+  previousCenters?: Map<string, Vector>,
+) {
+  if (!isPersistentMindMapDragEnabled()) return;
+  const candidates = new Set<ConnectableEntity>();
+  for (const entity of entities) {
+    if (!entity) continue;
+    const live = project.stageManager.getConnectableEntityByUUID?.(entity.uuid) ?? entity;
+    if (live instanceof ConnectableEntity) {
+      candidates.add(live);
+    }
+    for (let sec = live.parentSection; sec; sec = sec.parentSection) {
+      const liveSec = project.stageManager.getConnectableEntityByUUID?.(sec.uuid) ?? sec;
+      if (liveSec instanceof ConnectableEntity) {
+        candidates.add(liveSec);
+      }
+    }
+  }
+  if (candidates.size === 0) return;
+
+  const affectedSections = [...candidates]
+    .filter((item): item is Section => item instanceof Section)
+    .sort((a, b) => b.sectionDepth - a.sectionDepth);
+  for (const section of affectedSections) {
+    section.adjustLocationAndSize();
+  }
+
+  const reflowedRoots = new Set<ConnectableEntity>();
+  for (const candidate of candidates) {
+    const [root] = project.graphMethods.getRoots(candidate, true);
+    const treeKey = root ?? candidate;
+    if (reflowedRoots.has(treeKey)) continue;
+    const prevCenter = previousCenters?.get(candidate.uuid);
+    if (reflowBranch(project, treeKey, candidate, prevCenter)) {
+      reflowedRoots.add(treeKey);
+    } else if (candidate instanceof Section && !reflowedRoots.has(candidate)) {
+      if (reflowBranch(project, candidate, candidate, prevCenter, true)) {
+        reflowedRoots.add(candidate);
+      }
+    }
   }
 }
 
@@ -563,10 +623,26 @@ export class MindMapDrag {
       if (offset.isZero()) return;
       const ghostCenter = this.node.collisionBox.getRectangle().center.add(offset);
       const targetSection = this.getDropSection(ghostCenter, branch);
+      const oldParentSections = new Set<Section>();
+      const prevCenters = new Map<string, Vector>();
+      for (const root of this.roots) {
+        if (root.parentSection && root.parentSection !== targetSection) {
+          oldParentSections.add(root.parentSection);
+          prevCenters.set(root.parentSection.uuid, root.parentSection.collisionBox.getRectangle().center);
+        }
+      }
+      if (targetSection) {
+        prevCenters.set(targetSection.uuid, targetSection.collisionBox.getRectangle().center);
+      }
       const refreshSections = targetSection || branch.some((node) => node instanceof Section || node.parentSection);
       moveWithoutSectionReflow(this.project, () => entityMoveManager.moveWithChildrenOf(this.roots, offset, true));
       if (targetSection || this.roots.some((root) => root.parentSection)) this.setBranchSection(branch, targetSection);
       if (refreshSections) stageManager.updateReferences();
+      const changedContainers: Section[] = [...oldParentSections];
+      if (targetSection) changedContainers.push(targetSection);
+      if (changedContainers.length > 0) {
+        reflowMindMapTreesForEntities(this.project, changedContainers, prevCenters);
+      }
       historyManager.recordStep();
       return;
     }

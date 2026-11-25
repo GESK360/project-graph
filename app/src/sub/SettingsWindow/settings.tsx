@@ -48,12 +48,14 @@ import {
   SquareDashedMousePointer,
   SquareDashedTopSolid,
   SquareFunction,
+  Table2,
   TextCursorInput,
   TextQuote,
   Touchpad,
   Unplug,
   Wrench,
   Zap,
+  Crosshair,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -450,6 +452,9 @@ export const categories = {
       "aiAutoApproveMcpTools",
     ],
   },
+  stageTable: {
+    basic: ["stageTableAutoFocusCanvasOnSelect"],
+  },
 };
 
 export const categoryIcons = {
@@ -500,5 +505,9 @@ export const categoryIcons = {
     debug: Bug,
     miniWindow: PictureInPicture,
     experimental: Sparkle,
+  },
+  stageTable: {
+    icon: Table2,
+    basic: Crosshair,
   },
 };

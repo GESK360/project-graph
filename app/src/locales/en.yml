@@ -134,6 +134,8 @@ stageTable:
   imagesCell:
     add: Add image
     remove: Remove image
+    countLabel: "{{count}} image(s)"
+    emptyLabel: No images
   dateCell:
     clear: Clear
   selectCell:
@@ -141,6 +143,73 @@ stageTable:
     createPrefix: Create
     removeOption: Remove option
     emptyHint: Type a name and press Enter to create
+  sortFilter:
+    sortAsc: Ascending
+    sortDesc: Descending
+    clearSort: Clear sort
+    filterTitle: Filter
+    sortTitle: Sort
+    searchPlaceholder: Search values...
+    selectAll: Select all
+    clearFilter: Clear filter
+    clearAllFilters: Clear all filters
+    emptyValue: (Empty)
+    noFilterMatch: No rows match the current filter
+    noActiveFilters: No active filters
+    noSortActive: Default order
+    columnFilterAria: Sort and filter
+    toggleSortAria: Toggle sort order
+  selection:
+    selectAllAria: Select all
+    rowsCount: "{{count}} row(s) selected"
+    colsCount: "{{count}} column(s) selected"
+    cellsCount: "{{count}} cell(s) selected"
+    allSelected: All selected ({{count}} rows)
+  formulaEditor:
+    title: Edit Formula
+    editFormula: Edit formula
+    clickToSetFormula: Click to set formula...
+    solidifyHint: Current computed values will be solidified into static data when switching types.
+    doubleClickHint: Double-click to edit formula
+    unsetFormula: Double-click to set formula
+    currentTable: Current Table
+    deletedColumn: Deleted column
+    formatLabel: Format
+    formatAuto: Auto
+    formatDateIso: YYYY-MM-DD
+    formatDateSlash: YYYY/MM/DD
+    formatDateMdy: MM/DD/YYYY
+    formatDateTime: Date & Time
+    formatNumInt: Integer
+    formatNum2: 2 Decimals
+    formatNumComma: Thousands
+    formatNumPct: Percentage
+    inputAria: Formula editor input
+    placeholder: Enter formula, e.g. POWER(2, [Correct]) - 1 + [Delay], or click columns/functions below
+    syntaxValid: Syntax valid
+    tipHint: Click columns or functions below to insert, or press Tab for the highlighted item
+    previewLabel: Live preview
+    emptyPreview: (Empty)
+    searchPlaceholder: Search columns, functions or operators...
+    noSearchMatch: No matching columns or functions
+    groups:
+      columns: Columns
+      table: Whole Table
+      common: Common Functions
+      number: Number Functions
+      logic: Logic Functions
+      text: Text Functions
+      date: Date & Time Functions
+      list: List Functions
+      operator: Operators
+    columnDocPrefix: A column in table
+    columnDocMid: . Referencing
+    columnDocSuffix: " returns the cell value for the current row."
+    currentPreviewRowValue: Value on preview row
+    relationTipTitle: Graph relation traversal examples
+    tableRefDoc: References all rows in the current canvas table for whole-table aggregations like COUNTIF, SUMIF, FILTER, and AVERAGE.
+    examplesLabel: Examples
+    shortcutHint: Tab to insert highlighted · Ctrl+Enter to save
   fallbackLabels:
     unnamedNode: Unnamed node
     unnamedSection: Unnamed section
@@ -289,6 +358,12 @@ settings:
     visual:
       title: Visual
       tabManagement: Tab management
+    stageTable:
+      title: Table
+      basic: Basic
+  stageTableAutoFocusCanvasOnSelect:
+    title: Auto-focus canvas on row or cell selection
+    description: Automatically pan or fit the canvas viewport to the corresponding node(s) when selecting rows or cells in the table. When disabled, selection stays synced without moving the camera.
   tabs:
     about: About
     visual: Visual

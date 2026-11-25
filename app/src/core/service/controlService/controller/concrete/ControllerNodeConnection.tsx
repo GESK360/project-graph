@@ -7,6 +7,7 @@ import { SparkBurstEffect } from "@/core/service/feedbackService/effectEngine/co
 import { SoundService } from "@/core/service/feedbackService/SoundService";
 import { Settings } from "@/core/service/Settings";
 import { ConnectableEntity } from "@/core/stage/stageObject/abstract/ConnectableEntity";
+import { LineEdge } from "@/core/stage/stageObject/association/LineEdge";
 import { ConnectPoint } from "@/core/stage/stageObject/entity/ConnectPoint";
 import { ImageNode } from "@/core/stage/stageObject/entity/ImageNode";
 import { Section } from "@/core/stage/stageObject/entity/Section";
@@ -15,7 +16,13 @@ import { Direction } from "@/types/directions";
 import { isMac } from "@/utils/platform";
 import { ProgressNumber, Vector } from "@graphif/data-structures";
 import { Line } from "@graphif/shapes";
-import { getMindMapSide, isPersistentMindMapDragEnabled, mindMapPorts, reflowMindMapTree } from "./MindMapDrag";
+import {
+  alignMindMapSubtreeEdges,
+  getMindMapSide,
+  isPersistentMindMapDragEnabled,
+  mindMapPorts,
+  reflowMindMapTree,
+} from "./MindMapDrag";
 
 /**
  * 连线控制器
@@ -415,7 +422,6 @@ export class ControllerNodeConnectionClass extends ControllerClass {
         ? this._startImageLocation.get(newConnectFromEntities[0].uuid)?.clone()
         : undefined;
       const alignedParent =
-        event.button === 2 &&
         newConnectFromEntities.length === 1 &&
         isPersistentMindMapDragEnabled() &&
         Settings.defaultEdgeLineType !== "dashed"
@@ -611,6 +617,37 @@ export class ControllerNodeConnectionClass extends ControllerClass {
     // 还要保证当前舞台有节点被选中
     // 连线
     const isArcEdge = Settings.rightClickConnectEdgeType === "arc";
+    if (
+      !isArcEdge &&
+      isPersistentMindMapDragEnabled() &&
+      Settings.defaultEdgeLineType !== "dashed" &&
+      selectedEntities.length === 1 &&
+      !this.isExactPointConnectEntity(selectedEntities[0]) &&
+      !this.isExactPointConnectEntity(releaseTargetEntity) &&
+      this.canMindMapReflowConnection(selectedEntities[0], releaseTargetEntity)
+    ) {
+      const source = selectedEntities[0];
+      const side = this.resolveMindMapConnectSide(source, releaseTargetEntity, null, null);
+      const ports = mindMapPorts[side];
+      this.project.nodeConnector.connectConnectableEntity(
+        source,
+        releaseTargetEntity,
+        "",
+        [ports.target.x, ports.target.y],
+        [ports.source.x, ports.source.y],
+      );
+      if (
+        Settings.persistentDragToConnectMindMapAligned &&
+        this.project.graphMethods.validateTreeStructure(releaseTargetEntity, true).isValid
+      ) {
+        alignMindMapSubtreeEdges(this.project, releaseTargetEntity, side);
+      }
+      reflowMindMapTree(this.project, releaseTargetEntity);
+      this.project.historyManager.recordStep();
+      this.addConnectEffect(source, releaseTargetEntity, ports.source, ports.target);
+      return;
+    }
+
     this.project.stageManager.connectMultipleEntities(
       selectedEntities,
       releaseTargetEntity,
@@ -623,6 +660,35 @@ export class ControllerNodeConnectionClass extends ControllerClass {
     for (const selectedEntity of selectedEntities) {
       this.addConnectEffect(selectedEntity, releaseTargetEntity);
     }
+  }
+
+  private isExactPointConnectEntity(entity: ConnectableEntity): boolean {
+    return entity instanceof ImageNode || entity.constructor.name === "ReferenceBlockNode";
+  }
+
+  private canMindMapReflowConnection(source: ConnectableEntity, target: ConnectableEntity): boolean {
+    if (source === target) return false;
+    const { graphMethods } = this.project;
+    const hasSolidParent = graphMethods
+      .getIncomingEdges(target)
+      .some((edge) => edge instanceof LineEdge && edge.lineType !== "dashed");
+    if (hasSolidParent) return false;
+    return !graphMethods.getSuccessorSet(target, true, true).includes(source);
+  }
+
+  private resolveMindMapConnectSide(
+    source: ConnectableEntity,
+    target: ConnectableEntity,
+    sourceDirection: Direction | null,
+    targetDirection: Direction | null,
+  ) {
+    const effectiveDirection =
+      sourceDirection ?? (targetDirection !== null ? this.getOppositeDirection(targetDirection) : null);
+    return getMindMapSide(
+      effectiveDirection === null
+        ? target.collisionBox.getRectangle().center.subtract(source.collisionBox.getRectangle().center)
+        : this.directionToRate(effectiveDirection).subtract(Vector.same(0.5)),
+    );
   }
 
   private clear() {
@@ -705,14 +771,47 @@ export class ControllerNodeConnectionClass extends ControllerClass {
     const sourceRectRate: [number, number] = [sourceRate.x, sourceRate.y];
     const targetRectRate: [number, number] = [targetRate.x, targetRate.y];
     const isCrEdge = this.project.controller.pressingKeySet.has("c");
+    const shouldAlignInDragMode =
+      !isCrEdge &&
+      isPersistentMindMapDragEnabled() &&
+      Settings.defaultEdgeLineType !== "dashed" &&
+      !this.isExactPointConnectEntity(source);
+    let reflowTarget: ConnectableEntity | null = null;
 
     for (const target of targets) {
       if (isCrEdge) {
         this.project.nodeConnector.addCrEdge(source, target);
+        this.addConnectEffect(source, target, sourceRate, targetRate);
+      } else if (
+        shouldAlignInDragMode &&
+        !this.isExactPointConnectEntity(target) &&
+        this.canMindMapReflowConnection(source, target)
+      ) {
+        const side = this.resolveMindMapConnectSide(source, target, sourceDirection, targetDirection);
+        const ports = mindMapPorts[side];
+        this.project.nodeConnector.connectConnectableEntity(
+          source,
+          target,
+          "",
+          [ports.target.x, ports.target.y],
+          [ports.source.x, ports.source.y],
+        );
+        if (
+          Settings.persistentDragToConnectMindMapAligned &&
+          this.project.graphMethods.validateTreeStructure(target, true).isValid
+        ) {
+          alignMindMapSubtreeEdges(this.project, target, side);
+        }
+        reflowTarget ??= target;
+        this.addConnectEffect(source, target, ports.source, ports.target);
       } else {
         this.project.nodeConnector.connectConnectableEntity(source, target, "", targetRectRate, sourceRectRate);
+        this.addConnectEffect(source, target, sourceRate, targetRate);
       }
-      this.addConnectEffect(source, target, sourceRate, targetRate);
+    }
+
+    if (reflowTarget) {
+      reflowMindMapTree(this.project, reflowTarget);
     }
 
     this.project.historyManager.recordStep();
@@ -761,11 +860,9 @@ export class ControllerNodeConnectionClass extends ControllerClass {
 
     // 计算目标位置
     let targetRectRate: [number, number] = [0.5, 0.5];
+    const isImageOrReferenceTarget = this.isExactPointConnectEntity(connectToEntity);
     // 如果是连接到图片或引用块节点，使用精确位置
-    if (
-      (connectToEntity instanceof ImageNode || connectToEntity.constructor.name === "ReferenceBlockNode") &&
-      this._endImageLocation
-    ) {
+    if (isImageOrReferenceTarget && this._endImageLocation) {
       targetRectRate = [this._endImageLocation.x, this._endImageLocation.y];
     } else {
       // 否则使用方向计算
@@ -785,14 +882,40 @@ export class ControllerNodeConnectionClass extends ControllerClass {
       }
     }
 
-    // 连线
-    this.project.stageManager.connectMultipleEntities(
-      this.connectFromEntities,
-      connectToEntity,
-      isPressC,
-      sourceRectRate,
-      targetRectRate,
-    );
+    const shouldAlignSingleTreeEdge =
+      !isPressC &&
+      isPersistentMindMapDragEnabled() &&
+      Settings.defaultEdgeLineType !== "dashed" &&
+      this.connectFromEntities.length === 1 &&
+      !isSingleImageOrReferenceSource &&
+      !isImageOrReferenceTarget &&
+      this.canMindMapReflowConnection(this.connectFromEntities[0], connectToEntity);
+
+    if (shouldAlignSingleTreeEdge) {
+      const source = this.connectFromEntities[0];
+      const side = this.resolveMindMapConnectSide(source, connectToEntity, sourceDirection, targetDirection);
+      const ports = mindMapPorts[side];
+      sourceRectRate = [ports.source.x, ports.source.y];
+      targetRectRate = [ports.target.x, ports.target.y];
+      this.project.nodeConnector.connectConnectableEntity(source, connectToEntity, "", targetRectRate, sourceRectRate);
+      if (
+        Settings.persistentDragToConnectMindMapAligned &&
+        this.project.graphMethods.validateTreeStructure(connectToEntity, true).isValid
+      ) {
+        alignMindMapSubtreeEdges(this.project, connectToEntity, side);
+      }
+      reflowMindMapTree(this.project, connectToEntity);
+      this.project.historyManager.recordStep();
+    } else {
+      // 连线
+      this.project.stageManager.connectMultipleEntities(
+        this.connectFromEntities,
+        connectToEntity,
+        isPressC,
+        sourceRectRate,
+        targetRectRate,
+      );
+    }
 
     // 添加连接特效
     const sourceRectRateVector = new Vector(sourceRectRate[0], sourceRectRate[1]);

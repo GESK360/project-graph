@@ -9,6 +9,7 @@ import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import { Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
 import { toast } from "sonner";
+import { isPersistentMindMapDragEnabled, reflowMindMapTreesForEntities } from "./MindMapDrag";
 
 /**
  * 创建节点层级移动控制器
@@ -66,6 +67,19 @@ export class ControllerLayerMovingClass extends ControllerClass {
         }
       }
 
+      const oldParentSections = new Set<Section>();
+      const previousCenters = new Map<string, Vector>();
+      previousCenters.set(entity.uuid, entity.collisionBox.getRectangle().center);
+      for (const selectedEntity of selectedEntities) {
+        if (selectedEntity.parentSection) {
+          oldParentSections.add(selectedEntity.parentSection);
+          previousCenters.set(
+            selectedEntity.parentSection.uuid,
+            selectedEntity.parentSection.collisionBox.getRectangle().center,
+          );
+        }
+      }
+
       const newSection = this.project.sectionPackManager.targetTextNodeToSection(entity, false, false, true);
       if (newSection && selectedEntities.length > 0) {
         // 获取所有选中实体的外接矩形的中心点，以便计算移动距离
@@ -78,6 +92,9 @@ export class ControllerLayerMovingClass extends ControllerClass {
           selectedEntity.move(delta);
         }
         this.project.sectionInOutManager.goInSections(this.project.stageManager.getSelectedEntities(), [newSection]);
+        if (isPersistentMindMapDragEnabled()) {
+          reflowMindMapTreesForEntities(this.project, [newSection, ...oldParentSections], previousCenters);
+        }
       }
       this.project.historyManager.recordStep();
 
@@ -144,6 +161,18 @@ export class ControllerLayerMovingClass extends ControllerClass {
       this.project.effects.addEffect(new EntityJumpMoveEffect(15, entity.collisionBox.getRectangle(), delta));
     }
 
+    const oldParentSections = new Set<Section>();
+    const previousCenters = new Map<string, Vector>();
+    if (targetSection) {
+      previousCenters.set(targetSection.uuid, targetSection.collisionBox.getRectangle().center);
+    }
+    for (const entity of selectedEntities) {
+      if (entity.parentSection) {
+        oldParentSections.add(entity.parentSection);
+        previousCenters.set(entity.parentSection.uuid, entity.parentSection.collisionBox.getRectangle().center);
+      }
+    }
+
     // 改变层级
     if (targetSection === null) {
       // 代表想要走到最外层空白位置
@@ -152,7 +181,7 @@ export class ControllerLayerMovingClass extends ControllerClass {
         if (!currentFatherSection) {
           continue;
         }
-        this.project.stageManager.goOutSection([entity], currentFatherSection);
+        this.project.sectionInOutManager.goOutSection([entity], currentFatherSection);
 
         // 特效
         setTimeout(() => {
@@ -184,6 +213,12 @@ export class ControllerLayerMovingClass extends ControllerClass {
 
     // 3 移动所有选中的实体 的位置
     this.project.entityMoveManager.moveSelectedEntities(delta);
+    if (targetSection !== null || oldParentSections.size > 0) {
+      this.project.stageManager.updateReferences();
+      if (isPersistentMindMapDragEnabled()) {
+        reflowMindMapTreesForEntities(this.project, [targetSection, ...oldParentSections], previousCenters);
+      }
+    }
     this.project.historyManager.recordStep();
     // 播放跳跃音效
     SoundService.play.entityJumpSoundFile();

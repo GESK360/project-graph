@@ -23,12 +23,13 @@ export const CUSTOM_COLUMN_TYPES: readonly CustomColumnType[] = [
   "formula",
 ];
 
-export const CREATABLE_CUSTOM_COLUMN_TYPES: readonly Exclude<CustomColumnType, "formula">[] = [
+export const CREATABLE_CUSTOM_COLUMN_TYPES: readonly CustomColumnType[] = [
   "text",
   "number",
   "date",
   "select",
   "multi_select",
+  "formula",
 ];
 
 export const SELECT_OPTION_COLORS = ["gray", "purple", "blue", "green", "amber", "rose", "cyan", "orange"] as const;
@@ -95,6 +96,19 @@ export interface TableColumnGroup {
   columnIds: string[];
 }
 
+export type TableSortDirection = "asc" | "desc";
+
+export interface TableSortConfig {
+  columnId: string;
+  direction: TableSortDirection;
+}
+
+export interface TableColumnFilter {
+  columnId: string;
+  values: string[];
+  includeEmpty: boolean;
+}
+
 export interface TableViewSchema {
   id: string;
   name: string;
@@ -104,6 +118,8 @@ export interface TableViewSchema {
   columnWidths?: Record<string, number>;
   frozenColumnId?: string | null;
   columnGroups?: TableColumnGroup[];
+  sort?: TableSortConfig | null;
+  filters?: TableColumnFilter[];
 }
 
 export interface PrgTableData {
@@ -260,6 +276,43 @@ export function normalizeTableData(raw: unknown): PrgTableData {
         }
       }
 
+      let sort: TableSortConfig | undefined;
+      if (view.sort && typeof view.sort === "object" && !Array.isArray(view.sort)) {
+        const rawSort = view.sort as Record<string, unknown>;
+        if (
+          typeof rawSort.columnId === "string" &&
+          validColumnIds.has(rawSort.columnId) &&
+          (rawSort.direction === "asc" || rawSort.direction === "desc")
+        ) {
+          sort = { columnId: rawSort.columnId, direction: rawSort.direction };
+        }
+      }
+
+      const filters: TableColumnFilter[] = [];
+      const seenFilterCols = new Set<string>();
+      if (Array.isArray(view.filters)) {
+        for (const rawFilter of view.filters) {
+          if (!rawFilter || typeof rawFilter !== "object" || Array.isArray(rawFilter)) continue;
+          const flt = rawFilter as Record<string, unknown>;
+          if (
+            typeof flt.columnId !== "string" ||
+            !validColumnIds.has(flt.columnId) ||
+            seenFilterCols.has(flt.columnId)
+          ) {
+            continue;
+          }
+          const values = Array.isArray(flt.values)
+            ? Array.from(new Set(flt.values.filter((v): v is string => typeof v === "string")))
+            : [];
+          seenFilterCols.add(flt.columnId);
+          filters.push({
+            columnId: flt.columnId,
+            values,
+            includeEmpty: Boolean(flt.includeEmpty),
+          });
+        }
+      }
+
       views.push({
         id: view.id,
         name: view.name,
@@ -269,6 +322,8 @@ export function normalizeTableData(raw: unknown): PrgTableData {
         columnWidths,
         ...(frozenColumnId ? { frozenColumnId } : {}),
         ...(columnGroups.length > 0 ? { columnGroups } : {}),
+        ...(sort ? { sort } : {}),
+        ...(filters.length > 0 ? { filters } : {}),
       });
     }
   }
@@ -302,4 +357,333 @@ export function normalizeTableData(raw: unknown): PrgTableData {
     activeViewId,
     ...(Object.keys(systemColumnNames).length > 0 ? { systemColumnNames } : {}),
   };
+}
+
+export type FormulaErrorCode =
+  | "#ERROR!"
+  | "#SYNTAX!"
+  | "#NAME!"
+  | "#REF!"
+  | "#CYCLE!"
+  | "#DIV/0!"
+  | "#VALUE!"
+  | "#NUM!";
+
+export interface FormulaEvaluatedCell {
+  kind: "empty" | "number" | "string" | "boolean" | "date" | "list" | "row" | "error";
+  displayText: string;
+  numericValue?: number;
+  dateMs?: number;
+  dateHasTime?: boolean;
+  booleanValue?: boolean;
+  listItems?: string[];
+  errorCode?: FormulaErrorCode;
+  errorMessage?: string;
+}
+
+export interface TableFilterSortRow {
+  uuid: string;
+  primaryText: string;
+  images: ReadonlyArray<{ uuid: string; attachmentId: string }>;
+  createdAt: number;
+  updatedAt: number;
+  parents: ReadonlyArray<{ uuid: string; label: string }>;
+  children: ReadonlyArray<{ uuid: string; label: string }>;
+  outer: { uuid: string; label: string } | null;
+  inner: ReadonlyArray<{ uuid: string; label: string }>;
+  tableFields: Record<string, TableCellValue>;
+  formulaValues?: Record<string, FormulaEvaluatedCell>;
+}
+
+export interface ColumnFilterBucket {
+  key: string;
+  label: string;
+  count: number;
+  color?: string;
+}
+
+export function formatDateBucket(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  const date = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+export function getRowFilterTokens(
+  row: TableFilterSortRow,
+  columnId: string,
+  customCol?: TableColumnSchema,
+): { tokens: Array<{ key: string; label: string; color?: string }>; isEmpty: boolean } {
+  switch (columnId) {
+    case "name": {
+      const text = row.primaryText.trim();
+      return text.length > 0 ? { tokens: [{ key: text, label: text }], isEmpty: false } : { tokens: [], isEmpty: true };
+    }
+    case "images": {
+      const count = row.images.length;
+      return count > 0
+        ? { tokens: [{ key: String(count), label: String(count) }], isEmpty: false }
+        : { tokens: [], isEmpty: true };
+    }
+    case "createdAt": {
+      const bucket = formatDateBucket(row.createdAt);
+      return bucket ? { tokens: [{ key: bucket, label: bucket }], isEmpty: false } : { tokens: [], isEmpty: true };
+    }
+    case "updatedAt": {
+      const bucket = formatDateBucket(row.updatedAt);
+      return bucket ? { tokens: [{ key: bucket, label: bucket }], isEmpty: false } : { tokens: [], isEmpty: true };
+    }
+    case "parents":
+    case "children":
+    case "inner": {
+      const list = row[columnId];
+      if (list.length === 0) return { tokens: [], isEmpty: true };
+      return {
+        tokens: list.map((item) => ({ key: item.uuid, label: item.label.trim() || item.uuid })),
+        isEmpty: false,
+      };
+    }
+    case "outer": {
+      if (!row.outer) return { tokens: [], isEmpty: true };
+      return {
+        tokens: [{ key: row.outer.uuid, label: row.outer.label.trim() || row.outer.uuid }],
+        isEmpty: false,
+      };
+    }
+    default: {
+      if (!customCol) return { tokens: [], isEmpty: true };
+      if (customCol.type === "formula") {
+        const cell = row.formulaValues?.[customCol.id];
+        if (!cell || cell.kind === "empty") {
+          return { tokens: [], isEmpty: true };
+        }
+        if (cell.kind === "date" && cell.dateMs !== undefined) {
+          const bucket = formatDateBucket(cell.dateMs);
+          return bucket ? { tokens: [{ key: bucket, label: bucket }], isEmpty: false } : { tokens: [], isEmpty: true };
+        }
+        if (cell.kind === "list" && cell.listItems && cell.listItems.length > 0) {
+          const tokens = cell.listItems
+            .map((item) => item.trim())
+            .filter(Boolean)
+            .map((item) => ({ key: item, label: item }));
+          return tokens.length > 0 ? { tokens, isEmpty: false } : { tokens: [], isEmpty: true };
+        }
+        const text = cell.displayText.trim();
+        return text.length > 0
+          ? { tokens: [{ key: text, label: text }], isEmpty: false }
+          : { tokens: [], isEmpty: true };
+      }
+      const raw = row.tableFields?.[customCol.id];
+      if (customCol.type === "number") {
+        if (typeof raw === "number" && Number.isFinite(raw)) {
+          const str = String(raw);
+          return { tokens: [{ key: str, label: str }], isEmpty: false };
+        }
+        return { tokens: [], isEmpty: true };
+      }
+      if (customCol.type === "select" || customCol.type === "multi_select") {
+        const optionById = new Map((customCol.options ?? []).map((opt) => [opt.id, opt]));
+        const ids =
+          customCol.type === "multi_select"
+            ? Array.isArray(raw)
+              ? raw
+              : typeof raw === "string"
+                ? [raw]
+                : []
+            : typeof raw === "string"
+              ? [raw]
+              : Array.isArray(raw) && raw.length > 0
+                ? [raw[0]]
+                : [];
+        const tokens: Array<{ key: string; label: string; color?: string }> = [];
+        for (const id of ids) {
+          const opt = optionById.get(id);
+          if (opt) tokens.push({ key: opt.id, label: opt.name, color: opt.color });
+        }
+        return tokens.length > 0 ? { tokens, isEmpty: false } : { tokens: [], isEmpty: true };
+      }
+      const str = typeof raw === "string" ? raw.trim() : typeof raw === "number" ? String(raw) : "";
+      return str.length > 0 ? { tokens: [{ key: str, label: str }], isEmpty: false } : { tokens: [], isEmpty: true };
+    }
+  }
+}
+
+const naturalCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+export function collectColumnFilterBuckets<T extends TableFilterSortRow>(
+  rows: readonly T[],
+  columnId: string,
+  customCol?: TableColumnSchema,
+): { buckets: ColumnFilterBucket[]; emptyCount: number } {
+  const map = new Map<string, ColumnFilterBucket>();
+  let emptyCount = 0;
+
+  for (const row of rows) {
+    const { tokens, isEmpty } = getRowFilterTokens(row, columnId, customCol);
+    if (isEmpty) {
+      emptyCount++;
+      continue;
+    }
+    const seenInRow = new Set<string>();
+    for (const token of tokens) {
+      if (seenInRow.has(token.key)) continue;
+      seenInRow.add(token.key);
+      const existing = map.get(token.key);
+      if (existing) {
+        existing.count++;
+      } else {
+        map.set(token.key, {
+          key: token.key,
+          label: token.label,
+          count: 1,
+          color: token.color,
+        });
+      }
+    }
+  }
+
+  const buckets = Array.from(map.values());
+  if (customCol?.type === "number" || columnId === "images") {
+    buckets.sort((a, b) => Number(a.key) - Number(b.key));
+  } else if (columnId === "createdAt" || columnId === "updatedAt" || customCol?.type === "date") {
+    buckets.sort((a, b) => b.key.localeCompare(a.key));
+  } else if (customCol?.type === "select" || customCol?.type === "multi_select") {
+    const order = new Map((customCol.options ?? []).map((opt, idx) => [opt.id, idx]));
+    buckets.sort((a, b) => (order.get(a.key) ?? 9999) - (order.get(b.key) ?? 9999));
+  } else if (customCol?.type === "formula" && buckets.length > 0) {
+    if (buckets.every((b) => b.key !== "" && Number.isFinite(Number(b.key)))) {
+      buckets.sort((a, b) => Number(a.key) - Number(b.key));
+    } else if (buckets.every((b) => /^\d{4}-\d{2}-\d{2}$/.test(b.key))) {
+      buckets.sort((a, b) => b.key.localeCompare(a.key));
+    } else {
+      buckets.sort((a, b) => naturalCollator.compare(a.label, b.label));
+    }
+  } else {
+    buckets.sort((a, b) => naturalCollator.compare(a.label, b.label));
+  }
+
+  return { buckets, emptyCount };
+}
+
+function getRowSortKey(
+  row: TableFilterSortRow,
+  columnId: string,
+  customCol?: TableColumnSchema,
+): { empty: boolean; num?: number; text?: string } {
+  switch (columnId) {
+    case "name": {
+      const text = row.primaryText.trim();
+      return text.length > 0 ? { empty: false, text } : { empty: true };
+    }
+    case "images":
+      return { empty: false, num: row.images.length };
+    case "createdAt":
+      return Number.isFinite(row.createdAt) && row.createdAt > 0
+        ? { empty: false, num: row.createdAt }
+        : { empty: true };
+    case "updatedAt":
+      return Number.isFinite(row.updatedAt) && row.updatedAt > 0
+        ? { empty: false, num: row.updatedAt }
+        : { empty: true };
+    case "parents":
+    case "children":
+    case "inner": {
+      const labels = row[columnId]
+        .map((item) => item.label.trim())
+        .filter(Boolean)
+        .sort((a, b) => naturalCollator.compare(a, b));
+      return labels.length > 0 ? { empty: false, text: labels.join(", ") } : { empty: true };
+    }
+    case "outer": {
+      const label = row.outer?.label.trim() ?? "";
+      return label.length > 0 ? { empty: false, text: label } : { empty: true };
+    }
+    default: {
+      if (!customCol) return { empty: true };
+      if (customCol.type === "formula") {
+        const cell = row.formulaValues?.[customCol.id];
+        if (!cell || cell.kind === "empty") return { empty: true };
+        if (cell.kind === "number" && cell.numericValue !== undefined) {
+          return { empty: false, num: cell.numericValue };
+        }
+        if (cell.kind === "date" && cell.dateMs !== undefined) {
+          return { empty: false, num: cell.dateMs };
+        }
+        if (cell.kind === "boolean") {
+          return { empty: false, num: cell.booleanValue ? 1 : 0 };
+        }
+        const text = cell.displayText.trim();
+        return text.length > 0 ? { empty: false, text } : { empty: true };
+      }
+      const raw = row.tableFields?.[customCol.id];
+      if (customCol.type === "number") {
+        return typeof raw === "number" && Number.isFinite(raw) ? { empty: false, num: raw } : { empty: true };
+      }
+      if (customCol.type === "select" || customCol.type === "multi_select") {
+        const optionById = new Map((customCol.options ?? []).map((opt) => [opt.id, opt.name]));
+        const ids =
+          customCol.type === "multi_select"
+            ? Array.isArray(raw)
+              ? raw
+              : typeof raw === "string"
+                ? [raw]
+                : []
+            : typeof raw === "string"
+              ? [raw]
+              : Array.isArray(raw) && raw.length > 0
+                ? [raw[0]]
+                : [];
+        const names = ids.map((id) => optionById.get(id)).filter((v): v is string => Boolean(v));
+        return names.length > 0 ? { empty: false, text: names.join(", ") } : { empty: true };
+      }
+      const str = typeof raw === "string" ? raw.trim() : typeof raw === "number" ? String(raw) : "";
+      return str.length > 0 ? { empty: false, text: str } : { empty: true };
+    }
+  }
+}
+
+export function applyTableFiltersAndSort<T extends TableFilterSortRow>(
+  rows: readonly T[],
+  columns: readonly TableColumnSchema[],
+  filters: readonly TableColumnFilter[],
+  sort: TableSortConfig | null,
+): T[] {
+  const customColMap = new Map(columns.map((col) => [col.id, col]));
+  let result: T[] = [...rows];
+
+  if (filters.length > 0) {
+    result = result.filter((row) =>
+      filters.every((filter) => {
+        const { tokens, isEmpty } = getRowFilterTokens(row, filter.columnId, customColMap.get(filter.columnId));
+        if (isEmpty) {
+          return filter.includeEmpty;
+        }
+        const allowed = new Set(filter.values);
+        return tokens.some((token) => allowed.has(token.key));
+      }),
+    );
+  }
+
+  if (sort) {
+    const customCol = customColMap.get(sort.columnId);
+    const dir = sort.direction === "asc" ? 1 : -1;
+    const decorated = result.map((row, index) => ({
+      row,
+      index,
+      key: getRowSortKey(row, sort.columnId, customCol),
+    }));
+    decorated.sort((a, b) => {
+      if (a.key.empty && b.key.empty) return a.index - b.index;
+      if (a.key.empty) return 1;
+      if (b.key.empty) return -1;
+      const cmp =
+        a.key.num !== undefined && b.key.num !== undefined
+          ? a.key.num - b.key.num
+          : naturalCollator.compare(a.key.text ?? "", b.key.text ?? "");
+      return cmp !== 0 ? cmp * dir : a.index - b.index;
+    });
+    result = decorated.map((item) => item.row);
+  }
+
+  return result;
 }

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { createTabGroup } from "@/core/TabGroup";
+import { evaluateTableFormulas } from "@/core/service/dataManageService/stageTableService/formulaEngine";
 import { activeTabAtom, stageTableOpenAtom, store, tabGroupRootAtom, tabsAtom } from "@/state";
 import { createDefaultTableData } from "@/types/table";
 import { Provider } from "jotai";
@@ -16,6 +17,8 @@ const MockProjectClass = vi.hoisted(() => {
     table = createDefaultTableData();
     rows: any[];
     private listeners = new Set<() => void>();
+    private selectionListeners = new Set<(uuids: string[]) => void>();
+    selectedCanvasRowIds: string[] = [];
     stageManager = {
       getEntities: () => [],
       getAssociations: () => [],
@@ -51,11 +54,56 @@ const MockProjectClass = vi.hoisted(() => {
         inner: [],
         canEditInner: true,
         tableFields: {},
+        formulaValues: {},
       }));
       this.stageTable = {
         subscribe: (fn: () => void) => {
           this.listeners.add(fn);
           return () => this.listeners.delete(fn);
+        },
+        subscribeSelection: (fn: (uuids: string[]) => void) => {
+          this.selectionListeners.add(fn);
+          return () => this.selectionListeners.delete(fn);
+        },
+        getSelectedRowUUIDs: () => [...this.selectedCanvasRowIds],
+        selectRowsOnCanvas: vi.fn((uuids: string[]) => {
+          this.selectedCanvasRowIds = [...uuids];
+        }),
+        getSort: () => this.table.views[0].sort ?? null,
+        setSort: (sort: any) => {
+          this.table.views[0].sort = sort ?? undefined;
+          this.listeners.forEach((fn) => fn());
+        },
+        toggleColumnSort: (colId: string, preferred?: "asc" | "desc") => {
+          const cur = this.table.views[0].sort;
+          const next = preferred
+            ? cur && cur.columnId === colId && cur.direction === preferred
+              ? null
+              : { columnId: colId, direction: preferred }
+            : !cur || cur.columnId !== colId
+              ? { columnId: colId, direction: "asc" as const }
+              : cur.direction === "asc"
+                ? { columnId: colId, direction: "desc" as const }
+                : null;
+          this.table.views[0].sort = next ?? undefined;
+          this.listeners.forEach((fn) => fn());
+          return next;
+        },
+        getFilters: () => this.table.views[0].filters ?? [],
+        getColumnFilter: (colId: string) =>
+          (this.table.views[0].filters ?? []).find((f: any) => f.columnId === colId) ?? null,
+        setColumnFilter: (colId: string, flt: any) => {
+          const rest = (this.table.views[0].filters ?? []).filter((f: any) => f.columnId !== colId);
+          this.table.views[0].filters = flt
+            ? [...rest, { columnId: colId, ...flt }]
+            : rest.length > 0
+              ? rest
+              : undefined;
+          this.listeners.forEach((fn) => fn());
+        },
+        clearAllFilters: () => {
+          this.table.views[0].filters = undefined;
+          this.listeners.forEach((fn) => fn());
         },
         getActiveView: () => this.table.views[0],
         getColumns: () => this.table.columns,
@@ -124,10 +172,19 @@ const MockProjectClass = vi.hoisted(() => {
         },
         getColumnGroups: () => this.table.views[0].columnGroups ?? [],
         deleteCustomColumn: vi.fn(),
-        updateColumn: (colId: string, patch: { name?: string; type?: any }) => {
+        updateColumn: (
+          colId: string,
+          patch: { name?: string; type?: any; formula?: string; format?: string | null },
+        ) => {
           this.table.columns = this.table.columns.map((c) =>
             c.id === colId
-              ? { ...c, ...(patch.name ? { name: patch.name } : {}), ...(patch.type ? { type: patch.type } : {}) }
+              ? {
+                  ...c,
+                  ...(patch.name ? { name: patch.name } : {}),
+                  ...(patch.type ? { type: patch.type } : {}),
+                  ...(patch.formula !== undefined ? { formula: patch.formula } : {}),
+                  ...(patch.format !== undefined ? { format: patch.format ?? undefined } : {}),
+                }
               : c,
           );
           this.listeners.forEach((fn) => fn());
@@ -159,6 +216,11 @@ const MockProjectClass = vi.hoisted(() => {
         setRowInner: vi.fn(),
         focusRowOnCanvas: vi.fn(),
       };
+    }
+
+    emitCanvasSelection(uuids: string[]) {
+      this.selectedCanvasRowIds = [...uuids];
+      this.selectionListeners.forEach((fn) => fn(uuids));
     }
 
     getService(name: string) {
@@ -451,5 +513,281 @@ describe("Docked StageTablePanel split & sliders", () => {
     const imagesTh = container.querySelector<HTMLElement>('[data-table-col-id="images"]')!;
     expect(nameTh.style.left).toBe("44px");
     expect(imagesTh.style.left).toBe("324px"); // 44 + 280 (resized name width)
+  });
+
+  it("supports cell/row/column/multi selection, bidirectional canvas sync, and Explorer-style column sort & filter UI", async () => {
+    const projectA = new MockProjectClass("proj-sel", ["节点 10", "节点 2", "节点 1"]);
+    projectA.table.views[0].visibleColumnIds = ["name", "createdAt", "updatedAt"];
+    projectA.rows[0].createdAt = 1700000003000;
+    projectA.rows[1].createdAt = 1700000001000;
+    projectA.rows[2].createdAt = 1700000002000;
+
+    store.set(tabsAtom, [projectA as never]);
+    store.set(tabGroupRootAtom, createTabGroup(["proj-sel"], "main"));
+    store.set(activeTabAtom, projectA as never);
+    store.set(stageTableOpenAtom, true);
+
+    await React.act(async () => {
+      root.render(
+        <Provider store={store}>
+          <DockedArea onTabClick={vi.fn()} onTabClose={vi.fn()} onTitleBarMouseDown={vi.fn()} isClassroomMode={false} />
+          <div data-pg-titlebar-tab-space />
+        </Provider>,
+      );
+    });
+
+    // 1. Cell selection: single cell, Shift-range cells, Ctrl multi-cell
+    const cell00 = container.querySelector<HTMLElement>('[data-row-id="proj-sel-row-0"][data-col-id="name"]')!;
+    const cell11 = container.querySelector<HTMLElement>('[data-row-id="proj-sel-row-1"][data-col-id="createdAt"]')!;
+    const cell22 = container.querySelector<HTMLElement>('[data-row-id="proj-sel-row-2"][data-col-id="updatedAt"]')!;
+
+    await React.act(async () => {
+      cell00.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0 }));
+    });
+    expect(cell00.dataset.cellSelected).toBe("true");
+    expect(cell00.dataset.cellActive).toBe("true");
+    expect(container.querySelectorAll('[data-cell-selected="true"]')).toHaveLength(1);
+    expect(projectA.stageTable.selectRowsOnCanvas).toHaveBeenLastCalledWith(["proj-sel-row-0"]);
+
+    await React.act(async () => {
+      cell11.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, shiftKey: true }));
+    });
+    // 2x2 rectangle -> 4 cells selected across rows 0 and 1
+    expect(container.querySelectorAll('[data-cell-selected="true"]')).toHaveLength(4);
+    expect(projectA.stageTable.selectRowsOnCanvas).toHaveBeenLastCalledWith(["proj-sel-row-0", "proj-sel-row-1"]);
+
+    await React.act(async () => {
+      cell22.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, ctrlKey: true }));
+    });
+    expect(container.querySelectorAll('[data-cell-selected="true"]')).toHaveLength(5);
+    expect(projectA.stageTable.selectRowsOnCanvas).toHaveBeenLastCalledWith([
+      "proj-sel-row-0",
+      "proj-sel-row-1",
+      "proj-sel-row-2",
+    ]);
+
+    // 2. Column selection: single column + Ctrl multi-column
+    const nameTh = container.querySelector<HTMLElement>('[data-table-col-id="name"]')!;
+    const updatedTh = container.querySelector<HTMLElement>('[data-table-col-id="updatedAt"]')!;
+    await React.act(async () => {
+      nameTh.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0 }));
+    });
+    expect(nameTh.dataset.colSelected).toBe("true");
+    expect(container.querySelectorAll('[data-cell-selected="true"]')).toHaveLength(3);
+
+    await React.act(async () => {
+      updatedTh.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, ctrlKey: true }));
+    });
+    expect(nameTh.dataset.colSelected).toBe("true");
+    expect(updatedTh.dataset.colSelected).toBe("true");
+    expect(container.querySelectorAll('[data-cell-selected="true"]')).toHaveLength(6);
+
+    // 3. Row selection & Table -> Canvas sync (single + Shift multi-row)
+    const rowIdx0 = container.querySelector<HTMLElement>('[data-stage-table-row-index][data-row-id="proj-sel-row-0"]')!;
+    const rowIdx2 = container.querySelector<HTMLElement>('[data-stage-table-row-index][data-row-id="proj-sel-row-2"]')!;
+    await React.act(async () => {
+      rowIdx0.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0 }));
+    });
+    expect(projectA.stageTable.selectRowsOnCanvas).toHaveBeenLastCalledWith(["proj-sel-row-0"]);
+
+    await React.act(async () => {
+      rowIdx2.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, shiftKey: true }));
+    });
+    expect(projectA.stageTable.selectRowsOnCanvas).toHaveBeenLastCalledWith([
+      "proj-sel-row-0",
+      "proj-sel-row-1",
+      "proj-sel-row-2",
+    ]);
+
+    // 4. Canvas -> Table bidirectional sync (multi-select)
+    await React.act(async () => {
+      projectA.emitCanvasSelection(["proj-sel-row-1", "proj-sel-row-2"]);
+    });
+    const selectedTrs = Array.from(container.querySelectorAll<HTMLElement>('tr[data-row-selected="true"]'));
+    expect(selectedTrs.map((tr) => tr.dataset.stageTableRowId)).toEqual(["proj-sel-row-1", "proj-sel-row-2"]);
+
+    // 5. Explorer-style column sort & filter dropdown + top-center sort chevron arrow
+    const nameFilterBtn = container.querySelector<HTMLButtonElement>('[data-col-filter-trigger="name"]')!;
+    await React.act(async () => {
+      nameFilterBtn.click();
+    });
+    const sortAscBtn = document.body.querySelector<HTMLButtonElement>("[data-col-sort-asc]")!;
+    expect(sortAscBtn).not.toBeNull();
+    await React.act(async () => {
+      sortAscBtn.click();
+    });
+    // Top-center arrow appears with direction="asc", rows ordered naturally: 节点 1, 节点 2, 节点 10
+    let sortIndicator = container.querySelector<HTMLButtonElement>('[data-col-sort-indicator="name"]')!;
+    expect(sortIndicator).not.toBeNull();
+    expect(sortIndicator.dataset.sortDirection).toBe("asc");
+    const rowOrderAsc = Array.from(container.querySelectorAll<HTMLElement>("tr[data-stage-table-row-id]")).map(
+      (tr) => tr.dataset.stageTableRowId,
+    );
+    expect(rowOrderAsc).toEqual(["proj-sel-row-2", "proj-sel-row-1", "proj-sel-row-0"]);
+
+    // Clicking the top-center arrow toggles direction asc -> desc
+    await React.act(async () => {
+      sortIndicator.click();
+    });
+    sortIndicator = container.querySelector<HTMLButtonElement>('[data-col-sort-indicator="name"]')!;
+    expect(sortIndicator.dataset.sortDirection).toBe("desc");
+    const rowOrderDesc = Array.from(container.querySelectorAll<HTMLElement>("tr[data-stage-table-row-id]")).map(
+      (tr) => tr.dataset.stageTableRowId,
+    );
+    expect(rowOrderDesc).toEqual(["proj-sel-row-0", "proj-sel-row-1", "proj-sel-row-2"]);
+
+    // Unchecking "节点 2" in the filter popover hides that row
+    const optionRow2 = document.body.querySelector<HTMLElement>(
+      '[data-col-filter-option="节点 2"] button[role="checkbox"]',
+    )!;
+    await React.act(async () => {
+      optionRow2.click();
+    });
+    expect(nameTh.dataset.colFiltered).toBe("true");
+    const filteredRowIds = Array.from(container.querySelectorAll<HTMLElement>("tr[data-stage-table-row-id]")).map(
+      (tr) => tr.dataset.stageTableRowId,
+    );
+    expect(filteredRowIds).toEqual(["proj-sel-row-0", "proj-sel-row-2"]);
+  });
+
+  it("allows picking a date from the Calendar popover in a custom date column without losing click events", async () => {
+    const projectA = new MockProjectClass("proj-date", ["日程节点"]);
+    const dateCol = projectA.stageTable.addCustomColumn({ name: "截止日期", type: "date" });
+    projectA.rows[0].tableFields = { [dateCol.id]: "2026-11-25" };
+
+    store.set(tabsAtom, [projectA as never]);
+    store.set(tabGroupRootAtom, createTabGroup(["proj-date"], "main"));
+    store.set(activeTabAtom, projectA as never);
+    store.set(stageTableOpenAtom, true);
+
+    await React.act(async () => {
+      root.render(
+        <Provider store={store}>
+          <DockedArea onTabClick={vi.fn()} onTabClose={vi.fn()} onTitleBarMouseDown={vi.fn()} isClassroomMode={false} />
+          <div data-pg-titlebar-tab-space />
+        </Provider>,
+      );
+    });
+
+    const dateTd = container.querySelector<HTMLElement>(
+      `td[data-row-id="proj-date-row-0"][data-col-id="${dateCol.id}"]`,
+    )!;
+    const dateTrigger = dateTd.querySelector<HTMLElement>('[role="button"]')!;
+
+    await React.act(async () => {
+      dateTrigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0 }));
+      dateTrigger.click();
+    });
+
+    const day15Button = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button[data-day]")).find(
+      (btn) => btn.textContent?.trim() === "15",
+    )!;
+    expect(day15Button).toBeDefined();
+
+    // Simulate full real pointerdown -> pointerup -> click on Calendar day button; DOM node must stay mounted and commit
+    await React.act(async () => {
+      day15Button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0 }));
+      expect(day15Button.isConnected).toBe(true);
+      day15Button.click();
+    });
+
+    expect(projectA.rows[0].tableFields[dateCol.id]).toBe("2026-11-15");
+    expect(dateTd.textContent).toContain("2026-11-15");
+  });
+
+  it("opens the high-spec formula editor when creating a formula column, inserts column pills, previews, and saves computed cells", async () => {
+    const projectA = new MockProjectClass("proj-formula", ["细胞膜图像", "线粒体"]);
+    const correctCol = projectA.stageTable.addCustomColumn({ name: "答对次数", type: "number" });
+    projectA.rows[0].tableFields = { [correctCol.id]: 3 };
+    projectA.rows[1].tableFields = { [correctCol.id]: 1 };
+
+    // Wire formula evaluation into mock getRows
+    projectA.stageTable.getRows = () => {
+      const evaluated = evaluateTableFormulas(projectA.rows, projectA.table.columns);
+      return projectA.rows.map((r: any) => ({
+        ...r,
+        formulaValues: evaluated.get(r.uuid) ?? {},
+      }));
+    };
+
+    store.set(tabsAtom, [projectA as never]);
+    store.set(tabGroupRootAtom, createTabGroup(["proj-formula"], "main"));
+    store.set(activeTabAtom, projectA as never);
+    store.set(stageTableOpenAtom, true);
+
+    await React.act(async () => {
+      root.render(
+        <Provider store={store}>
+          <DockedArea onTabClick={vi.fn()} onTabClose={vi.fn()} onTitleBarMouseDown={vi.fn()} isClassroomMode={false} />
+          <div data-pg-titlebar-tab-space />
+        </Provider>,
+      );
+    });
+
+    // Click right-most "+" button to insert a new custom column
+    const addColBtn = container.querySelector<HTMLButtonElement>('button[aria-label="addColumnPopover.triggerAria"]')!;
+    await React.act(async () => {
+      addColBtn.click();
+    });
+
+    // Pick "formula" in FieldTypeGridPicker -> auto-opens Formula Editor dialog
+    const formulaTypeBtn = document.body.querySelector<HTMLButtonElement>('button[data-field-type-option="formula"]')!;
+    expect(formulaTypeBtn).toBeTruthy();
+    await React.act(async () => {
+      formulaTypeBtn.click();
+    });
+
+    const editorDialog = document.body.querySelector<HTMLElement>("[data-stage-table-formula-editor]");
+    expect(editorDialog).toBeTruthy();
+
+    // Click POWER function & column item in sidebar to insert snippet and blue pill
+    const pillInput = editorDialog!.querySelector<HTMLElement>("[data-formula-pill-input]")!;
+    const colSidebarBtn = editorDialog!.querySelector<HTMLButtonElement>(
+      `button[data-formula-catalog-item="col:${correctCol.id}"]`,
+    )!;
+    expect(colSidebarBtn).toBeTruthy();
+
+    await React.act(async () => {
+      colSidebarBtn.click();
+    });
+
+    // Verify atomic pill rendered inside editor and live preview shows "3"
+    const insertedPill = pillInput.querySelector<HTMLElement>(`[data-formula-pill="${correctCol.id}"]`);
+    expect(insertedPill).toBeTruthy();
+    expect(insertedPill!.textContent).toContain("答对次数");
+
+    // Append " * 2" and dispatch input event so preview updates to "6"
+    await React.act(async () => {
+      pillInput.appendChild(document.createTextNode(" * 2"));
+      pillInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const previewVal = editorDialog!.querySelector<HTMLElement>("[data-formula-preview-value]")!;
+    expect(previewVal.textContent?.trim()).toBe("6");
+
+    // Click confirm save button
+    const saveBtn = editorDialog!.querySelector<HTMLButtonElement>("[data-formula-editor-save]")!;
+    await React.act(async () => {
+      saveBtn.click();
+    });
+
+    // Formula dialog closes and table cells render 6 and 2
+    const formulaCol = projectA.table.columns.find((c: any) => c.type === "formula")!;
+    expect(formulaCol).toBeTruthy();
+    expect(formulaCol.formula).toBe(`{{${correctCol.id}}} * 2`);
+
+    const cell0 = container.querySelector<HTMLElement>(
+      `td[data-row-id="proj-formula-row-0"][data-col-id="${formulaCol.id}"]`,
+    )!;
+    const cell1 = container.querySelector<HTMLElement>(
+      `td[data-row-id="proj-formula-row-1"][data-col-id="${formulaCol.id}"]`,
+    )!;
+    expect(cell0.textContent?.trim()).toBe("6");
+    expect(cell1.textContent?.trim()).toBe("2");
   });
 });

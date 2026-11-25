@@ -130,6 +130,8 @@ stageTable:
   imagesCell:
     add: Tambah gambar
     remove: Hapus gambar
+    countLabel: "{{count}} gambar"
+    emptyLabel: Tanpa gambar
   dateCell:
     clear: Hapus
   selectCell:
@@ -137,6 +139,73 @@ stageTable:
     createPrefix: Buat
     removeOption: Hapus opsi
     emptyHint: Ketik nama lalu tekan Enter untuk membuat
+  sortFilter:
+    sortAsc: Urut naik
+    sortDesc: Urut turun
+    clearSort: Hapus urutan
+    filterTitle: Filter
+    sortTitle: Urutkan
+    searchPlaceholder: Cari nilai...
+    selectAll: Pilih semua
+    clearFilter: Hapus filter
+    clearAllFilters: Hapus semua filter
+    emptyValue: (Kosong)
+    noFilterMatch: Tidak ada baris yang cocok dengan filter
+    noActiveFilters: Belum ada filter aktif
+    noSortActive: Urutan bawaan
+    columnFilterAria: Urutkan dan filter
+    toggleSortAria: Ubah arah urutan
+  selection:
+    selectAllAria: Pilih semua
+    rowsCount: "{{count}} baris dipilih"
+    colsCount: "{{count}} kolom dipilih"
+    cellsCount: "{{count}} sel dipilih"
+    allSelected: Semua dipilih ({{count}} baris)
+  formulaEditor:
+    title: Ubah Rumus
+    editFormula: Ubah rumus
+    clickToSetFormula: Klik untuk mengatur rumus...
+    solidifyHint: Hasil perhitungan saat ini akan disimpan sebagai nilai statis saat mengganti tipe kolom.
+    doubleClickHint: Klik ganda untuk mengubah rumus
+    unsetFormula: Klik ganda untuk mengatur rumus
+    currentTable: Tabel Saat Ini
+    deletedColumn: Kolom terhapus
+    formatLabel: Format
+    formatAuto: Otomatis
+    formatDateIso: YYYY-MM-DD
+    formatDateSlash: YYYY/MM/DD
+    formatDateMdy: MM/DD/YYYY
+    formatDateTime: Tanggal & Waktu
+    formatNumInt: Bilangan bulat
+    formatNum2: 2 Desimal
+    formatNumComma: Ribuan
+    formatNumPct: Persentase
+    inputAria: Input editor rumus
+    placeholder: Masukkan rumus, mis. POWER(2, [Benar]) - 1 + [Tunda], atau klik kolom/fungsi di bawah
+    syntaxValid: Sintaks valid
+    tipHint: Klik kolom atau fungsi di bawah untuk menyisipkan, atau tekan Tab untuk item terpilih
+    previewLabel: Pratinjau langsung
+    emptyPreview: (Kosong)
+    searchPlaceholder: Cari kolom, fungsi, atau operator...
+    noSearchMatch: Tidak ada kolom atau fungsi yang cocok
+    groups:
+      columns: Kolom
+      table: Referensi Tabel
+      common: Fungsi Umum
+      number: Fungsi Angka
+      logic: Fungsi Logika
+      text: Fungsi Teks
+      date: Fungsi Tanggal & Waktu
+      list: Fungsi Daftar
+      operator: Operator
+    columnDocPrefix: Kolom dalam tabel
+    columnDocMid: . Mereferensikan
+    columnDocSuffix: " mengambil nilai kolom tersebut pada baris saat ini."
+    currentPreviewRowValue: Nilai pada baris pratinjau
+    relationTipTitle: Contoh traversal relasi graf
+    tableRefDoc: Mereferensikan semua baris pada tabel kanvas saat ini untuk agregasi seperti COUNTIF, SUMIF, FILTER, dan AVERAGE.
+    examplesLabel: Contoh
+    shortcutHint: Tab untuk menyisipkan · Ctrl+Enter untuk menyimpan
   fallbackLabels:
     unnamedNode: Simpul tanpa nama
     unnamedSection: Bagian tanpa nama
@@ -354,6 +423,12 @@ settings:
       cpu: CPU
       render: Render
       experimental: Fitur dalam Pengembangan
+    stageTable:
+      title: Tabel Multidimensi
+      basic: Dasar
+  stageTableAutoFocusCanvasOnSelect:
+    title: Sesuaikan tampilan kanvas otomatis saat memilih baris atau sel
+    description: Saat diaktifkan, memilih baris atau sel di tabel multidimensi akan otomatis mengarahkan tampilan kanvas ke simpul terkait. Saat dimatikan, hanya status pilihan yang disinkronkan tanpa menggerakkan kamera.
   language:
     title: Bahasa
     options:

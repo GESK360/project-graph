@@ -46,7 +46,7 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
     return this._isSelected;
   }
   public set isSelected(value: boolean) {
-    this._isSelected = value;
+    super.isSelected = value;
   }
 
   state: "loading" | "ready" | "notFound" | "unsupported" = "loading";

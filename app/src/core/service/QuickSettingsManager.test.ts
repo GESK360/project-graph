@@ -19,6 +19,7 @@ vi.mock("./Settings", async () => {
     settingsSchema: z.object({
       showMinimap: z.boolean().default(true),
       showDebug: z.boolean().default(false),
+      drawingPaletteOpen: z.boolean().default(false),
       mouseLeftMode: z.union([z.literal("selectAndMove"), z.literal("draw")]).default("selectAndMove"),
       mouseRightDragBackground: z.union([z.literal("cut"), z.literal("moveCamera")]).default("cut"),
     }),
@@ -26,7 +27,13 @@ vi.mock("./Settings", async () => {
 });
 
 vi.mock("./SettingsIcons", () => ({
-  settingsIcons: { showMinimap: true, showDebug: true, mouseLeftMode: true, mouseRightDragBackground: true },
+  settingsIcons: {
+    showMinimap: true,
+    showDebug: true,
+    drawingPaletteOpen: true,
+    mouseLeftMode: true,
+    mouseRightDragBackground: true,
+  },
 }));
 
 const branch = "persistentDragToConnectMindMap";
@@ -46,6 +53,7 @@ describe("sidebar ordering", () => {
     expect(await sidebarKeys()).toEqual([aligned, branch, "showDebug", "showMinimap"]);
     expect(await QuickSettingsManager.getQuickSettings()).toEqual(items("showDebug", "showMinimap"));
     expect(QuickSettingsManager.isValidQuickSetting("mouseRightDragBackground")).toBe(false);
+    expect(QuickSettingsManager.isValidQuickSetting("drawingPaletteOpen")).toBe(false);
   });
 
   it("persists interleaved order across initialization and follows subsequent settings edits", async () => {

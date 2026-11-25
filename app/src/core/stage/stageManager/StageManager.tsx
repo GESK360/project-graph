@@ -25,6 +25,10 @@ import { Direction } from "@/types/directions";
 import { Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
 import { toast } from "sonner";
+import {
+  isPersistentMindMapDragEnabled,
+  reflowMindMapTreesForEntities,
+} from "@/core/service/controlService/controller/concrete/MindMapDrag";
 import { findHiddenBranchNodes, getBranchSize } from "./basicMethods/BranchCollapse";
 
 const BRANCH_BADGE_RADIUS = 8;
@@ -1008,7 +1012,30 @@ export class StageManager {
       // 此处return 性能优化60ms
       return;
     }
+    const deletingSet = new Set<Entity>(deleteNodes);
+    const affectedContainers = new Set<Entity>();
+    const previousCenters = new Map<string, Vector>();
+    if (isPersistentMindMapDragEnabled()) {
+      for (const node of deleteNodes) {
+        if (node.parentSection && !deletingSet.has(node.parentSection)) {
+          affectedContainers.add(node.parentSection);
+          previousCenters.set(node.parentSection.uuid, node.parentSection.collisionBox.getRectangle().center);
+        }
+        if (node instanceof ConnectableEntity) {
+          for (const parent of this.project.graphMethods.nodeParentArray(node)) {
+            if (!deletingSet.has(parent)) {
+              affectedContainers.add(parent);
+              previousCenters.set(parent.uuid, parent.collisionBox.getRectangle().center);
+            }
+          }
+        }
+      }
+    }
     this.project.deleteManager.deleteEntities(deleteNodes);
+    if (affectedContainers.size > 0 && isPersistentMindMapDragEnabled()) {
+      this.updateReferences();
+      reflowMindMapTreesForEntities(this.project, affectedContainers, previousCenters);
+    }
     this.project.historyManager.recordStep();
   }
 
@@ -1209,12 +1236,27 @@ export class StageManager {
   }
 
   goInSection(entities: Entity[], section: Section) {
+    const affected = new Set<Entity>([section]);
+    const previousCenters = new Map<string, Vector>([[section.uuid, section.collisionBox.getRectangle().center]]);
+    for (const entity of entities) {
+      if (entity.parentSection) {
+        affected.add(entity.parentSection);
+        previousCenters.set(entity.parentSection.uuid, entity.parentSection.collisionBox.getRectangle().center);
+      }
+    }
     this.project.sectionInOutManager.goInSection(entities, section);
+    if (isPersistentMindMapDragEnabled()) {
+      reflowMindMapTreesForEntities(this.project, affected, previousCenters);
+    }
     this.project.historyManager.recordStep();
   }
 
   goOutSection(entities: Entity[], section: Section) {
+    const previousCenters = new Map<string, Vector>([[section.uuid, section.collisionBox.getRectangle().center]]);
     this.project.sectionInOutManager.goOutSection(entities, section);
+    if (isPersistentMindMapDragEnabled()) {
+      reflowMindMapTreesForEntities(this.project, [section], previousCenters);
+    }
     this.project.historyManager.recordStep();
   }
   /** 将所有选中的Section折叠起来 */

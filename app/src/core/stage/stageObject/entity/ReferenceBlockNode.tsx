@@ -91,7 +91,7 @@ export class ReferenceBlockNode extends ConnectableEntity implements ResizeAble 
   }
 
   public set isSelected(value: boolean) {
-    this._isSelected = value;
+    super.isSelected = value;
   }
 
   private loadImageFromAttachment() {

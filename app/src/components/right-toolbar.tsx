@@ -15,7 +15,7 @@ import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "
 import { cn } from "@/utils/cn";
 import { Fragment } from "react";
 import { useAtom } from "jotai";
-import { drawingPaletteOpenAtom, isClassroomModeAtom } from "@/state";
+import { isClassroomModeAtom } from "@/state";
 import { HandwritingTools } from "./handwriting-tools";
 import { GitBranch, Hand, MouseLeft, MousePointer, MouseRight, Network, Pencil, Scissors } from "lucide-react";
 
@@ -355,7 +355,7 @@ export default function RightToolbar({
 }) {
   const [sidebarItems, setSidebarItems] = useState<QuickSettingsManager.QuickSettingItem[]>([]);
   const [isClassroomMode] = useAtom(isClassroomModeAtom);
-  const [paletteOpen, setPaletteOpen] = useAtom(drawingPaletteOpenAtom);
+  const [paletteOpen, setPaletteOpen] = Settings.use("drawingPaletteOpen");
   const [draggedKey, setDraggedKey] = useState<SidebarKey | null>(null);
   const [drop, setDrop] = useState<SidebarDrop | null>(null);
   const drag = useRef<SidebarDrag | null>(null);
@@ -448,7 +448,7 @@ export default function RightToolbar({
             className={cn(toggleIconClass, paletteOpen && "opacity-100")}
             aria-label={paletteLabel}
             aria-expanded={paletteOpen}
-            onClick={() => setPaletteOpen((open) => !open)}
+            onClick={() => setPaletteOpen(!paletteOpen)}
           >
             <Pencil />
           </Button>

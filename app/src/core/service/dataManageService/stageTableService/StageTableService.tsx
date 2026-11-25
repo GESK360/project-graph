@@ -1,6 +1,10 @@
 import { Project, ProjectState, service } from "@/core/Project";
 import type { Service } from "@/core/interfaces/Service";
 import { RectangleNoteEffect } from "@/core/service/feedbackService/effectEngine/concrete/RectangleNoteEffect";
+import {
+  isPersistentMindMapDragEnabled,
+  reflowMindMapTreesForEntities,
+} from "@/core/service/controlService/controller/concrete/MindMapDrag";
 import { Settings } from "@/core/service/Settings";
 import { ConnectableEntity } from "@/core/stage/stageObject/abstract/ConnectableEntity";
 import { Entity } from "@/core/stage/stageObject/abstract/StageEntity";
@@ -27,16 +31,21 @@ import {
   createSelectOptionId,
   pickNextSelectOptionColor,
   type CustomColumnType,
+  type FormulaEvaluatedCell,
   type SystemColumnId,
   type TableCellValue,
+  type TableColumnFilter,
   type TableColumnGroup,
   type TableColumnSchema,
   type TableSelectOption,
+  type TableSortConfig,
+  type TableSortDirection,
   type TableViewSchema,
 } from "@/types/table";
 import { Color, ProgressNumber, Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
 import { toast } from "sonner";
+import { evaluateTableFormulas, materializeFormulaCellToStatic } from "./formulaEngine";
 
 export type StageTableRowKind =
   | "text"
@@ -76,6 +85,7 @@ export interface StageTableRow {
   inner: StageTableRelationItem[];
   canEditInner: boolean;
   tableFields: Record<string, TableCellValue>;
+  formulaValues: Record<string, FormulaEvaluatedCell>;
 }
 
 interface RowRelationSets {
@@ -140,18 +150,30 @@ export function isRowPrimaryTextEditable(entity: ConnectableEntity): boolean {
   );
 }
 
+export {
+  applyTableFiltersAndSort,
+  collectColumnFilterBuckets,
+  formatDateBucket,
+  getRowFilterTokens,
+  type ColumnFilterBucket,
+} from "@/types/table";
+
 @service("stageTable")
 export class StageTableService implements Service {
   private readonly listeners = new Set<() => void>();
+  private readonly selectionListeners = new Set<(selectedUUIDs: string[]) => void>();
   private readonly baselineDigests = new Map<string, string>();
   private readonly detailsJsonCache = new WeakMap<object, string>();
   private readonly fieldsJsonCache = new WeakMap<object, string>();
   private baselineInitialized = false;
+  private selectionSyncScheduled = false;
+  private suppressCanvasSelectionSync = false;
 
   constructor(private readonly project: Project) {}
 
   public dispose(): void {
     this.listeners.clear();
+    this.selectionListeners.clear();
   }
 
   public subscribe(listener: () => void): () => void {
@@ -159,6 +181,34 @@ export class StageTableService implements Service {
     return () => {
       this.listeners.delete(listener);
     };
+  }
+
+  public subscribeSelection(listener: (selectedUUIDs: string[]) => void): () => void {
+    this.selectionListeners.add(listener);
+    return () => {
+      this.selectionListeners.delete(listener);
+    };
+  }
+
+  public getSelectedRowUUIDs(): string[] {
+    return this.getRowEntities()
+      .filter((entity) => entity.isSelected)
+      .map((entity) => entity.uuid);
+  }
+
+  public scheduleCanvasSelectionSync(): void {
+    if (this.suppressCanvasSelectionSync) return;
+    if (this.selectionListeners.size === 0) return;
+    if (this.selectionSyncScheduled) return;
+    this.selectionSyncScheduled = true;
+    queueMicrotask(() => {
+      this.selectionSyncScheduled = false;
+      if (this.suppressCanvasSelectionSync) return;
+      const selectedUUIDs = this.getSelectedRowUUIDs();
+      for (const listener of this.selectionListeners) {
+        listener(selectedUUIDs);
+      }
+    });
   }
 
   public notifyChange(): void {
@@ -277,6 +327,8 @@ export class StageTableService implements Service {
     type: CustomColumnType;
     targetColumnId?: string;
     side?: "left" | "right";
+    formula?: string;
+    format?: string;
   }): TableColumnSchema {
     return this.insertCustomColumn(input);
   }
@@ -286,6 +338,8 @@ export class StageTableService implements Service {
     type: CustomColumnType;
     targetColumnId?: string;
     side?: "left" | "right";
+    formula?: string;
+    format?: string;
   }): TableColumnSchema {
     const id = createCustomColumnId();
     const trimmedName = input.name.trim() || "未命名";
@@ -294,6 +348,8 @@ export class StageTableService implements Service {
       name: trimmedName,
       type: input.type,
       ...(input.type === "select" || input.type === "multi_select" ? { options: [] } : {}),
+      ...(input.type === "formula" && input.formula !== undefined ? { formula: input.formula } : {}),
+      ...(input.type === "formula" && input.format ? { format: input.format } : {}),
     };
 
     const activeView = this.getActiveView();
@@ -364,13 +420,15 @@ export class StageTableService implements Service {
     };
 
     let stageFieldsMutated = false;
-    for (const entity of this.getRowEntities()) {
-      const val = entity.tableFields[sourceColumnId];
-      if (val !== undefined && val !== null && val !== "" && !(Array.isArray(val) && val.length === 0)) {
-        const nextFields = cloneTableFields(entity.tableFields);
-        nextFields[newColId] = Array.isArray(val) ? [...val] : val;
-        entity.tableFields = nextFields;
-        stageFieldsMutated = true;
+    if (sourceCol.type !== "formula") {
+      for (const entity of this.getRowEntities()) {
+        const val = entity.tableFields[sourceColumnId];
+        if (val !== undefined && val !== null && val !== "" && !(Array.isArray(val) && val.length === 0)) {
+          const nextFields = cloneTableFields(entity.tableFields);
+          nextFields[newColId] = Array.isArray(val) ? [...val] : val;
+          entity.tableFields = nextFields;
+          stageFieldsMutated = true;
+        }
       }
     }
 
@@ -423,7 +481,10 @@ export class StageTableService implements Service {
     return duplicatedColumn;
   }
 
-  public updateColumn(columnId: string, patch: { name?: string; type?: CustomColumnType }): boolean {
+  public updateColumn(
+    columnId: string,
+    patch: { name?: string; type?: CustomColumnType; formula?: string; format?: string | null },
+  ): boolean {
     if ((ALL_SYSTEM_COLUMN_IDS as readonly string[]).includes(columnId)) {
       if (patch.name === undefined) return false;
       const sysId = columnId as SystemColumnId;
@@ -448,7 +509,23 @@ export class StageTableService implements Service {
 
     const nextName = patch.name !== undefined && patch.name.trim().length > 0 ? patch.name.trim() : existingCol.name;
     const nextType = patch.type ?? existingCol.type;
-    if (nextName === existingCol.name && nextType === existingCol.type) {
+    const nextFormula =
+      nextType === "formula" ? (patch.formula !== undefined ? patch.formula : existingCol.formula) : undefined;
+    const nextFormat =
+      nextType === "formula"
+        ? patch.format === null || patch.format === ""
+          ? undefined
+          : patch.format !== undefined
+            ? patch.format
+            : existingCol.format
+        : undefined;
+
+    if (
+      nextName === existingCol.name &&
+      nextType === existingCol.type &&
+      nextFormula === existingCol.formula &&
+      nextFormat === existingCol.format
+    ) {
       return false;
     }
 
@@ -472,66 +549,104 @@ export class StageTableService implements Service {
         return created.id;
       };
 
-      for (const entity of this.getRowEntities()) {
-        const rawVal = entity.tableFields[columnId];
-        if (rawVal === undefined) continue;
+      // Solidify evaluated formula results into static cell values when converting formula -> non-formula
+      if (existingCol.type === "formula" && nextType !== "formula") {
+        const snapshotRows = this.getRows();
+        const snapshotByUuid = new Map(snapshotRows.map((r) => [r.uuid, r]));
+        for (const entity of this.getRowEntities()) {
+          const evaluatedCell = snapshotByUuid.get(entity.uuid)?.formulaValues[columnId];
+          const materialized = materializeFormulaCellToStatic(evaluatedCell, nextType, ensureOptionByLabel);
+          const nextFields = cloneTableFields(entity.tableFields);
+          if (
+            materialized === null ||
+            materialized === "" ||
+            (Array.isArray(materialized) && materialized.length === 0)
+          ) {
+            if (columnId in nextFields) {
+              delete nextFields[columnId];
+              entity.tableFields = nextFields;
+              stageFieldsMutated = true;
+            }
+          } else {
+            nextFields[columnId] = materialized;
+            entity.tableFields = nextFields;
+            stageFieldsMutated = true;
+          }
+        }
+      } else if (nextType === "formula") {
+        // Switching static column -> formula: clear stale static entries so they never pollute semantic timestamps
+        for (const entity of this.getRowEntities()) {
+          if (columnId in entity.tableFields) {
+            const nextFields = cloneTableFields(entity.tableFields);
+            delete nextFields[columnId];
+            entity.tableFields = nextFields;
+            stageFieldsMutated = true;
+          }
+        }
+      } else {
+        for (const entity of this.getRowEntities()) {
+          const rawVal = entity.tableFields[columnId];
+          if (rawVal === undefined) continue;
 
-        let converted: TableCellValue = null;
-        if (
-          (existingCol.type === "select" && nextType === "multi_select") ||
-          (existingCol.type === "multi_select" && nextType === "select")
-        ) {
-          if (nextType === "multi_select" && typeof rawVal === "string" && rawVal) {
-            converted = [rawVal];
-          } else if (nextType === "select" && Array.isArray(rawVal) && rawVal.length > 0) {
-            converted = rawVal[0];
-          }
-        } else if (nextType === "text") {
-          if (existingCol.type === "select" && typeof rawVal === "string") {
-            converted = oldOptionNameById.get(rawVal) ?? null;
-          } else if (existingCol.type === "multi_select" && Array.isArray(rawVal)) {
-            const labels = rawVal.map((id) => oldOptionNameById.get(id)).filter((v): v is string => Boolean(v));
-            converted = labels.length > 0 ? labels.join(", ") : null;
-          } else if (typeof rawVal === "number" || typeof rawVal === "string") {
-            converted = String(rawVal);
-          }
-        } else if (nextType === "number") {
-          if (typeof rawVal === "number" && Number.isFinite(rawVal)) {
-            converted = rawVal;
-          } else if (typeof rawVal === "string" && rawVal.trim().length > 0) {
-            const parsed = Number(rawVal.trim());
-            converted = Number.isFinite(parsed) ? parsed : null;
-          }
-        } else if (nextType === "date") {
-          if (typeof rawVal === "string" && /^\d{4}-\d{2}-\d{2}$/.test(rawVal.trim())) {
-            converted = rawVal.trim();
-          }
-        } else if (nextType === "select" || nextType === "multi_select") {
-          const textCandidate = typeof rawVal === "string" ? rawVal : typeof rawVal === "number" ? String(rawVal) : "";
-          if (textCandidate.trim()) {
-            if (nextType === "select") {
-              converted = ensureOptionByLabel(textCandidate);
-            } else {
-              const parts = textCandidate
-                .split(/[,，]/)
-                .map((s) => ensureOptionByLabel(s))
-                .filter((id): id is string => Boolean(id));
-              converted = parts.length > 0 ? Array.from(new Set(parts)) : null;
+          let converted: TableCellValue = null;
+          if (
+            (existingCol.type === "select" && nextType === "multi_select") ||
+            (existingCol.type === "multi_select" && nextType === "select")
+          ) {
+            if (nextType === "multi_select" && typeof rawVal === "string" && rawVal) {
+              converted = [rawVal];
+            } else if (nextType === "select" && Array.isArray(rawVal) && rawVal.length > 0) {
+              converted = rawVal[0];
+            }
+          } else if (nextType === "text") {
+            if (existingCol.type === "select" && typeof rawVal === "string") {
+              converted = oldOptionNameById.get(rawVal) ?? null;
+            } else if (existingCol.type === "multi_select" && Array.isArray(rawVal)) {
+              const labels = rawVal.map((id) => oldOptionNameById.get(id)).filter((v): v is string => Boolean(v));
+              converted = labels.length > 0 ? labels.join(", ") : null;
+            } else if (typeof rawVal === "number" || typeof rawVal === "string") {
+              converted = String(rawVal);
+            }
+          } else if (nextType === "number") {
+            if (typeof rawVal === "number" && Number.isFinite(rawVal)) {
+              converted = rawVal;
+            } else if (typeof rawVal === "string" && rawVal.trim().length > 0) {
+              const parsed = Number(rawVal.trim());
+              converted = Number.isFinite(parsed) ? parsed : null;
+            }
+          } else if (nextType === "date") {
+            if (typeof rawVal === "string" && /^\d{4}-\d{2}-\d{2}$/.test(rawVal.trim())) {
+              converted = rawVal.trim();
+            }
+          } else if (nextType === "select" || nextType === "multi_select") {
+            const textCandidate =
+              typeof rawVal === "string" ? rawVal : typeof rawVal === "number" ? String(rawVal) : "";
+            if (textCandidate.trim()) {
+              if (nextType === "select") {
+                converted = ensureOptionByLabel(textCandidate);
+              } else {
+                const parts = textCandidate
+                  .split(/[,，]/)
+                  .map((s) => ensureOptionByLabel(s))
+                  .filter((id): id is string => Boolean(id));
+                converted = parts.length > 0 ? Array.from(new Set(parts)) : null;
+              }
             }
           }
-        }
 
-        const nextFields = cloneTableFields(entity.tableFields);
-        if (converted === null || converted === "" || (Array.isArray(converted) && converted.length === 0)) {
-          delete nextFields[columnId];
-        } else {
-          nextFields[columnId] = converted;
+          const nextFields = cloneTableFields(entity.tableFields);
+          if (converted === null || converted === "" || (Array.isArray(converted) && converted.length === 0)) {
+            delete nextFields[columnId];
+          } else {
+            nextFields[columnId] = converted;
+          }
+          entity.tableFields = nextFields;
+          stageFieldsMutated = true;
         }
-        entity.tableFields = nextFields;
-        stageFieldsMutated = true;
       }
     }
 
+    const typeChanged = nextType !== existingCol.type;
     this.project.table = {
       ...this.project.table,
       columns: this.project.table.columns.map((col) =>
@@ -541,9 +656,20 @@ export class StageTableService implements Service {
               name: nextName,
               type: nextType,
               options: nextOptions,
+              formula: nextFormula,
+              format: nextFormat,
             }
           : col,
       ),
+      views: typeChanged
+        ? this.project.table.views.map((view) => {
+            const nextFilters = (view.filters ?? []).filter((f) => f.columnId !== columnId);
+            return {
+              ...view,
+              filters: nextFilters.length > 0 ? nextFilters : undefined,
+            };
+          })
+        : this.project.table.views,
     };
 
     if (stageFieldsMutated) {
@@ -585,12 +711,16 @@ export class StageTableService implements Service {
         const nextGroups = (view.columnGroups ?? [])
           .map((grp) => ({ ...grp, columnIds: grp.columnIds.filter((id) => id !== columnId) }))
           .filter((grp) => grp.columnIds.length > 0);
+        const nextSort = view.sort?.columnId === columnId ? undefined : view.sort;
+        const nextFilters = (view.filters ?? []).filter((flt) => flt.columnId !== columnId);
         return {
           ...view,
           visibleColumnIds: prevVisible.filter((id) => id !== columnId),
           columnWidths: nextWidths,
           frozenColumnId: nextFrozen,
           columnGroups: nextGroups.length > 0 ? nextGroups : undefined,
+          sort: nextSort,
+          filters: nextFilters.length > 0 ? nextFilters : undefined,
         };
       }),
     };
@@ -689,21 +819,26 @@ export class StageTableService implements Service {
       } else if (columnId === "outer") {
         cellWidth = row.outer ? Math.min(200, this.estimateDisplayWidthPx(row.outer.label || "分组框") + 46) : 96;
       } else if (customCol) {
-        const val = row.tableFields[customCol.id];
-        if (customCol.type === "date") {
-          cellWidth = typeof val === "string" && val ? 138 : 96;
-        } else if (customCol.type === "select" || customCol.type === "multi_select") {
-          const optMap = new Map((customCol.options ?? []).map((o) => [o.id, o.name]));
-          const ids = Array.isArray(val) ? val : typeof val === "string" ? [val] : [];
-          if (ids.length > 0) {
-            const pillsPx = ids.reduce(
-              (sum, id) => sum + Math.min(132, this.estimateDisplayWidthPx(optMap.get(id) ?? "") + 32),
-              0,
-            );
-            cellWidth = pillsPx + 30;
+        if (customCol.type === "formula") {
+          const displayText = row.formulaValues[customCol.id]?.displayText ?? "";
+          cellWidth = displayText ? this.estimateDisplayWidthPx(displayText) + 28 : 96;
+        } else {
+          const val = row.tableFields[customCol.id];
+          if (customCol.type === "date") {
+            cellWidth = typeof val === "string" && val ? 138 : 96;
+          } else if (customCol.type === "select" || customCol.type === "multi_select") {
+            const optMap = new Map((customCol.options ?? []).map((o) => [o.id, o.name]));
+            const ids = Array.isArray(val) ? val : typeof val === "string" ? [val] : [];
+            if (ids.length > 0) {
+              const pillsPx = ids.reduce(
+                (sum, id) => sum + Math.min(132, this.estimateDisplayWidthPx(optMap.get(id) ?? "") + 32),
+                0,
+              );
+              cellWidth = pillsPx + 30;
+            }
+          } else if (val !== null && val !== undefined) {
+            cellWidth = this.estimateDisplayWidthPx(String(val)) + 28;
           }
-        } else if (val !== null && val !== undefined) {
-          cellWidth = this.estimateDisplayWidthPx(String(val)) + 28;
         }
       }
       if (cellWidth > maxWidth) {
@@ -884,6 +1019,111 @@ export class StageTableService implements Service {
     return true;
   }
 
+  public getSort(): TableSortConfig | null {
+    const sort = this.getActiveView().sort;
+    if (!sort) return null;
+    const isValid =
+      (ALL_SYSTEM_COLUMN_IDS as readonly string[]).includes(sort.columnId) ||
+      this.project.table.columns.some((c) => c.id === sort.columnId);
+    return isValid ? sort : null;
+  }
+
+  public setSort(sort: TableSortConfig | null): void {
+    const activeView = this.getActiveView();
+    if (
+      sort &&
+      !(ALL_SYSTEM_COLUMN_IDS as readonly string[]).includes(sort.columnId) &&
+      !this.project.table.columns.some((c) => c.id === sort.columnId)
+    ) {
+      return;
+    }
+    this.project.table = {
+      ...this.project.table,
+      views: this.project.table.views.map((view) =>
+        view.id === activeView.id
+          ? {
+              ...view,
+              sort: sort ?? undefined,
+            }
+          : view,
+      ),
+    };
+    this.project.projectState = ProjectState.Unsaved;
+    this.notifyChange();
+  }
+
+  public toggleColumnSort(columnId: string, preferredDirection?: TableSortDirection): TableSortConfig | null {
+    const current = this.getSort();
+    let next: TableSortConfig | null;
+    if (preferredDirection) {
+      next =
+        current && current.columnId === columnId && current.direction === preferredDirection
+          ? null
+          : { columnId, direction: preferredDirection };
+    } else if (!current || current.columnId !== columnId) {
+      next = { columnId, direction: "asc" };
+    } else if (current.direction === "asc") {
+      next = { columnId, direction: "desc" };
+    } else {
+      next = null;
+    }
+    this.setSort(next);
+    return next;
+  }
+
+  public getFilters(): TableColumnFilter[] {
+    const validIds = new Set<string>([...ALL_SYSTEM_COLUMN_IDS, ...this.project.table.columns.map((c) => c.id)]);
+    return (this.getActiveView().filters ?? []).filter((flt) => validIds.has(flt.columnId));
+  }
+
+  public getColumnFilter(columnId: string): TableColumnFilter | null {
+    return this.getFilters().find((flt) => flt.columnId === columnId) ?? null;
+  }
+
+  public setColumnFilter(columnId: string, filter: { values: string[]; includeEmpty: boolean } | null): void {
+    const activeView = this.getActiveView();
+    const validIds = new Set<string>([...ALL_SYSTEM_COLUMN_IDS, ...this.project.table.columns.map((c) => c.id)]);
+    if (!validIds.has(columnId)) return;
+    const remaining = (activeView.filters ?? []).filter((flt) => flt.columnId !== columnId);
+    const nextFilters = filter
+      ? [
+          ...remaining,
+          { columnId, values: Array.from(new Set(filter.values)), includeEmpty: Boolean(filter.includeEmpty) },
+        ]
+      : remaining;
+    this.project.table = {
+      ...this.project.table,
+      views: this.project.table.views.map((view) =>
+        view.id === activeView.id
+          ? {
+              ...view,
+              filters: nextFilters.length > 0 ? nextFilters : undefined,
+            }
+          : view,
+      ),
+    };
+    this.project.projectState = ProjectState.Unsaved;
+    this.notifyChange();
+  }
+
+  public clearAllFilters(): void {
+    const activeView = this.getActiveView();
+    if (!activeView.filters || activeView.filters.length === 0) return;
+    this.project.table = {
+      ...this.project.table,
+      views: this.project.table.views.map((view) =>
+        view.id === activeView.id
+          ? {
+              ...view,
+              filters: undefined,
+            }
+          : view,
+      ),
+    };
+    this.project.projectState = ProjectState.Unsaved;
+    this.notifyChange();
+  }
+
   public getRowEntities(): ConnectableEntity[] {
     return this.project.stage.filter(isTableRowEntity);
   }
@@ -968,7 +1208,7 @@ export class StageTableService implements Service {
     const rowEntities = this.getRowEntities();
     const relationIndex = this.buildRelationIndex(rowEntities);
 
-    return rowEntities.map((entity) => {
+    const rows: StageTableRow[] = rowEntities.map((entity) => {
       const rel = relationIndex.get(entity.uuid)!;
       const imageNodes = this.getRowImageNodes(entity);
       const isEditableContainer = entity instanceof Section || entity instanceof TextNode;
@@ -988,8 +1228,20 @@ export class StageTableService implements Service {
         inner: rel.inner.map((item) => this.toRelationItem(item)),
         canEditInner: isEditableContainer,
         tableFields: entity.tableFields,
+        formulaValues: {},
       };
     });
+
+    const evaluatedMap = evaluateTableFormulas(rows, this.project.table.columns, {
+      systemColumnNames: this.project.table.systemColumnNames,
+    });
+    if (evaluatedMap.size > 0) {
+      for (const row of rows) {
+        row.formulaValues = evaluatedMap.get(row.uuid) ?? {};
+      }
+    }
+
+    return rows;
   }
 
   private getDetailsDigest(details: unknown): string {
@@ -1134,6 +1386,7 @@ export class StageTableService implements Service {
       return false;
     }
 
+    const centerBefore = entity.collisionBox.getRectangle().center;
     if (entity instanceof TextNode) {
       entity.rename(nextText);
     } else if (entity instanceof Section) {
@@ -1149,12 +1402,19 @@ export class StageTableService implements Service {
       void entity.updateLatex(nextText);
     }
 
+    if (isPersistentMindMapDragEnabled()) {
+      reflowMindMapTreesForEntities(this.project, [entity], new Map([[entity.uuid, centerBefore]]));
+    }
     this.project.historyManager.recordStep();
     this.notifyChange();
     return true;
   }
 
   public updateRowCustomField(uuid: string, columnId: string, value: TableCellValue): boolean {
+    const colSchema = this.getColumnSchema(columnId);
+    if (colSchema?.type === "formula") {
+      return false;
+    }
     const entity = this.project.stageManager.get(uuid);
     if (!entity || !isTableRowEntity(entity)) {
       return false;
@@ -1235,6 +1495,9 @@ export class StageTableService implements Service {
 
     this.project.stageManager.updateReferences();
     targetSection.adjustLocationAndSize();
+    if (isPersistentMindMapDragEnabled()) {
+      reflowMindMapTreesForEntities(this.project, [targetSection]);
+    }
     this.project.historyManager.recordStep();
     this.notifyChange();
     return true;
@@ -1254,6 +1517,7 @@ export class StageTableService implements Service {
     );
     if (!imageNode) return false;
 
+    const prevCenter = containerEntity.collisionBox.getRectangle().center;
     this.project.deleteManager.deleteEntities([imageNode]);
 
     const currentContainer = this.project.stageManager.get(rowUuid);
@@ -1265,6 +1529,12 @@ export class StageTableService implements Service {
       }
     }
 
+    if (isPersistentMindMapDragEnabled()) {
+      const liveContainer = this.project.stageManager.get(rowUuid);
+      if (liveContainer instanceof Entity) {
+        reflowMindMapTreesForEntities(this.project, [liveContainer], new Map([[rowUuid, prevCenter]]));
+      }
+    }
     this.project.historyManager.recordStep();
     this.notifyChange();
     return true;
@@ -1280,6 +1550,7 @@ export class StageTableService implements Service {
       .filter((edge) => edge.target.uuid === uuid && edge.source.uuid !== uuid && isTableRowEntity(edge.source));
 
     const currentParentIds = new Set(currentEdges.map((edge) => edge.source.uuid));
+    const affectedEntities: Entity[] = [entity];
     let changed = false;
 
     for (const edge of currentEdges) {
@@ -1288,6 +1559,7 @@ export class StageTableService implements Service {
         if (!deleted && this.project.sectionMethods.isObjectBeLockedBySection(edge)) {
           toast.warning("连线端点位于锁定的分组框内，无法移除");
         } else if (deleted) {
+          affectedEntities.push(edge.source);
           changed = true;
         }
       }
@@ -1298,11 +1570,15 @@ export class StageTableService implements Service {
       const parentEntity = this.project.stageManager.get(parentId);
       if (parentEntity && isTableRowEntity(parentEntity)) {
         this.project.nodeConnector.connectConnectableEntity(parentEntity, entity);
+        affectedEntities.push(parentEntity);
         changed = true;
       }
     }
 
     if (changed) {
+      if (isPersistentMindMapDragEnabled()) {
+        reflowMindMapTreesForEntities(this.project, affectedEntities);
+      }
       this.project.historyManager.recordStep();
       this.notifyChange();
     }
@@ -1319,6 +1595,7 @@ export class StageTableService implements Service {
       .filter((edge) => edge.source.uuid === uuid && edge.target.uuid !== uuid && isTableRowEntity(edge.target));
 
     const currentChildIds = new Set(currentEdges.map((edge) => edge.target.uuid));
+    const affectedEntities: Entity[] = [entity];
     let changed = false;
 
     for (const edge of currentEdges) {
@@ -1327,6 +1604,7 @@ export class StageTableService implements Service {
         if (!deleted && this.project.sectionMethods.isObjectBeLockedBySection(edge)) {
           toast.warning("连线端点位于锁定的分组框内，无法移除");
         } else if (deleted) {
+          affectedEntities.push(edge.target);
           changed = true;
         }
       }
@@ -1337,11 +1615,15 @@ export class StageTableService implements Service {
       const childEntity = this.project.stageManager.get(childId);
       if (childEntity && isTableRowEntity(childEntity)) {
         this.project.nodeConnector.connectConnectableEntity(entity, childEntity);
+        affectedEntities.push(childEntity);
         changed = true;
       }
     }
 
     if (changed) {
+      if (isPersistentMindMapDragEnabled()) {
+        reflowMindMapTreesForEntities(this.project, affectedEntities);
+      }
       this.project.historyManager.recordStep();
       this.notifyChange();
     }
@@ -1517,11 +1799,15 @@ export class StageTableService implements Service {
 
     if (nextOuterUUID === null) {
       if (!currentOuter) return false;
+      const prevCenter = currentOuter.collisionBox.getRectangle().center;
       const outermostList = this.project.sectionMethods.getFatherSectionsList(entity);
       const outermostRect = outermostList[outermostList.length - 1].collisionBox.getRectangle().clone();
       this.project.sectionInOutManager.goOutSection([entity], currentOuter);
       this.placeEntityOutsideRect(entity, outermostRect);
       this.project.stageManager.updateReferences();
+      if (isPersistentMindMapDragEnabled()) {
+        reflowMindMapTreesForEntities(this.project, [currentOuter], new Map([[currentOuter.uuid, prevCenter]]));
+      }
       this.project.historyManager.recordStep();
       this.notifyChange();
       return true;
@@ -1558,12 +1844,19 @@ export class StageTableService implements Service {
       return false;
     }
 
+    const prevCenters = new Map<string, Vector>([
+      [targetSection.uuid, targetSection.collisionBox.getRectangle().center],
+    ]);
     if (currentOuter && currentOuter !== targetSection) {
+      prevCenters.set(currentOuter.uuid, currentOuter.collisionBox.getRectangle().center);
       this.project.sectionInOutManager.goOutSection([entity], currentOuter);
     }
 
     this.placeEntityInsideSection(entity, targetSection);
     this.project.sectionInOutManager.goInSection([entity], targetSection);
+    if (isPersistentMindMapDragEnabled()) {
+      reflowMindMapTreesForEntities(this.project, [targetSection, currentOuter], prevCenters);
+    }
     this.project.historyManager.recordStep();
     this.notifyChange();
     return true;
@@ -1631,9 +1924,17 @@ export class StageTableService implements Service {
 
     const sectionRectBefore = containerEntity.collisionBox.getRectangle().clone();
     const outerParent = containerEntity.parentSection;
+    const prevCenters = new Map<string, Vector>([[containerEntity.uuid, sectionRectBefore.center]]);
+    const affectedContainers = new Set<Entity>([containerEntity]);
+    if (outerParent) {
+      affectedContainers.add(outerParent);
+      prevCenters.set(outerParent.uuid, outerParent.collisionBox.getRectangle().center);
+    }
 
     for (const child of toAdd) {
       if (child.parentSection && child.parentSection !== containerEntity) {
+        affectedContainers.add(child.parentSection);
+        prevCenters.set(child.parentSection.uuid, child.parentSection.collisionBox.getRectangle().center);
         this.project.sectionInOutManager.goOutSection([child], child.parentSection);
       }
       this.placeEntityInsideSection(child, containerEntity);
@@ -1652,9 +1953,100 @@ export class StageTableService implements Service {
     }
 
     this.project.stageManager.updateReferences();
+    if (isPersistentMindMapDragEnabled()) {
+      reflowMindMapTreesForEntities(this.project, affectedContainers, prevCenters);
+    }
     this.project.historyManager.recordStep();
     this.notifyChange();
     return true;
+  }
+
+  /**
+   * 选中画布上与多维表格指定行对应的节点（支持单选与多选），并确保它们在画布视野中可见。
+   */
+  public selectRowsOnCanvas(
+    uuids: string[],
+    options: { focusCamera?: boolean; alwaysCenterSingle?: boolean; panelWidthPx?: number } = {},
+  ): void {
+    const seen = new Set<string>();
+    const targets: ConnectableEntity[] = [];
+    for (const uuid of uuids) {
+      if (seen.has(uuid)) continue;
+      seen.add(uuid);
+      const entity = this.project.stageManager.get(uuid);
+      if (entity && isTableRowEntity(entity)) {
+        targets.push(entity);
+      }
+    }
+
+    let expandedSection = false;
+    for (const entity of targets) {
+      let ancestor = entity.parentSection;
+      while (ancestor) {
+        if (ancestor.isCollapsed) {
+          ancestor.isCollapsed = false;
+          expandedSection = true;
+        }
+        ancestor = ancestor.parentSection;
+      }
+    }
+    if (expandedSection) {
+      this.project.stageManager.updateReferences();
+    }
+
+    this.suppressCanvasSelectionSync = true;
+    try {
+      this.project.stageManager.clearSelectAll();
+      for (const entity of targets) {
+        entity.isSelected = true;
+      }
+    } finally {
+      this.suppressCanvasSelectionSync = false;
+    }
+
+    const shouldFocusCamera =
+      options.focusCamera !== undefined ? options.focusCamera : (Settings.stageTableAutoFocusCanvasOnSelect ?? true);
+
+    if (shouldFocusCamera && targets.length > 0) {
+      const rects = targets.map((entity) => entity.collisionBox.getRectangle());
+      const boundingRect = Rectangle.getBoundingRectangle(rects);
+      const scale = this.project.camera.currentScale || 1;
+      const viewWidth = this.project.renderer?.w ?? 0;
+      const viewHeight = this.project.renderer?.h ?? 0;
+      const panelWidthPx = options.panelWidthPx ?? 0;
+      const effectivePanelWidth = panelWidthPx > 0 && viewWidth > panelWidthPx + 80 ? panelWidthPx : 0;
+
+      if (targets.length === 1) {
+        const cameraTarget = new Vector(
+          boundingRect.center.x + effectivePanelWidth / (2 * scale),
+          boundingRect.center.y,
+        );
+        this.project.camera.bombMove(cameraTarget, 24);
+      } else {
+        const fitsCurrentScale =
+          viewWidth > 0 &&
+          viewHeight > 0 &&
+          boundingRect.size.x * scale <= viewWidth * 0.85 &&
+          boundingRect.size.y * scale <= viewHeight * 0.85;
+        if (fitsCurrentScale || typeof this.project.camera.resetByRectangle !== "function") {
+          const cameraTarget = new Vector(
+            boundingRect.center.x + effectivePanelWidth / (2 * scale),
+            boundingRect.center.y,
+          );
+          this.project.camera.bombMove(cameraTarget, 24);
+        } else {
+          this.project.camera.resetByRectangle(boundingRect);
+        }
+      }
+
+      const highlightColor = this.project.stageStyleManager?.currentStyle.CollideBoxSelected ?? Color.Green;
+      const effectCount = Math.min(rects.length, 30);
+      for (let i = 0; i < effectCount; i++) {
+        this.project.effects?.addEffect(new RectangleNoteEffect(new ProgressNumber(0, 45), rects[i], highlightColor));
+      }
+    }
+
+    this.project.loop?.();
   }
 
   /**
@@ -1663,40 +2055,11 @@ export class StageTableService implements Service {
   public focusRowOnCanvas(uuid: string, panelWidthPx: number = 0): void {
     const entity = this.project.stageManager.get(uuid);
     if (!entity || !isTableRowEntity(entity)) return;
-
-    // 如果目标节点被外层折叠的分组框隐藏，先逐层展开外层分组框以便可见
-    let ancestor = entity.parentSection;
-    let expandedSection = false;
-    while (ancestor) {
-      if (ancestor.isCollapsed) {
-        ancestor.isCollapsed = false;
-        expandedSection = true;
-      }
-      ancestor = ancestor.parentSection;
-    }
-    if (expandedSection) {
-      this.project.stageManager.updateReferences();
-    }
-
-    this.project.stageManager.clearSelectAll();
-    entity.isSelected = true;
-
-    const targetRect = entity.collisionBox.getRectangle();
-    const targetCenter = targetRect.center;
-    const scale = this.project.camera.currentScale || 1;
-    const viewWidth = this.project.renderer?.w ?? 0;
-    const effectivePanelWidth = panelWidthPx > 0 && viewWidth > panelWidthPx + 80 ? panelWidthPx : 0;
-
-    const cameraTarget = new Vector(targetCenter.x + effectivePanelWidth / (2 * scale), targetCenter.y);
-
-    this.project.camera.bombMove(cameraTarget, 24);
-    this.project.effects?.addEffect(
-      new RectangleNoteEffect(
-        new ProgressNumber(0, 45),
-        targetRect,
-        this.project.stageStyleManager?.currentStyle.CollideBoxSelected ?? Color.Green,
-      ),
-    );
-    this.project.loop();
+    this.selectRowsOnCanvas([uuid], {
+      focusCamera: true,
+      alwaysCenterSingle: true,
+      panelWidthPx,
+    });
+    this.scheduleCanvasSelectionSync();
   }
 }

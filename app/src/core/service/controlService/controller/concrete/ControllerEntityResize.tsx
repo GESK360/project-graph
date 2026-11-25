@@ -6,9 +6,11 @@ import { ImageNode } from "@/core/stage/stageObject/entity/ImageNode";
 import { MediaNode } from "@/core/stage/stageObject/entity/MediaNode";
 import { SvgNode } from "@/core/stage/stageObject/entity/SvgNode";
 import { ReferenceBlockNode } from "@/core/stage/stageObject/entity/ReferenceBlockNode";
+import { isPersistentMindMapDragEnabled, reflowMindMapTreesForEntities } from "./MindMapDrag";
 
 export class ControllerEntityResizeClass extends ControllerClass {
   private changeSizeEntity: Entity | null = null;
+  private resizePreviousCenters: Map<string, Vector> | null = null;
   public mousedown: (event: MouseEvent) => void = (event) => {
     if (!(event.button == 0)) {
       return;
@@ -39,6 +41,12 @@ export class ControllerEntityResizeClass extends ControllerClass {
         if (resizeRect.isPointIn(pressWorldLocation)) {
           // 点中了扩大缩小的东西
           this.changeSizeEntity = selectedEntity;
+          const centers = new Map<string, Vector>();
+          centers.set(selectedEntity.uuid, selectedEntity.collisionBox.getRectangle().center);
+          for (let sec = selectedEntity.parentSection; sec; sec = sec.parentSection) {
+            centers.set(sec.uuid, sec.collisionBox.getRectangle().center);
+          }
+          this.resizePreviousCenters = centers;
           break;
         }
       }
@@ -71,15 +79,22 @@ export class ControllerEntityResizeClass extends ControllerClass {
     if (this.changeSizeEntity === null) {
       return;
     }
-    // if (this.changeSizeEntity instanceof TextNode) {
-    //   this.project.effects.addEffect(new EntityDashTipEffect(50, this.changeSizeEntity.getResizeHandleRect()));
-    // }
+    const resizedEntity = this.changeSizeEntity;
+    const prevCenters = this.resizePreviousCenters ?? undefined;
     this.changeSizeEntity = null;
-    // const pressWorldLocation = this.project.renderer.transformView2World(new Vector(event.clientX, event.clientY));
+    this.resizePreviousCenters = null;
+    if (resizedEntity.parentSection) {
+      this.project.stageManager.updateReferences();
+    }
+    if (isPersistentMindMapDragEnabled()) {
+      reflowMindMapTreesForEntities(this.project, [resizedEntity], prevCenters);
+    }
+    this.project.historyManager.recordStep();
   };
 
   public mouseMoveOutWindowForcedShutdown(_outsideLocation: Vector) {
     super.mouseMoveOutWindowForcedShutdown(_outsideLocation);
     this.changeSizeEntity = null;
+    this.resizePreviousCenters = null;
   }
 }

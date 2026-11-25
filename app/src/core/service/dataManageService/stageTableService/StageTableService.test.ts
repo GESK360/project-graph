@@ -31,6 +31,7 @@ vi.mock("@/core/service/Settings", () => ({
     hideSectionContentsWhenBigTitleActive: false,
     sectionBitTitleRenderType: "none",
     autoLayoutWhenSectionCollapseToggle: false,
+    stageTableAutoFocusCanvasOnSelect: true,
   },
 }));
 vi.mock("@/core/service/feedbackService/SoundService", () => ({
@@ -80,7 +81,13 @@ import { ImageNode } from "@/core/stage/stageObject/entity/ImageNode";
 import { PenStroke, PenStrokeSegment } from "@/core/stage/stageObject/entity/PenStroke";
 import { Section } from "@/core/stage/stageObject/entity/Section";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
-import { createDefaultTableData, type PrgTableData } from "@/types/table";
+import {
+  applyTableFiltersAndSort,
+  collectColumnFilterBuckets,
+  createDefaultTableData,
+  normalizeTableData,
+  type PrgTableData,
+} from "@/types/table";
 import { StageTableService } from "./StageTableService";
 
 // Make sure Vector, Color, Rectangle, Line are registered for @graphif/serializer roundtrips
@@ -666,5 +673,246 @@ describe("StageTableService & .prg v2.8.0", () => {
     expect(project.stageTable.getColumnGroups()[0].name).toBe("核心资料");
     expect(project.stageTable.dissolveColumnGroup(basicGroup.id)).toBe(true);
     expect(project.stageTable.getColumnGroups()).toEqual([]);
+  });
+
+  it("syncs single and multi-row selection bidirectionally between table and canvas", async () => {
+    const project = createTestHarness();
+    const nodeA = new TextNode(project as never, {
+      uuid: "sync-a",
+      text: "节点 A",
+      collisionBox: new CollisionBox([new Rectangle(new Vector(0, 0), new Vector(100, 50))]),
+    });
+    const nodeB = new TextNode(project as never, {
+      uuid: "sync-b",
+      text: "节点 B",
+      collisionBox: new CollisionBox([new Rectangle(new Vector(1500, 900), new Vector(100, 50))]),
+    });
+    const nodeC = new TextNode(project as never, {
+      uuid: "sync-c",
+      text: "节点 C",
+      collisionBox: new CollisionBox([new Rectangle(new Vector(300, 100), new Vector(100, 50))]),
+    });
+    project.stage.push(nodeA, nodeB, nodeC);
+
+    const resetByRectangle = vi.fn();
+    Object.assign(project.camera, { resetByRectangle });
+    Object.assign((project as unknown as { renderer: Record<string, unknown> }).renderer, {
+      getCoverWorldRectangle: () => new Rectangle(new Vector(-200, -200), new Vector(800, 600)),
+    });
+
+    const receivedCanvasSelections: string[][] = [];
+    const unsub = project.stageTable.subscribeSelection((uuids) => receivedCanvasSelections.push(uuids));
+
+    // 1. Table -> Canvas multi-row selection selects corresponding nodes and fits camera when spanning beyond viewport
+    project.stageTable.selectRowsOnCanvas(["sync-a", "sync-b"]);
+    await Promise.resolve();
+    expect(nodeA.isSelected).toBe(true);
+    expect(nodeB.isSelected).toBe(true);
+    expect(nodeC.isSelected).toBe(false);
+    expect(resetByRectangle).toHaveBeenCalledTimes(1);
+    // Table-initiated selection must not echo back into canvas->table listeners
+    expect(receivedCanvasSelections).toEqual([]);
+
+    // 2. Canvas -> Table multi-node selection coalesces into a single microtask notification
+    nodeA.isSelected = false;
+    nodeB.isSelected = true;
+    nodeC.isSelected = true;
+    await Promise.resolve();
+    expect(receivedCanvasSelections).toEqual([["sync-b", "sync-c"]]);
+
+    // 3. Clearing selection on canvas notifies empty selection
+    project.stageManager.clearSelectAll();
+    await Promise.resolve();
+    expect(receivedCanvasSelections).toEqual([["sync-b", "sync-c"], []]);
+
+    // 4. Respects Settings.stageTableAutoFocusCanvasOnSelect toggle (still syncs selection when disabled, without moving camera)
+    const bombMove = vi.fn();
+    Object.assign(project.camera, { bombMove });
+    const { Settings } = await import("@/core/service/Settings");
+    Settings.stageTableAutoFocusCanvasOnSelect = false;
+    try {
+      project.stageTable.selectRowsOnCanvas(["sync-a"]);
+      expect(nodeA.isSelected).toBe(true);
+      expect(bombMove).not.toHaveBeenCalled();
+
+      // Explicit jump button (focusRowOnCanvas) always focuses camera even when auto-focus on select is off
+      project.stageTable.focusRowOnCanvas("sync-a");
+      expect(bombMove).toHaveBeenCalledTimes(1);
+
+      // Re-enabling auto-focus resumes camera pan on selectRowsOnCanvas
+      Settings.stageTableAutoFocusCanvasOnSelect = true;
+      project.stageTable.selectRowsOnCanvas(["sync-c"]);
+      expect(nodeC.isSelected).toBe(true);
+      expect(bombMove).toHaveBeenCalledTimes(2);
+    } finally {
+      Settings.stageTableAutoFocusCanvasOnSelect = true;
+    }
+
+    unsub();
+  });
+
+  it("supports column sorting, value filtering, persistence normalization, and cleanup on column removal", () => {
+    const project = createTestHarness();
+    const node1 = new TextNode(project as never, { uuid: "f1", text: "章节 10", createdAt: 3000, updatedAt: 3000 });
+    const node2 = new TextNode(project as never, { uuid: "f2", text: "章节 2", createdAt: 1000, updatedAt: 1000 });
+    const node3 = new TextNode(project as never, { uuid: "f3", text: "章节 1", createdAt: 2000, updatedAt: 2000 });
+    project.stage.push(node1, node2, node3);
+
+    const colScore = project.stageTable.addCustomColumn({ name: "分值", type: "number" });
+    project.stageTable.updateRowCustomField("f1", colScore.id, 30);
+    project.stageTable.updateRowCustomField("f2", colScore.id, 100);
+    // f3 intentionally empty
+
+    // Natural sort on "name": 章节 1 < 章节 2 < 章节 10
+    project.stageTable.toggleColumnSort("name");
+    expect(project.stageTable.getSort()).toEqual({ columnId: "name", direction: "asc" });
+    let rows = applyTableFiltersAndSort(
+      project.stageTable.getRows(),
+      project.stageTable.getColumns(),
+      project.stageTable.getFilters(),
+      project.stageTable.getSort(),
+    );
+    expect(rows.map((r) => r.uuid)).toEqual(["f3", "f2", "f1"]);
+
+    // Toggle again -> desc
+    project.stageTable.toggleColumnSort("name");
+    expect(project.stageTable.getSort()).toEqual({ columnId: "name", direction: "desc" });
+    rows = applyTableFiltersAndSort(
+      project.stageTable.getRows(),
+      project.stageTable.getColumns(),
+      project.stageTable.getFilters(),
+      project.stageTable.getSort(),
+    );
+    expect(rows.map((r) => r.uuid)).toEqual(["f1", "f2", "f3"]);
+
+    // Numeric sort on custom number column keeps empty values last in both directions
+    project.stageTable.setSort({ columnId: colScore.id, direction: "asc" });
+    rows = applyTableFiltersAndSort(
+      project.stageTable.getRows(),
+      project.stageTable.getColumns(),
+      project.stageTable.getFilters(),
+      project.stageTable.getSort(),
+    );
+    expect(rows.map((r) => r.uuid)).toEqual(["f1", "f2", "f3"]);
+
+    // Value filter: keep only value "30" and empty rows
+    const { buckets, emptyCount } = collectColumnFilterBuckets(project.stageTable.getRows(), colScore.id, colScore);
+    expect(buckets.map((b) => b.key)).toEqual(["30", "100"]);
+    expect(emptyCount).toBe(1);
+
+    project.stageTable.setColumnFilter(colScore.id, { values: ["30"], includeEmpty: true });
+    rows = applyTableFiltersAndSort(
+      project.stageTable.getRows(),
+      project.stageTable.getColumns(),
+      project.stageTable.getFilters(),
+      project.stageTable.getSort(),
+    );
+    expect(rows.map((r) => r.uuid)).toEqual(["f1", "f3"]);
+
+    // Persistence round-trip via normalizeTableData preserves sort & filters
+    const normalized = normalizeTableData(project.table);
+    expect(normalized.views[0].sort).toEqual({ columnId: colScore.id, direction: "asc" });
+    expect(normalized.views[0].filters).toEqual([{ columnId: colScore.id, values: ["30"], includeEmpty: true }]);
+
+    // Deleting the column cleans up both sort and filter referencing it
+    project.stageTable.deleteCustomColumn(colScore.id);
+    expect(project.stageTable.getSort()).toBeNull();
+    expect(project.stageTable.getFilters()).toEqual([]);
+  });
+
+  it("evaluates formula columns dynamically without mutating updatedAt, supports sort/filter/rename resilience, and solidifies values on type conversion", () => {
+    const project = createTestHarness();
+    const fixedTime = new Date(2026, 9, 22, 12, 0, 0).getTime();
+    const q1 = new TextNode(project as never, {
+      uuid: "q1",
+      text: "细胞膜图像",
+      createdAt: fixedTime,
+      updatedAt: fixedTime,
+    });
+    const q2 = new TextNode(project as never, {
+      uuid: "q2",
+      text: "线粒体结构",
+      createdAt: fixedTime,
+      updatedAt: fixedTime,
+    });
+    project.stage.push(q1, q2);
+
+    const colCorrect = project.stageTable.addCustomColumn({ name: "答对次数", type: "number" });
+    const colDelay = project.stageTable.addCustomColumn({ name: "延期", type: "number" });
+    project.stageTable.updateRowCustomField("q1", colCorrect.id, 1);
+    project.stageTable.updateRowCustomField("q1", colDelay.id, 0);
+    project.stageTable.updateRowCustomField("q2", colCorrect.id, 3);
+    project.stageTable.updateRowCustomField("q2", colDelay.id, 2);
+
+    const updatedBeforeFormula = q1.updatedAt;
+
+    // Add 2 chained formula columns (ID-based refs)
+    const colInterval = project.stageTable.addCustomColumn({
+      name: "下次作答",
+      type: "formula",
+      formula: `POWER(2, {{${colCorrect.id}}}) - 1 + {{${colDelay.id}}}`,
+    });
+    const colLabel = project.stageTable.addCustomColumn({
+      name: "复习提示",
+      type: "formula",
+      formula: `IF({{${colInterval.id}}} <= 1, "明天复习", "延后复习")`,
+    });
+
+    // Formula evaluation must NOT write into entity.tableFields or touch updatedAt
+    let rows = project.stageTable.getRows();
+    expect(q1.tableFields[colInterval.id]).toBeUndefined();
+    expect(q1.updatedAt).toBe(updatedBeforeFormula);
+    expect(rows.find((r) => r.uuid === "q1")?.formulaValues[colInterval.id]?.numericValue).toBe(1);
+    expect(rows.find((r) => r.uuid === "q2")?.formulaValues[colInterval.id]?.numericValue).toBe(9);
+    expect(rows.find((r) => r.uuid === "q1")?.formulaValues[colLabel.id]?.displayText).toBe("明天复习");
+    expect(rows.find((r) => r.uuid === "q2")?.formulaValues[colLabel.id]?.displayText).toBe("延后复习");
+
+    // Read-only guard: direct cell write to formula column is rejected
+    expect(project.stageTable.updateRowCustomField("q1", colInterval.id, 999)).toBe(false);
+
+    // Renaming referenced column must NOT break the formula
+    project.stageTable.updateColumn(colCorrect.id, { name: "连续答对次数" });
+    rows = project.stageTable.getRows();
+    expect(rows.find((r) => r.uuid === "q2")?.formulaValues[colInterval.id]?.numericValue).toBe(9);
+
+    // Sorting & filtering directly on formula columns
+    project.stageTable.setSort({ columnId: colInterval.id, direction: "desc" });
+    const sorted = applyTableFiltersAndSort(
+      project.stageTable.getRows(),
+      project.stageTable.getColumns(),
+      [],
+      project.stageTable.getSort(),
+    );
+    expect(sorted.map((r) => r.uuid)).toEqual(["q2", "q1"]);
+
+    const { buckets } = collectColumnFilterBuckets(project.stageTable.getRows(), colLabel.id, colLabel);
+    expect(buckets.map((b) => b.key).sort()).toEqual(["延后复习", "明天复习"]);
+    const filtered = applyTableFiltersAndSort(
+      project.stageTable.getRows(),
+      project.stageTable.getColumns(),
+      [{ columnId: colLabel.id, values: ["明天复习"], includeEmpty: false }],
+      null,
+    );
+    expect(filtered.map((r) => r.uuid)).toEqual(["q1"]);
+
+    // Solidification: converting formula -> number snapshots computed values into static tableFields
+    project.stageTable.updateColumn(colInterval.id, { type: "number" });
+    expect(q1.tableFields[colInterval.id]).toBe(1);
+    expect(q2.tableFields[colInterval.id]).toBe(9);
+    expect(project.stageTable.getColumnSchema(colInterval.id)?.formula).toBeUndefined();
+
+    // Solidification: converting formula -> select auto-creates options from evaluated text
+    project.stageTable.updateColumn(colLabel.id, { type: "select" });
+    const labelSchema = project.stageTable.getColumnSchema(colLabel.id)!;
+    const optionNames = (labelSchema.options ?? []).map((o) => o.name).sort();
+    expect(optionNames).toEqual(["延后复习", "明天复习"]);
+    expect(q1.tableFields[colLabel.id]).toBeTruthy();
+
+    // Switching static column -> formula clears stale static entries
+    project.stageTable.updateColumn(colInterval.id, { type: "formula", formula: "42" });
+    expect(q1.tableFields[colInterval.id]).toBeUndefined();
+    expect(project.stageTable.getRows().find((r) => r.uuid === "q1")?.formulaValues[colInterval.id]?.numericValue).toBe(
+      42,
+    );
   });
 });

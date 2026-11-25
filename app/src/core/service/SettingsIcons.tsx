@@ -283,5 +283,6 @@ export const settingsIcons = {
   maxFpsUnfocused: Timer,
   aiContextWindow: Gauge,
   aiAutoApproveMcpTools: ShieldCheck,
+  stageTableAutoFocusCanvasOnSelect: Crosshair,
   aiCustomHeaders: Braces,
 };

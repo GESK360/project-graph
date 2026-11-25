@@ -57,6 +57,14 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
     );
   }
 
+  private isAltLayerMovingActive(event: MouseEvent | KeyboardEvent) {
+    const isAltHeld = event.altKey || this.project.controller.pressingKeySet.has("alt");
+    if (!isAltHeld) return false;
+    const pinnedDrag = Settings.persistentDragToConnectMindMap || Settings.persistentDragToConnectMindMapAligned;
+    if (pinnedDrag) return true;
+    return !this.isMindMapShortcutHeld(event, "align") && !this.isMindMapShortcutHeld(event, "preserve");
+  }
+
   private isMindMapKeyHeld(event: MouseEvent | KeyboardEvent, mode: MindMapDragMode) {
     const pinnedMode = Settings.persistentDragToConnectMindMapAligned
       ? "align"
@@ -64,6 +72,7 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
         ? "preserve"
         : null;
     if (pinnedMode) {
+      if (this.isAltLayerMovingActive(event)) return false;
       return pinnedMode === mode && !this.isMindMapShortcutHeld(event, pinnedMode);
     }
     return this.isMindMapShortcutHeld(event, mode);
@@ -114,7 +123,9 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
     }
     if (this.mindMapDrag && !this.isMindMapKeyHeld(event, this.mindMapDrag.mode)) {
       this.mindMapDrag = null;
-      this.isMovingEntity = Settings.persistentDragToConnectMindMap || Settings.persistentDragToConnectMindMapAligned;
+      this.isMovingEntity =
+        !this.isAltLayerMovingActive(event) &&
+        (Settings.persistentDragToConnectMindMap || Settings.persistentDragToConnectMindMapAligned);
       if (this.isMovingEntity) {
         this.lastMoveLocation = this.project.renderer.transformView2World(this.currentViewLocation);
       }
@@ -125,7 +136,9 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
   public keyup = (event: KeyboardEvent) => {
     if (this.mindMapDrag && !this.isMindMapKeyHeld(event, this.mindMapDrag.mode)) {
       this.mindMapDrag = null;
-      this.isMovingEntity = Settings.persistentDragToConnectMindMap || Settings.persistentDragToConnectMindMapAligned;
+      this.isMovingEntity =
+        !this.isAltLayerMovingActive(event) &&
+        (Settings.persistentDragToConnectMindMap || Settings.persistentDragToConnectMindMapAligned);
     }
     this.startMindMapDrag(event);
   };
@@ -162,6 +175,11 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
 
     // 检查是否点击了缩放控制点，如果是，就不要触发移动事件
     if (this.project.controllerUtils.isClickedResizeRect(pressWorldLocation)) {
+      return;
+    }
+
+    // 防止跳跃式移动（Alt 投射）时触发拖拽自动连接或改变选中内容
+    if (this.isAltLayerMovingActive(event)) {
       return;
     }
 
@@ -296,7 +314,9 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
       if (Settings.mouseLeftMode !== "selectAndMove" || !this.isMindMapKeyHeld(event, this.mindMapDrag.mode)) {
         this.mindMapDrag = null;
         if (Settings.mouseLeftMode !== "selectAndMove") return;
-        this.isMovingEntity = Settings.persistentDragToConnectMindMap || Settings.persistentDragToConnectMindMapAligned;
+        this.isMovingEntity =
+          !this.isAltLayerMovingActive(event) &&
+          (Settings.persistentDragToConnectMindMap || Settings.persistentDragToConnectMindMapAligned);
         if (this.isMovingEntity) {
           this.lastMoveLocation = this.project.renderer.transformView2World(this.currentViewLocation);
         }
@@ -311,6 +331,7 @@ export class ControllerEntityClickSelectAndMoveClass extends ControllerClass {
     if (
       this.project.controller.rectangleSelect.isUsing ||
       this.project.controller.cutting.isUsing ||
+      event.altKey ||
       this.project.controller.pressingKeySet.has("alt")
     ) {
       return;

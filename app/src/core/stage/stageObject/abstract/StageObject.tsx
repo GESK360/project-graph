@@ -37,7 +37,11 @@ export abstract class StageObject {
   }
 
   public set isSelected(value: boolean) {
+    if (this._isSelected === value) {
+      return;
+    }
     this._isSelected = value;
+    this.project?.stageTable?.scheduleCanvasSelectionSync?.();
   }
 
   public dispose?(): void | Promise<void>;

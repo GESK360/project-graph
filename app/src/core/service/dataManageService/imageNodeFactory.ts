@@ -7,6 +7,10 @@ import { Section } from "@/core/stage/stageObject/entity/Section";
 import { Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
 import type { Value } from "platejs";
+import {
+  isPersistentMindMapDragEnabled,
+  reflowMindMapTreesForEntities,
+} from "@/core/service/controlService/controller/concrete/MindMapDrag";
 
 export type CreateImageNodeFromBlobOptions = {
   location: Vector;
@@ -71,7 +75,13 @@ export async function createImageNodeFromBlob(
   project.stageManager.add(imageNode);
   const containingSections = project.sectionMethods.getSectionsByInnerLocation(location);
   if (containingSections.length > 0) {
-    project.stageManager.goInSection([imageNode], containingSections[0]);
+    const prevCenters = new Map<string, Vector>([
+      [containingSections[0].uuid, containingSections[0].collisionBox.getRectangle().center],
+    ]);
+    project.sectionInOutManager.goInSection([imageNode], containingSections[0]);
+    if (isPersistentMindMapDragEnabled()) {
+      reflowMindMapTreesForEntities(project, [containingSections[0]], prevCenters);
+    }
     project.effects.addEffect(
       RectanglePushInEffect.sectionGoInGoOut(
         imageNode.collisionBox.getRectangle(),

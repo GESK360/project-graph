@@ -14,6 +14,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  FormulaPillPreview,
+  StageTableFormulaEditorDialog,
+  type FormulaEditorColumnOption,
+} from "@/components/stage-table-formula-editor";
+import { hasVolatileFormulas } from "@/core/service/dataManageService/stageTableService/formulaEngine";
 import type { Project } from "@/core/Project";
 import type {
   StageTableImageItem,
@@ -24,21 +30,28 @@ import type {
 import {
   ALL_SYSTEM_COLUMN_IDS,
   OPTIONAL_SYSTEM_COLUMN_IDS,
+  applyTableFiltersAndSort,
+  collectColumnFilterBuckets,
   pickNextSelectOptionColor,
   type CustomColumnType,
   type SystemColumnId,
   type TableCellValue,
+  type TableColumnFilter,
   type TableColumnGroup,
   type TableColumnSchema,
   type TableSelectOption,
+  type TableSortConfig,
+  type TableSortDirection,
 } from "@/types/table";
 import { cn } from "@/utils/cn";
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
+  ArrowDown,
   ArrowDownRight,
   ArrowLeft,
   ArrowRight,
+  ArrowUp,
   ArrowUpDown,
   ArrowUpLeft,
   Box,
@@ -262,11 +275,13 @@ function PrimaryTextCell({
   row,
   onCommit,
   onJump,
+  canEditOnClick,
   t,
 }: {
   row: StageTableRow;
   onCommit: (nextText: string) => void;
   onJump: () => void;
+  canEditOnClick?: () => boolean;
   t: (key: string) => string;
 }) {
   const [editing, setEditing] = useState(false);
@@ -324,6 +339,12 @@ function PrimaryTextCell({
             type="button"
             disabled={!row.editableText}
             onClick={() => {
+              if (row.editableText && (!canEditOnClick || canEditOnClick())) {
+                setDraft(row.primaryText);
+                setEditing(true);
+              }
+            }}
+            onDoubleClick={() => {
               if (row.editableText) {
                 setDraft(row.primaryText);
                 setEditing(true);
@@ -345,7 +366,9 @@ function PrimaryTextCell({
         <TooltipTrigger asChild>
           <button
             type="button"
+            data-cell-action
             aria-label={t("jumpToNode")}
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
               onJump();
@@ -505,9 +528,11 @@ function ImagesCell({
 function TextCustomCell({
   value,
   onCommit,
+  canEditOnClick,
 }: {
   value: TableCellValue | undefined;
   onCommit: (val: TableCellValue) => void;
+  canEditOnClick?: () => boolean;
 }) {
   const strValue = typeof value === "string" ? value : value === null || value === undefined ? "" : String(value);
   const [editing, setEditing] = useState(false);
@@ -563,6 +588,12 @@ function TextCustomCell({
       role="button"
       tabIndex={0}
       onClick={() => {
+        if (!canEditOnClick || canEditOnClick()) {
+          setDraft(strValue);
+          setEditing(true);
+        }
+      }}
+      onDoubleClick={() => {
         setDraft(strValue);
         setEditing(true);
       }}
@@ -584,9 +615,11 @@ function TextCustomCell({
 function NumberCustomCell({
   value,
   onCommit,
+  canEditOnClick,
 }: {
   value: TableCellValue | undefined;
   onCommit: (val: TableCellValue) => void;
+  canEditOnClick?: () => boolean;
 }) {
   const numStr = typeof value === "number" && Number.isFinite(value) ? String(value) : "";
   const [editing, setEditing] = useState(false);
@@ -653,6 +686,12 @@ function NumberCustomCell({
       role="button"
       tabIndex={0}
       onClick={() => {
+        if (!canEditOnClick || canEditOnClick()) {
+          setDraft(numStr);
+          setEditing(true);
+        }
+      }}
+      onDoubleClick={() => {
         setDraft(numStr);
         setEditing(true);
       }}
@@ -682,6 +721,13 @@ function DateCustomCell({
   const [open, setOpen] = useState(false);
   const dateStr = typeof value === "string" ? value : "";
   const selectedDate = useMemo(() => parseIsoDate(dateStr), [dateStr]);
+  const [displayMonth, setDisplayMonth] = useState<Date>(() => selectedDate ?? new Date());
+
+  useEffect(() => {
+    if (open) {
+      setDisplayMonth(selectedDate ?? new Date());
+    }
+  }, [open, selectedDate]);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -704,7 +750,9 @@ function DateCustomCell({
           {dateStr && (
             <button
               type="button"
+              data-cell-action
               aria-label={t("dateCell.clear")}
+              onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation();
                 onCommit(null);
@@ -721,6 +769,8 @@ function DateCustomCell({
         className="w-auto p-2"
         onWheel={(e) => e.stopPropagation()}
         onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-2 flex items-center gap-1.5">
           <Input
@@ -750,10 +800,14 @@ function DateCustomCell({
         </div>
         <Calendar
           mode="single"
+          month={displayMonth}
+          onMonthChange={setDisplayMonth}
           selected={selectedDate}
           onSelect={(date) => {
-            onCommit(date ? formatIsoDate(date) : null);
-            if (date) setOpen(false);
+            if (date) {
+              onCommit(formatIsoDate(date));
+            }
+            setOpen(false);
           }}
         />
       </PopoverContent>
@@ -880,7 +934,9 @@ function SelectCustomCell({
               <span className="max-w-28 truncate">{opt.name}</span>
               <button
                 type="button"
+                data-cell-action
                 aria-label={t("selectCell.removeOption")}
+                onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
                   if (isMulti) {
@@ -910,6 +966,8 @@ function SelectCustomCell({
         }}
         onWheel={(e) => e.stopPropagation()}
         onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b p-2">
           <Input
@@ -1070,7 +1128,9 @@ function MultiRelationCell({
                   <span className="max-w-28 truncate">{label}</span>
                   <button
                     type="button"
+                    data-cell-action
                     aria-label={t("removeRelation")}
+                    onPointerDown={(e) => e.stopPropagation()}
                     onClick={(e) => {
                       e.stopPropagation();
                       onChange(selectedItems.filter((s) => s.uuid !== item.uuid).map((s) => s.uuid));
@@ -1090,6 +1150,8 @@ function MultiRelationCell({
         className="w-60 p-0"
         onWheel={(e) => e.stopPropagation()}
         onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b p-2">
           <div className="relative flex items-center">
@@ -1182,7 +1244,9 @@ function SingleRelationCell({
               <span className="max-w-28 truncate">{getDisplayLabel(selectedItem, t)}</span>
               <button
                 type="button"
+                data-cell-action
                 aria-label={t("removeRelation")}
+                onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
                   onChange(null);
@@ -1200,6 +1264,8 @@ function SingleRelationCell({
         className="w-60 p-0"
         onWheel={(e) => e.stopPropagation()}
         onMouseDown={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="border-b p-2">
           <div className="relative flex items-center">
@@ -1273,8 +1339,25 @@ interface ScrollMetrics {
  * 带右侧垂直滑块与底部水平滑块的滚动容器：
  * 支持鼠标拖拽滑块、点击轨道跳转、以及滚轮控制（含底部滑块悬停滚轮与 Shift+滚轮横向滚动）。
  */
-function TableScrollContainer({ children, layoutDepsKey }: { children: React.ReactNode; layoutDepsKey: string }) {
+function TableScrollContainer({
+  children,
+  layoutDepsKey,
+  externalViewportRef,
+}: {
+  children: React.ReactNode;
+  layoutDepsKey: string;
+  externalViewportRef?: React.MutableRefObject<HTMLDivElement | null>;
+}) {
   const viewportRef = useRef<HTMLDivElement>(null);
+  const assignViewportRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      viewportRef.current = el;
+      if (externalViewportRef) {
+        externalViewportRef.current = el;
+      }
+    },
+    [externalViewportRef],
+  );
   const contentRef = useRef<HTMLDivElement>(null);
   const vTrackRef = useRef<HTMLDivElement>(null);
   const hTrackRef = useRef<HTMLDivElement>(null);
@@ -1405,7 +1488,7 @@ function TableScrollContainer({ children, layoutDepsKey }: { children: React.Rea
     <div className="grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)_14px] grid-rows-[minmax(0,1fr)_14px] overflow-hidden">
       {/* 主表格视口 */}
       <div
-        ref={viewportRef}
+        ref={assignViewportRef}
         data-stage-table-viewport
         onScroll={syncMetrics}
         onWheel={handleViewportWheel}
@@ -1573,12 +1656,13 @@ function TableScrollContainer({ children, layoutDepsKey }: { children: React.Rea
   );
 }
 
-const FIELD_TYPE_GRID_ORDER: readonly Exclude<CustomColumnType, "formula">[] = [
+const FIELD_TYPE_GRID_ORDER: readonly CustomColumnType[] = [
   "text",
   "select",
   "multi_select",
   "number",
   "date",
+  "formula",
 ];
 
 function FreezeColumnIcon({ className }: { className?: string }) {
@@ -1602,7 +1686,7 @@ function FreezeColumnIcon({ className }: { className?: string }) {
 }
 
 /**
- * 图 2 & 图 4 双列字段类型选择面板（仅展示已支持的 5 类自定义字段）
+ * 图 2 & 图 4 双列字段类型选择面板（支持全部 6 类自定义字段，含公式）
  */
 function FieldTypeGridPicker({
   selectedType,
@@ -1610,8 +1694,8 @@ function FieldTypeGridPicker({
   showTabNextHint = false,
   t,
 }: {
-  selectedType: Exclude<CustomColumnType, "formula">;
-  onSelectType: (type: Exclude<CustomColumnType, "formula">) => void;
+  selectedType: CustomColumnType;
+  onSelectType: (type: CustomColumnType) => void;
   showTabNextHint?: boolean;
   t: (key: string) => string;
 }) {
@@ -1656,10 +1740,280 @@ interface SuperHeaderSegment {
   isFreezeBoundary: boolean;
 }
 
+type TableSelectionMode = "none" | "all" | "rows" | "columns" | "cells";
+
+interface TableSelectionState {
+  mode: TableSelectionMode;
+  rowIds: Set<string>;
+  colIds: Set<string>;
+  cells: Set<string>;
+  anchorRowId: string | null;
+  anchorColId: string | null;
+  activeCell: { rowId: string; colId: string } | null;
+}
+
+const EMPTY_SELECTION: TableSelectionState = {
+  mode: "none",
+  rowIds: new Set<string>(),
+  colIds: new Set<string>(),
+  cells: new Set<string>(),
+  anchorRowId: null,
+  anchorColId: null,
+  activeCell: null,
+};
+
+function makeCellKey(rowId: string, colId: string): string {
+  return `${rowId}\0${colId}`;
+}
+
+function ColumnFilterSortPopoverContent({
+  columnId,
+  customCol,
+  allRows,
+  activeSort,
+  activeFilter,
+  onSetSort,
+  onSetFilter,
+  t,
+}: {
+  columnId: string;
+  customCol?: TableColumnSchema;
+  allRows: StageTableRow[];
+  activeSort: TableSortConfig | null;
+  activeFilter: TableColumnFilter | null;
+  onSetSort: (sort: TableSortConfig | null) => void;
+  onSetFilter: (filter: { values: string[]; includeEmpty: boolean } | null) => void;
+  t: (key: string, opts?: Record<string, unknown>) => string;
+}) {
+  const [search, setSearch] = useState("");
+  const { buckets, emptyCount } = useMemo(
+    () => collectColumnFilterBuckets(allRows, columnId, customCol),
+    [allRows, columnId, customCol],
+  );
+
+  const isSortAsc = activeSort?.columnId === columnId && activeSort.direction === "asc";
+  const isSortDesc = activeSort?.columnId === columnId && activeSort.direction === "desc";
+  const isSortedHere = isSortAsc || isSortDesc;
+
+  const allKeys = useMemo(() => buckets.map((b) => b.key), [buckets]);
+  const selectedKeySet = useMemo(() => {
+    if (!activeFilter) return new Set(allKeys);
+    return new Set(activeFilter.values);
+  }, [activeFilter, allKeys]);
+  const includeEmpty = activeFilter ? activeFilter.includeEmpty : true;
+
+  const formatBucketLabel = useCallback(
+    (key: string, label: string) => {
+      if (columnId === "images") {
+        return t("imagesCell.countLabel", { count: Number(key) });
+      }
+      return label;
+    },
+    [columnId, t],
+  );
+
+  const emptyLabel = columnId === "images" ? t("imagesCell.emptyLabel") : t("sortFilter.emptyValue");
+
+  const trimmedSearch = search.trim().toLowerCase();
+  const visibleBuckets = useMemo(() => {
+    if (!trimmedSearch) return buckets;
+    return buckets.filter((b) => formatBucketLabel(b.key, b.label).toLowerCase().includes(trimmedSearch));
+  }, [buckets, trimmedSearch, formatBucketLabel]);
+  const showEmptyRow = emptyCount > 0 && (!trimmedSearch || emptyLabel.toLowerCase().includes(trimmedSearch));
+
+  const commitFilter = (nextKeys: Set<string>, nextIncludeEmpty: boolean) => {
+    const allNonEmptyChecked = allKeys.every((k) => nextKeys.has(k));
+    const emptySatisfied = emptyCount === 0 || nextIncludeEmpty;
+    if (allNonEmptyChecked && emptySatisfied) {
+      onSetFilter(null);
+    } else {
+      onSetFilter({
+        values: allKeys.filter((k) => nextKeys.has(k)),
+        includeEmpty: emptyCount > 0 ? nextIncludeEmpty : false,
+      });
+    }
+  };
+
+  const toggleBucket = (key: string) => {
+    const next = new Set(selectedKeySet);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    commitFilter(next, includeEmpty);
+  };
+
+  const toggleEmpty = () => {
+    commitFilter(new Set(selectedKeySet), !includeEmpty);
+  };
+
+  const allVisibleChecked = visibleBuckets.every((b) => selectedKeySet.has(b.key)) && (!showEmptyRow || includeEmpty);
+  const someVisibleChecked = visibleBuckets.some((b) => selectedKeySet.has(b.key)) || (showEmptyRow && includeEmpty);
+
+  const toggleSelectAllVisible = () => {
+    const next = new Set(selectedKeySet);
+    let nextEmpty = includeEmpty;
+    if (allVisibleChecked) {
+      for (const b of visibleBuckets) next.delete(b.key);
+      if (showEmptyRow) nextEmpty = false;
+    } else {
+      for (const b of visibleBuckets) next.add(b.key);
+      if (showEmptyRow) nextEmpty = true;
+    }
+    commitFilter(next, nextEmpty);
+  };
+
+  const isOptionType = customCol?.type === "select" || customCol?.type === "multi_select";
+
+  return (
+    <div data-col-filter-popover={columnId} className="w-60 p-2 text-xs select-none">
+      {/* 排序区：升序 / 降序 */}
+      <div className="mb-2 space-y-1">
+        <div className="flex items-center justify-between px-0.5">
+          <span className="text-muted-foreground text-[11px] font-medium">{t("sortFilter.sortTitle")}</span>
+          {isSortedHere && (
+            <button
+              type="button"
+              data-col-clear-sort
+              onClick={() => onSetSort(null)}
+              className="text-muted-foreground hover:text-foreground cursor-pointer text-[11px] transition-colors"
+            >
+              {t("sortFilter.clearSort")}
+            </button>
+          )}
+        </div>
+        <div className="grid grid-cols-2 gap-1">
+          <button
+            type="button"
+            data-col-sort-asc
+            onClick={() => onSetSort(isSortAsc ? null : { columnId, direction: "asc" })}
+            className={cn(
+              "flex h-7 cursor-pointer items-center justify-center gap-1 rounded-md border text-xs transition-colors",
+              isSortAsc
+                ? "border-primary bg-primary/15 text-primary font-medium"
+                : "border-border/70 hover:bg-accent text-foreground",
+            )}
+          >
+            <ArrowUp className="size-3.5" />
+            <span>{t("sortFilter.sortAsc")}</span>
+          </button>
+          <button
+            type="button"
+            data-col-sort-desc
+            onClick={() => onSetSort(isSortDesc ? null : { columnId, direction: "desc" })}
+            className={cn(
+              "flex h-7 cursor-pointer items-center justify-center gap-1 rounded-md border text-xs transition-colors",
+              isSortDesc
+                ? "border-primary bg-primary/15 text-primary font-medium"
+                : "border-border/70 hover:bg-accent text-foreground",
+            )}
+          >
+            <ArrowDown className="size-3.5" />
+            <span>{t("sortFilter.sortDesc")}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* 筛选区：值复选列表（类 Windows 文件资源管理器列筛选） */}
+      <div className="border-border/60 border-t pt-2">
+        <div className="mb-1.5 flex items-center justify-between px-0.5">
+          <span className="text-muted-foreground text-[11px] font-medium">{t("sortFilter.filterTitle")}</span>
+          {activeFilter && (
+            <button
+              type="button"
+              data-col-clear-filter
+              onClick={() => onSetFilter(null)}
+              className="text-primary cursor-pointer text-[11px] hover:underline"
+            >
+              {t("sortFilter.clearFilter")}
+            </button>
+          )}
+        </div>
+
+        <div className="relative mb-1.5 flex items-center">
+          <Search className="text-muted-foreground pointer-events-none absolute left-2 size-3.5" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => e.stopPropagation()}
+            placeholder={t("sortFilter.searchPlaceholder")}
+            className="h-7 pl-7 text-xs"
+          />
+        </div>
+
+        <label className="hover:bg-accent mb-1 flex cursor-pointer items-center gap-2 rounded-sm px-1.5 py-1 text-xs font-medium">
+          <Checkbox
+            checked={allVisibleChecked ? true : someVisibleChecked ? "indeterminate" : false}
+            onCheckedChange={toggleSelectAllVisible}
+          />
+          <span className="truncate">{t("sortFilter.selectAll")}</span>
+        </label>
+
+        <div className="max-h-48 space-y-0.5 overflow-y-auto pr-0.5">
+          {visibleBuckets.map((bucket) => {
+            const checked = selectedKeySet.has(bucket.key);
+            const displayLabel = formatBucketLabel(bucket.key, bucket.label);
+            return (
+              <label
+                key={bucket.key}
+                data-col-filter-option={bucket.key}
+                className="hover:bg-accent flex cursor-pointer items-center gap-2 rounded-sm px-1.5 py-1 text-xs"
+              >
+                <Checkbox checked={checked} onCheckedChange={() => toggleBucket(bucket.key)} />
+                {isOptionType ? (
+                  <span
+                    className={cn(
+                      "inline-flex max-w-[140px] items-center rounded px-1.5 py-0.5 text-[11px] font-medium",
+                      getOptionBadgeClass(bucket.color),
+                    )}
+                  >
+                    <span className="truncate">{displayLabel}</span>
+                  </span>
+                ) : (
+                  <span className="min-w-0 flex-1 truncate" title={displayLabel}>
+                    {displayLabel}
+                  </span>
+                )}
+                <span className="text-muted-foreground ml-auto shrink-0 text-[11px] tabular-nums">{bucket.count}</span>
+              </label>
+            );
+          })}
+
+          {showEmptyRow && (
+            <label
+              data-col-filter-empty
+              className="hover:bg-accent flex cursor-pointer items-center gap-2 rounded-sm px-1.5 py-1 text-xs"
+            >
+              <Checkbox checked={includeEmpty} onCheckedChange={toggleEmpty} />
+              <span className="text-muted-foreground min-w-0 flex-1 truncate italic">{emptyLabel}</span>
+              <span className="text-muted-foreground ml-auto shrink-0 text-[11px] tabular-nums">{emptyCount}</span>
+            </label>
+          )}
+
+          {visibleBuckets.length === 0 && !showEmptyRow && (
+            <div className="text-muted-foreground py-3 text-center text-xs">{t("noMatchingNodes")}</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function StageTablePanel({ project }: { project: Project }) {
   const { t } = useTranslation("stageTable");
   const [, setRevision] = useState(0);
   const [propertySearch, setPropertySearch] = useState("");
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  // 多维表格选中状态（全选 / 行 / 多行 / 列 / 多列 / 单格 / 多格）
+  const [selection, setSelection] = useState<TableSelectionState>(EMPTY_SELECTION);
+  const selectionRef = useRef<TableSelectionState>(EMPTY_SELECTION);
+  selectionRef.current = selection;
+  const wasSoleActiveOnDownRef = useRef(false);
+  const suppressCellClickRef = useRef(false);
+  const lastCanvasSelectedRef = useRef<string[]>([]);
+
+  // 列筛选/排序弹窗状态（Windows 文件管理器风格列头下拉）
+  const [filterPopoverColId, setFilterPopoverColId] = useState<string | null>(null);
 
   // 图 1 + 图 2：右键表头「修改字段」或属性面板「>」触发的字段修改面板状态
   const [editingFieldState, setEditingFieldState] = useState<{
@@ -1667,15 +2021,21 @@ export default function StageTablePanel({ project }: { project: Project }) {
     anchor: "header" | "floating";
   } | null>(null);
   const [editFieldName, setEditFieldName] = useState("");
-  const [editFieldType, setEditFieldType] = useState<Exclude<CustomColumnType, "formula">>("text");
+  const [editFieldType, setEditFieldType] = useState<CustomColumnType>("text");
   const [editTypeDropdownOpen, setEditTypeDropdownOpen] = useState(false);
   const editNameInputRef = useRef<HTMLInputElement>(null);
+
+  // 公式列编辑器弹窗状态
+  const [formulaEditorState, setFormulaEditorState] = useState<{
+    colId: string;
+    previewRowUuid?: string | null;
+  } | null>(null);
 
   // 图 3 + 图 4：插入字段 / 右侧 + 创建新列后的表头内联标题 + 双列类型面板状态
   const [creatingColState, setCreatingColState] = useState<{
     colId: string;
     draftTitle: string;
-    selectedType: Exclude<CustomColumnType, "formula">;
+    selectedType: CustomColumnType;
   } | null>(null);
   const creatingColStateRef = useRef(creatingColState);
   creatingColStateRef.current = creatingColState;
@@ -1698,6 +2058,25 @@ export default function StageTablePanel({ project }: { project: Project }) {
     setRevision((v) => v + 1);
   }, []);
 
+  const scrollRowIntoViewIfNeeded = useCallback((rowUuid: string) => {
+    const vp = viewportRef.current;
+    if (!vp) return;
+    const rowEl = Array.from(vp.querySelectorAll<HTMLElement>("tr[data-stage-table-row-id]")).find(
+      (el) => el.dataset.stageTableRowId === rowUuid,
+    );
+    if (!rowEl) return;
+    const theadHeight = vp.querySelector("thead")?.getBoundingClientRect().height ?? 0;
+    const vpRect = vp.getBoundingClientRect();
+    const rowRect = rowEl.getBoundingClientRect();
+    const visibleTop = vpRect.top + theadHeight;
+    const visibleBottom = vpRect.bottom;
+    if (rowRect.top < visibleTop) {
+      vp.scrollTop -= visibleTop - rowRect.top + 4;
+    } else if (rowRect.bottom > visibleBottom) {
+      vp.scrollTop += rowRect.bottom - visibleBottom + 4;
+    }
+  }, []);
+
   useEffect(() => {
     if (!project.getService?.("stageTable")) return;
     forceRefresh();
@@ -1706,12 +2085,48 @@ export default function StageTablePanel({ project }: { project: Project }) {
     const onStateChange = () => forceRefresh();
     project.on("stage-commit", onCommit);
     project.on("state-change", onStateChange);
+
+    // 画布选中变化 -> 同步高亮多维表格对应行（单选与多选均适用）
+    const applyCanvasSelection = (selectedUUIDs: string[], shouldScroll: boolean) => {
+      const prevSet = new Set(lastCanvasSelectedRef.current);
+      lastCanvasSelectedRef.current = selectedUUIDs;
+      if (selectedUUIDs.length === 0) {
+        setSelection((prev) => (prev.mode === "rows" || prev.mode === "all" ? EMPTY_SELECTION : prev));
+        return;
+      }
+      const nextRowSet = new Set(selectedUUIDs);
+      setSelection({
+        mode: "rows",
+        rowIds: nextRowSet,
+        colIds: new Set<string>(),
+        cells: new Set<string>(),
+        anchorRowId: selectedUUIDs[0],
+        anchorColId: null,
+        activeCell: null,
+      });
+      if (shouldScroll) {
+        const newlySelected = selectedUUIDs.find((id) => !prevSet.has(id)) ?? selectedUUIDs[0];
+        requestAnimationFrame(() => scrollRowIntoViewIfNeeded(newlySelected));
+      }
+    };
+
+    const initialSelected = project.stageTable.getSelectedRowUUIDs?.() ?? [];
+    if (initialSelected.length > 0) {
+      applyCanvasSelection(initialSelected, true);
+    } else {
+      lastCanvasSelectedRef.current = [];
+      setSelection(EMPTY_SELECTION);
+    }
+
+    const unsubSelection = project.stageTable.subscribeSelection?.((uuids) => applyCanvasSelection(uuids, true));
+
     return () => {
       unsubTable();
+      unsubSelection?.();
       project.off("stage-commit", onCommit);
       project.off("state-change", onStateChange);
     };
-  }, [project, forceRefresh]);
+  }, [project, forceRefresh, scrollRowIntoViewIfNeeded]);
 
   useEffect(() => {
     if (editingFieldState) {
@@ -1743,6 +2158,18 @@ export default function StageTablePanel({ project }: { project: Project }) {
     }
   }, [renamingGroupId]);
 
+  const hasVolatileFormulaCols = project.getService?.("stageTable")
+    ? hasVolatileFormulas(project.stageTable.getColumns?.() ?? [])
+    : false;
+
+  useEffect(() => {
+    if (!hasVolatileFormulaCols) return;
+    const timer = window.setInterval(() => {
+      forceRefresh();
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [hasVolatileFormulaCols, forceRefresh]);
+
   if (!project.getService?.("stageTable")) {
     return null;
   }
@@ -1757,7 +2184,529 @@ export default function StageTablePanel({ project }: { project: Project }) {
   ];
   const visibleColumnSet = new Set(visibleColumnIds);
 
-  const rows = project.stageTable.getRows();
+  const allRows = project.stageTable.getRows();
+  const activeSort: TableSortConfig | null = project.stageTable.getSort?.() ?? activeView.sort ?? null;
+  const activeFilters: TableColumnFilter[] = project.stageTable.getFilters?.() ?? activeView.filters ?? [];
+  const activeFilterByColId = new Map<string, TableColumnFilter>(activeFilters.map((f) => [f.columnId, f]));
+  const rows = applyTableFiltersAndSort(allRows, customColumns, activeFilters, activeSort);
+
+  const displayedRowIndexById = new Map<string, number>(rows.map((r, idx) => [r.uuid, idx]));
+  const visibleColIndexById = new Map<string, number>(visibleColumnIds.map((c, idx) => [c, idx]));
+
+  const extractRowIdsFromCells = (cells: Iterable<string>): string[] => {
+    const ids = new Set<string>();
+    for (const key of cells) {
+      const sep = key.indexOf("\0");
+      if (sep > 0) ids.add(key.slice(0, sep));
+    }
+    return Array.from(ids);
+  };
+
+  const syncSelectedRowsToCanvas = (rowIds: Iterable<string>, focusCamera?: boolean) => {
+    const ids = Array.from(rowIds);
+    lastCanvasSelectedRef.current = ids;
+    if (focusCamera === undefined) {
+      project.stageTable.selectRowsOnCanvas?.(ids);
+    } else {
+      project.stageTable.selectRowsOnCanvas?.(ids, { focusCamera });
+    }
+  };
+
+  const clearSelection = (clearCanvas = false) => {
+    setSelection(EMPTY_SELECTION);
+    if (clearCanvas) {
+      syncSelectedRowsToCanvas([], false);
+    }
+  };
+
+  const handleToggleSelectAll = () => {
+    if (selection.mode === "all") {
+      clearSelection(true);
+      return;
+    }
+    const allIds = rows.map((r) => r.uuid);
+    setSelection({
+      mode: "all",
+      rowIds: new Set(allIds),
+      colIds: new Set(visibleColumnIds),
+      cells: new Set<string>(),
+      anchorRowId: allIds[0] ?? null,
+      anchorColId: visibleColumnIds[0] ?? null,
+      activeCell: null,
+    });
+    syncSelectedRowsToCanvas(allIds);
+  };
+
+  const selectRowsRange = (startRowId: string, endRowId: string, commitToCanvas: boolean) => {
+    const startIdx = displayedRowIndexById.get(startRowId);
+    const endIdx = displayedRowIndexById.get(endRowId);
+    if (startIdx === undefined || endIdx === undefined) return;
+    const lo = Math.min(startIdx, endIdx);
+    const hi = Math.max(startIdx, endIdx);
+    const nextRowIds = new Set<string>();
+    for (let i = lo; i <= hi; i++) {
+      nextRowIds.add(rows[i].uuid);
+    }
+    setSelection({
+      mode: "rows",
+      rowIds: nextRowIds,
+      colIds: new Set<string>(),
+      cells: new Set<string>(),
+      anchorRowId: startRowId,
+      anchorColId: null,
+      activeCell: null,
+    });
+    if (commitToCanvas) {
+      syncSelectedRowsToCanvas(nextRowIds);
+    }
+  };
+
+  const handleRowIndexPointerDown = (rowId: string, event: React.PointerEvent) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    panelRef.current?.focus({ preventScroll: true });
+
+    const isToggle = event.ctrlKey || event.metaKey;
+    const isRange = event.shiftKey;
+    const prev = selectionRef.current;
+
+    if (isRange) {
+      const anchor = prev.anchorRowId && displayedRowIndexById.has(prev.anchorRowId) ? prev.anchorRowId : rowId;
+      selectRowsRange(anchor, rowId, true);
+      return;
+    }
+
+    if (isToggle) {
+      const base =
+        prev.mode === "all"
+          ? new Set(rows.map((r) => r.uuid))
+          : prev.mode === "rows"
+            ? new Set(prev.rowIds)
+            : new Set<string>();
+      if (base.has(rowId)) {
+        base.delete(rowId);
+      } else {
+        base.add(rowId);
+      }
+      if (base.size === 0) {
+        clearSelection(true);
+      } else {
+        setSelection({
+          mode: "rows",
+          rowIds: base,
+          colIds: new Set<string>(),
+          cells: new Set<string>(),
+          anchorRowId: rowId,
+          anchorColId: null,
+          activeCell: null,
+        });
+        syncSelectedRowsToCanvas(base);
+      }
+      return;
+    }
+
+    // 单击行号立即选中并联动画布；按住向下/向上拖动可连续框选多行
+    const initialSet = new Set([rowId]);
+    setSelection({
+      mode: "rows",
+      rowIds: initialSet,
+      colIds: new Set<string>(),
+      cells: new Set<string>(),
+      anchorRowId: rowId,
+      anchorColId: null,
+      activeCell: null,
+    });
+    syncSelectedRowsToCanvas(initialSet);
+
+    let lastHoveredId = rowId;
+    let draggedMulti = false;
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      const el = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+      const tr = el?.closest<HTMLElement>("tr[data-stage-table-row-id]");
+      const hoveredRowId = tr?.dataset.stageTableRowId;
+      if (!hoveredRowId || hoveredRowId === lastHoveredId) return;
+      lastHoveredId = hoveredRowId;
+      draggedMulti = true;
+      selectRowsRange(rowId, hoveredRowId, false);
+    };
+
+    const onPointerUp = () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      if (draggedMulti) {
+        syncSelectedRowsToCanvas(selectionRef.current.rowIds);
+      }
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  };
+
+  const selectColumnByInteraction = (
+    colId: string,
+    modifiers: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean },
+  ) => {
+    panelRef.current?.focus({ preventScroll: true });
+    const prev = selectionRef.current;
+    const isToggle = modifiers.ctrlKey || modifiers.metaKey;
+    const isRange = modifiers.shiftKey;
+
+    if (isRange) {
+      const anchor = prev.anchorColId && visibleColIndexById.has(prev.anchorColId) ? prev.anchorColId : colId;
+      const startIdx = visibleColIndexById.get(anchor);
+      const endIdx = visibleColIndexById.get(colId);
+      if (startIdx === undefined || endIdx === undefined) return;
+      const lo = Math.min(startIdx, endIdx);
+      const hi = Math.max(startIdx, endIdx);
+      const nextCols = new Set<string>();
+      for (let i = lo; i <= hi; i++) {
+        nextCols.add(visibleColumnIds[i]);
+      }
+      setSelection({
+        mode: "columns",
+        rowIds: new Set<string>(),
+        colIds: nextCols,
+        cells: new Set<string>(),
+        anchorRowId: null,
+        anchorColId: anchor,
+        activeCell: null,
+      });
+      return;
+    }
+
+    if (isToggle) {
+      const base =
+        prev.mode === "all"
+          ? new Set(visibleColumnIds)
+          : prev.mode === "columns"
+            ? new Set(prev.colIds)
+            : new Set<string>();
+      if (base.has(colId)) {
+        base.delete(colId);
+      } else {
+        base.add(colId);
+      }
+      if (base.size === 0) {
+        setSelection(EMPTY_SELECTION);
+      } else {
+        setSelection({
+          mode: "columns",
+          rowIds: new Set<string>(),
+          colIds: base,
+          cells: new Set<string>(),
+          anchorRowId: null,
+          anchorColId: colId,
+          activeCell: null,
+        });
+      }
+      return;
+    }
+
+    setSelection({
+      mode: "columns",
+      rowIds: new Set<string>(),
+      colIds: new Set([colId]),
+      cells: new Set<string>(),
+      anchorRowId: null,
+      anchorColId: colId,
+      activeCell: null,
+    });
+  };
+
+  const buildCellRectSet = (r1: string, c1: string, r2: string, c2: string): Set<string> => {
+    const ri1 = displayedRowIndexById.get(r1);
+    const ri2 = displayedRowIndexById.get(r2);
+    const ci1 = visibleColIndexById.get(c1);
+    const ci2 = visibleColIndexById.get(c2);
+    if (ri1 === undefined || ri2 === undefined || ci1 === undefined || ci2 === undefined) {
+      return new Set([makeCellKey(r2, c2)]);
+    }
+    const rLo = Math.min(ri1, ri2);
+    const rHi = Math.max(ri1, ri2);
+    const cLo = Math.min(ci1, ci2);
+    const cHi = Math.max(ci1, ci2);
+    const result = new Set<string>();
+    for (let r = rLo; r <= rHi; r++) {
+      for (let c = cLo; c <= cHi; c++) {
+        result.add(makeCellKey(rows[r].uuid, visibleColumnIds[c]));
+      }
+    }
+    return result;
+  };
+
+  const handleCellPointerDown = (rowId: string, colId: string, event: React.PointerEvent) => {
+    if (event.button !== 0) return;
+    const targetEl = event.target as HTMLElement | null;
+    if (
+      targetEl?.closest(
+        "[data-slot='popover-content'], [role='dialog'], [role='menu'], input, textarea, [data-cell-action]",
+      )
+    ) {
+      return;
+    }
+
+    const prev = selectionRef.current;
+    const key = makeCellKey(rowId, colId);
+    const isToggle = event.ctrlKey || event.metaKey;
+    const isRange = event.shiftKey;
+
+    if (isRange) {
+      event.preventDefault();
+      wasSoleActiveOnDownRef.current = false;
+      const anchorRow = prev.anchorRowId && displayedRowIndexById.has(prev.anchorRowId) ? prev.anchorRowId : rowId;
+      const anchorCol = prev.anchorColId && visibleColIndexById.has(prev.anchorColId) ? prev.anchorColId : colId;
+      const nextCells = buildCellRectSet(anchorRow, anchorCol, rowId, colId);
+      setSelection({
+        mode: "cells",
+        rowIds: new Set<string>(),
+        colIds: new Set<string>(),
+        cells: nextCells,
+        anchorRowId: anchorRow,
+        anchorColId: anchorCol,
+        activeCell: { rowId, colId },
+      });
+      syncSelectedRowsToCanvas(extractRowIdsFromCells(nextCells));
+      return;
+    }
+
+    if (isToggle) {
+      event.preventDefault();
+      wasSoleActiveOnDownRef.current = false;
+      const base = prev.mode === "cells" ? new Set(prev.cells) : new Set<string>();
+      if (base.has(key)) {
+        base.delete(key);
+      } else {
+        base.add(key);
+      }
+      if (base.size === 0) {
+        clearSelection(true);
+      } else {
+        setSelection({
+          mode: "cells",
+          rowIds: new Set<string>(),
+          colIds: new Set<string>(),
+          cells: base,
+          anchorRowId: rowId,
+          anchorColId: colId,
+          activeCell: { rowId, colId },
+        });
+        syncSelectedRowsToCanvas(extractRowIdsFromCells(base));
+      }
+      return;
+    }
+
+    const wasSoleActive =
+      prev.mode === "cells" &&
+      prev.cells.size === 1 &&
+      prev.activeCell?.rowId === rowId &&
+      prev.activeCell?.colId === colId;
+    wasSoleActiveOnDownRef.current = wasSoleActive;
+
+    setSelection({
+      mode: "cells",
+      rowIds: new Set<string>(),
+      colIds: new Set<string>(),
+      cells: new Set([key]),
+      anchorRowId: rowId,
+      anchorColId: colId,
+      activeCell: { rowId, colId },
+    });
+    syncSelectedRowsToCanvas([rowId]);
+
+    let didDragCells = false;
+    let lastHoverKey = key;
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      const el = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+      const td = el?.closest<HTMLElement>("td[data-stage-table-cell]");
+      const hoverRowId = td?.dataset.rowId;
+      const hoverColId = td?.dataset.colId;
+      if (!hoverRowId || !hoverColId) return;
+      const hoverKey = makeCellKey(hoverRowId, hoverColId);
+      if (hoverKey === lastHoverKey) return;
+      lastHoverKey = hoverKey;
+      didDragCells = true;
+      wasSoleActiveOnDownRef.current = false;
+      setSelection({
+        mode: "cells",
+        rowIds: new Set<string>(),
+        colIds: new Set<string>(),
+        cells: buildCellRectSet(rowId, colId, hoverRowId, hoverColId),
+        anchorRowId: rowId,
+        anchorColId: colId,
+        activeCell: { rowId: hoverRowId, colId: hoverColId },
+      });
+    };
+
+    const onPointerUp = () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      if (didDragCells) {
+        syncSelectedRowsToCanvas(extractRowIdsFromCells(selectionRef.current.cells));
+        suppressCellClickRef.current = true;
+        queueMicrotask(() => {
+          suppressCellClickRef.current = false;
+        });
+      }
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  };
+
+  const getCellCopyText = (row: StageTableRow, colId: string): string => {
+    switch (colId) {
+      case "name":
+        return row.primaryText;
+      case "images":
+        return row.images.length > 0 ? t("imagesCell.countLabel", { count: row.images.length }) : "";
+      case "createdAt":
+        return formatTimestamp(row.createdAt);
+      case "updatedAt":
+        return formatTimestamp(row.updatedAt);
+      case "parents":
+        return row.parents.map((i) => getDisplayLabel(i, t)).join(", ");
+      case "children":
+        return row.children.map((i) => getDisplayLabel(i, t)).join(", ");
+      case "outer":
+        return row.outer ? getDisplayLabel(row.outer, t) : "";
+      case "inner":
+        return row.inner.map((i) => getDisplayLabel(i, t)).join(", ");
+      default: {
+        const customCol = customColumnMap.get(colId);
+        const val = row.tableFields?.[colId];
+        if (!customCol || val === undefined || val === null) return "";
+        if (customCol.type === "select" || customCol.type === "multi_select") {
+          const optMap = new Map((customCol.options ?? []).map((o) => [o.id, o.name]));
+          const ids = Array.isArray(val) ? val : [String(val)];
+          return ids
+            .map((id) => optMap.get(id))
+            .filter(Boolean)
+            .join(", ");
+        }
+        return Array.isArray(val) ? val.join(", ") : String(val);
+      }
+    }
+  };
+
+  const handlePanelKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("input, textarea, [contenteditable='true']")) return;
+
+    if (e.key === "Escape" && selection.mode !== "none") {
+      e.preventDefault();
+      e.stopPropagation();
+      clearSelection(selection.mode === "rows" || selection.mode === "all" || selection.mode === "cells");
+      return;
+    }
+
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      e.stopPropagation();
+      const allIds = rows.map((r) => r.uuid);
+      setSelection({
+        mode: "all",
+        rowIds: new Set(allIds),
+        colIds: new Set(visibleColumnIds),
+        cells: new Set<string>(),
+        anchorRowId: allIds[0] ?? null,
+        anchorColId: visibleColumnIds[0] ?? null,
+        activeCell: null,
+      });
+      syncSelectedRowsToCanvas(allIds);
+      return;
+    }
+
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && selection.mode !== "none") {
+      const nativeSelected = window.getSelection()?.toString();
+      if (nativeSelected) return;
+      const selectedRowsList =
+        selection.mode === "all" || selection.mode === "columns"
+          ? rows
+          : selection.mode === "rows"
+            ? rows.filter((r) => selection.rowIds.has(r.uuid))
+            : rows.filter((r) => visibleColumnIds.some((c) => selection.cells.has(makeCellKey(r.uuid, c))));
+      const selectedColsList =
+        selection.mode === "all" || selection.mode === "rows"
+          ? visibleColumnIds
+          : selection.mode === "columns"
+            ? visibleColumnIds.filter((c) => selection.colIds.has(c))
+            : visibleColumnIds.filter((c) => selectedRowsList.some((r) => selection.cells.has(makeCellKey(r.uuid, c))));
+      if (selectedRowsList.length > 0 && selectedColsList.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        const tsv = selectedRowsList
+          .map((row) =>
+            selectedColsList
+              .map((colId) =>
+                selection.mode === "cells" && !selection.cells.has(makeCellKey(row.uuid, colId))
+                  ? ""
+                  : getCellCopyText(row, colId).replace(/\t|\r?\n/g, " "),
+              )
+              .join("\t"),
+          )
+          .join("\n");
+        void navigator.clipboard?.writeText(tsv);
+      }
+      return;
+    }
+
+    if (
+      selection.mode === "cells" &&
+      selection.activeCell &&
+      (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight")
+    ) {
+      const curRowIdx = displayedRowIndexById.get(selection.activeCell.rowId);
+      const curColIdx = visibleColIndexById.get(selection.activeCell.colId);
+      if (curRowIdx === undefined || curColIdx === undefined) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const nextRowIdx =
+        e.key === "ArrowUp"
+          ? Math.max(0, curRowIdx - 1)
+          : e.key === "ArrowDown"
+            ? Math.min(rows.length - 1, curRowIdx + 1)
+            : curRowIdx;
+      const nextColIdx =
+        e.key === "ArrowLeft"
+          ? Math.max(0, curColIdx - 1)
+          : e.key === "ArrowRight"
+            ? Math.min(visibleColumnIds.length - 1, curColIdx + 1)
+            : curColIdx;
+      const nextRowId = rows[nextRowIdx]?.uuid;
+      const nextColId = visibleColumnIds[nextColIdx];
+      if (!nextRowId || !nextColId) return;
+      if (e.shiftKey) {
+        const anchorRow = selection.anchorRowId ?? selection.activeCell.rowId;
+        const anchorCol = selection.anchorColId ?? selection.activeCell.colId;
+        const nextCells = buildCellRectSet(anchorRow, anchorCol, nextRowId, nextColId);
+        setSelection({
+          mode: "cells",
+          rowIds: new Set<string>(),
+          colIds: new Set<string>(),
+          cells: nextCells,
+          anchorRowId: anchorRow,
+          anchorColId: anchorCol,
+          activeCell: { rowId: nextRowId, colId: nextColId },
+        });
+        syncSelectedRowsToCanvas(extractRowIdsFromCells(nextCells));
+      } else {
+        setSelection({
+          mode: "cells",
+          rowIds: new Set<string>(),
+          colIds: new Set<string>(),
+          cells: new Set([makeCellKey(nextRowId, nextColId)]),
+          anchorRowId: nextRowId,
+          anchorColId: nextColId,
+          activeCell: { rowId: nextRowId, colId: nextColId },
+        });
+        syncSelectedRowsToCanvas([nextRowId]);
+      }
+      scrollRowIntoViewIfNeeded(nextRowId);
+    }
+  };
 
   const getColumnLabel = (colId: string): string => {
     const customCol = customColumnMap.get(colId);
@@ -1797,7 +2746,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
     return 160;
   };
 
-  const buildUniqueDefaultColumnName = (type: Exclude<CustomColumnType, "formula">, excludeColId?: string): string => {
+  const buildUniqueDefaultColumnName = (type: CustomColumnType, excludeColId?: string): string => {
     const base = t(`columnTypes.${type}`);
     const existingNames = new Set(
       (project.stageTable.getColumns?.() ?? []).filter((c) => c.id !== excludeColId).map((c) => c.name),
@@ -1831,7 +2780,18 @@ export default function StageTablePanel({ project }: { project: Project }) {
   };
 
   const startColumnDragReorder = (colId: string, event: React.PointerEvent) => {
-    if (colId === "name" || event.button !== 0 || creatingColState?.colId === colId) return;
+    if (event.button !== 0 || creatingColState?.colId === colId) return;
+    const targetEl = event.target as HTMLElement | null;
+    if (targetEl?.closest("[data-col-resizer], [data-col-filter-trigger], [data-col-sort-indicator], input, button")) {
+      return;
+    }
+
+    const modifiers = { shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey };
+    if (colId === "name" || modifiers.shiftKey || modifiers.ctrlKey || modifiers.metaKey) {
+      selectColumnByInteraction(colId, modifiers);
+      return;
+    }
+
     const startX = event.clientX;
     let isDragging = false;
     let latestHint: { targetColId: string; position: "before" | "after" } | null = null;
@@ -1883,6 +2843,8 @@ export default function StageTablePanel({ project }: { project: Project }) {
       window.removeEventListener("pointerup", onPointerUp);
       if (isDragging && latestHint) {
         project.stageTable.reorderColumn?.(colId, latestHint.targetColId, latestHint.position);
+      } else if (!isDragging) {
+        selectColumnByInteraction(colId, modifiers);
       }
       setDraggingColId(null);
       setDropHint(null);
@@ -1898,25 +2860,37 @@ export default function StageTablePanel({ project }: { project: Project }) {
     const effectiveAnchor = preferredAnchor === "header" && visibleColumnSet.has(colId) ? "header" : "floating";
     setCreatingColState(null);
     setEditFieldName(getColumnLabel(colId));
-    setEditFieldType(customCol && customCol.type !== "formula" ? customCol.type : "text");
+    setEditFieldType(customCol ? customCol.type : "text");
     setEditTypeDropdownOpen(false);
     setEditingFieldState({ colId, anchor: effectiveAnchor });
+  };
+
+  const openFormulaEditorForColumn = (colId: string, previewRowUuid?: string | null) => {
+    setCreatingColState(null);
+    setEditTypeDropdownOpen(false);
+    setEditingFieldState(null);
+    setFormulaEditorState({ colId, previewRowUuid: previewRowUuid ?? null });
   };
 
   const handleSaveEditField = () => {
     if (!editingFieldState) return;
     const { colId } = editingFieldState;
-    const isCustom = customColumnMap.has(colId);
+    const existingCol = customColumnMap.get(colId);
+    const isCustom = Boolean(existingCol);
+    const switchedToNewFormula = isCustom && existingCol?.type !== "formula" && editFieldType === "formula";
     project.stageTable.updateColumn?.(colId, {
       name: editFieldName,
       ...(isCustom ? { type: editFieldType } : {}),
     });
     setEditTypeDropdownOpen(false);
     setEditingFieldState(null);
+    if (switchedToNewFormula) {
+      setFormulaEditorState({ colId, previewRowUuid: null });
+    }
   };
 
   // 提交图 4「插入字段 / 新建字段」内联编辑状态
-  const commitCreatingColumn = (explicitType?: Exclude<CustomColumnType, "formula">) => {
+  const commitCreatingColumn = (explicitType?: CustomColumnType, options?: { openFormulaEditor?: boolean }) => {
     const current = creatingColStateRef.current;
     if (!current) return null;
     const chosenType = explicitType ?? current.selectedType;
@@ -1927,6 +2901,9 @@ export default function StageTablePanel({ project }: { project: Project }) {
     });
     const finishedColId = current.colId;
     setCreatingColState(null);
+    if (chosenType === "formula" && (options?.openFormulaEditor ?? true)) {
+      setFormulaEditorState({ colId: finishedColId, previewRowUuid: null });
+    }
     return finishedColId;
   };
 
@@ -1989,13 +2966,13 @@ export default function StageTablePanel({ project }: { project: Project }) {
       commitCreatingColumn();
     } else if (e.key === "Tab") {
       e.preventDefault();
-      const prevId = commitCreatingColumn();
+      const prevId = commitCreatingColumn(undefined, { openFormulaEditor: false });
       if (prevId) {
         triggerInsertNewColumn(prevId, "right");
       }
     } else if (e.key === "Escape") {
       e.preventDefault();
-      commitCreatingColumn();
+      commitCreatingColumn(undefined, { openFormulaEditor: false });
     }
   };
 
@@ -2008,7 +2985,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
   });
 
   const getOuterCandidatesForRow = (row: StageTableRow): StageTableRow[] => {
-    return rows.filter((candidate) => {
+    return allRows.filter((candidate) => {
       if (candidate.uuid === row.uuid) return false;
       if (candidate.kind !== "section" && candidate.kind !== "text") return false;
       if (row.kind === "section" && project.sectionMethods.isEntityInSection(candidate.entity, row.entity as any)) {
@@ -2019,7 +2996,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
   };
 
   const getInnerCandidatesForRow = (row: StageTableRow): StageTableRow[] => {
-    return rows.filter((candidate) => {
+    return allRows.filter((candidate) => {
       if (candidate.uuid === row.uuid) return false;
       if (
         candidate.kind === "section" &&
@@ -2080,7 +3057,47 @@ export default function StageTablePanel({ project }: { project: Project }) {
 
   const totalTableWidth = runningLeft + ADD_COLUMN_WIDTH;
 
-  const layoutDepsKey = `${project.uri?.toString?.() ?? ""}:${rows.length}:${frozenColumnId ?? ""}:${hasVisibleColumnGroups ? 1 : 0}:${visibleColumnIds.map((c) => `${c}=${getColumnWidth(c)}`).join(",")}`;
+  const layoutDepsKey = `${project.uri?.toString?.() ?? ""}:${rows.length}:${activeSort ? `${activeSort.columnId}:${activeSort.direction}` : ""}:${activeFilters.length}:${frozenColumnId ?? ""}:${hasVisibleColumnGroups ? 1 : 0}:${visibleColumnIds.map((c) => `${c}=${getColumnWidth(c)}`).join(",")}`;
+
+  const selectionSummaryText =
+    selection.mode === "all"
+      ? t("selection.allSelected", { count: rows.length })
+      : selection.mode === "rows" && selection.rowIds.size > 0
+        ? t("selection.rowsCount", { count: selection.rowIds.size })
+        : selection.mode === "columns" && selection.colIds.size > 0
+          ? t("selection.colsCount", { count: selection.colIds.size })
+          : selection.mode === "cells" && selection.cells.size > 0
+            ? t("selection.cellsCount", { count: selection.cells.size })
+            : null;
+
+  const systemColumnLabels: Partial<Record<SystemColumnId, string>> = {
+    name: t("columns.name"),
+    images: t("columns.images"),
+    createdAt: t("columns.createdAt"),
+    updatedAt: t("columns.updatedAt"),
+    parents: t("columns.parents"),
+    children: t("columns.children"),
+    outer: t("columns.outer"),
+    inner: t("columns.inner"),
+  };
+
+  const formulaEditorColumnOptions: FormulaEditorColumnOption[] = [
+    ...ALL_SYSTEM_COLUMN_IDS.map((sysId) => ({
+      id: sysId,
+      name: getColumnLabel(sysId),
+      kind: "system" as const,
+      columnType: sysId,
+    })),
+    ...customColumns.map((col) => ({
+      id: col.id,
+      name: col.name,
+      kind: "custom" as const,
+      columnType: col.type,
+      isSelf: col.id === formulaEditorState?.colId,
+    })),
+  ];
+
+  const formulaEditorColOptionMap = new Map(formulaEditorColumnOptions.map((item) => [item.id, item]));
 
   const renderEditFieldFormContent = (colId: string) => {
     const customCol = customColumnMap.get(colId);
@@ -2150,6 +3167,43 @@ export default function StageTablePanel({ project }: { project: Project }) {
           )}
         </div>
 
+        {/* 公式表达式预览与编辑入口 */}
+        {isCustom && editFieldType === "formula" && (
+          <div className="mt-2.5 space-y-1.5">
+            <button
+              type="button"
+              data-open-formula-editor
+              onClick={() => {
+                project.stageTable.updateColumn?.(colId, {
+                  name: editFieldName,
+                  type: "formula",
+                });
+                openFormulaEditorForColumn(colId);
+              }}
+              className="border-border bg-muted/35 hover:bg-accent/50 flex min-h-9 w-full cursor-pointer flex-col items-start justify-center rounded-md border px-2.5 py-1.5 text-left transition-colors"
+            >
+              {customCol?.formula?.trim() ? (
+                <FormulaPillPreview
+                  formula={customCol.formula}
+                  colMap={formulaEditorColOptionMap}
+                  tableLabel={t("formulaEditor.currentTable")}
+                  deletedLabel={t("formulaEditor.deletedColumn")}
+                  className="max-h-14 overflow-hidden"
+                />
+              ) : (
+                <span className="text-muted-foreground text-[11px]">{t("formulaEditor.clickToSetFormula")}</span>
+              )}
+            </button>
+          </div>
+        )}
+
+        {/* 从公式转为静态列时的固化提示 */}
+        {isCustom && customCol?.type === "formula" && editFieldType !== "formula" && (
+          <div className="text-muted-foreground bg-muted/40 mt-2 rounded-md px-2 py-1.5 text-[11px] leading-snug">
+            {t("formulaEditor.solidifyHint")}
+          </div>
+        )}
+
         {/* 底部操作区：确定 / 取消（对应图 1） */}
         <div className="border-border/60 mt-3 flex items-center justify-end gap-2 border-t pt-2.5">
           <Button type="button" size="sm" onClick={handleSaveEditField} className="h-7 px-3 text-xs">
@@ -2174,11 +3228,14 @@ export default function StageTablePanel({ project }: { project: Project }) {
 
   return (
     <div
+      ref={panelRef}
+      tabIndex={-1}
       data-stage-table-panel
+      onKeyDown={handlePanelKeyDown}
       onWheel={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       onMouseUp={(e) => e.stopPropagation()}
-      className="bg-background relative flex size-full min-h-0 min-w-0 flex-col overflow-hidden"
+      className="bg-background relative flex size-full min-h-0 min-w-0 flex-col overflow-hidden outline-none"
     >
       {/* 第一行：顶部视图栏（默认「原始表」，不可删除，右侧 + 占位） */}
       <div className="border-border/60 flex h-10 shrink-0 items-center gap-1 border-b px-3 pt-1">
@@ -2301,13 +3358,79 @@ export default function StageTablePanel({ project }: { project: Project }) {
 
         <div className="bg-border mx-0.5 h-3.5 w-px shrink-0" />
 
-        <button
-          type="button"
-          className="text-muted-foreground hover:bg-accent hover:text-foreground inline-flex h-6 shrink-0 items-center gap-1 rounded px-2 transition-colors"
-        >
-          <Filter className="size-3.5" />
-          <span>{t("toolbar.filter")}</span>
-        </button>
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              data-stage-table-filter-toolbar
+              className={cn(
+                "hover:bg-accent inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded px-2 transition-colors",
+                activeFilters.length > 0
+                  ? "bg-primary/15 text-primary font-medium"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <Filter className="size-3.5" />
+              <span>
+                {activeFilters.length > 0 ? `${t("toolbar.filter")} (${activeFilters.length})` : t("toolbar.filter")}
+              </span>
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            className="w-60 p-2 text-xs select-none"
+            onWheel={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="mb-1.5 flex items-center justify-between px-1">
+              <span className="text-muted-foreground text-[11px] font-medium">{t("sortFilter.filterTitle")}</span>
+              {activeFilters.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => project.stageTable.clearAllFilters?.()}
+                  className="text-primary cursor-pointer text-[11px] hover:underline"
+                >
+                  {t("sortFilter.clearAllFilters")}
+                </button>
+              )}
+            </div>
+            {activeFilters.length === 0 && (
+              <div className="text-muted-foreground mb-1.5 px-1 text-[11px]">{t("sortFilter.noActiveFilters")}</div>
+            )}
+            <div className="max-h-56 space-y-0.5 overflow-y-auto">
+              {visibleColumnIds.map((cid) => {
+                const hasFilter = activeFilterByColId.has(cid);
+                return (
+                  <div
+                    key={cid}
+                    className="hover:bg-accent flex items-center gap-2 rounded-sm px-2 py-1 text-xs transition-colors"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setFilterPopoverColId(cid)}
+                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+                    >
+                      <ColumnIcon columnId={cid} customColumn={customColumnMap.get(cid)} />
+                      <span className={cn("min-w-0 flex-1 truncate", hasFilter && "text-primary font-medium")}>
+                        {getColumnLabel(cid)}
+                      </span>
+                    </button>
+                    {hasFilter && (
+                      <button
+                        type="button"
+                        aria-label={t("sortFilter.clearFilter")}
+                        onClick={() => project.stageTable.setColumnFilter?.(cid, null)}
+                        className="text-muted-foreground hover:text-foreground cursor-pointer rounded p-0.5"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </PopoverContent>
+        </Popover>
 
         <button
           type="button"
@@ -2317,13 +3440,87 @@ export default function StageTablePanel({ project }: { project: Project }) {
           <span>{t("toolbar.group")}</span>
         </button>
 
-        <button
-          type="button"
-          className="text-muted-foreground hover:bg-accent hover:text-foreground inline-flex h-6 shrink-0 items-center gap-1 rounded px-2 transition-colors"
-        >
-          <ArrowUpDown className="size-3.5" />
-          <span>{t("toolbar.sort")}</span>
-        </button>
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              data-stage-table-sort-toolbar
+              className={cn(
+                "hover:bg-accent inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded px-2 transition-colors",
+                activeSort ? "bg-primary/15 text-primary font-medium" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <ArrowUpDown className="size-3.5" />
+              <span>
+                {activeSort
+                  ? `${t("toolbar.sort")}: ${getColumnLabel(activeSort.columnId)} ${activeSort.direction === "asc" ? "↑" : "↓"}`
+                  : t("toolbar.sort")}
+              </span>
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            className="w-64 p-2 text-xs select-none"
+            onWheel={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="mb-1.5 flex items-center justify-between px-1">
+              <span className="text-muted-foreground text-[11px] font-medium">{t("sortFilter.sortTitle")}</span>
+              {activeSort && (
+                <button
+                  type="button"
+                  onClick={() => project.stageTable.setSort?.(null)}
+                  className="text-primary cursor-pointer text-[11px] hover:underline"
+                >
+                  {t("sortFilter.clearSort")}
+                </button>
+              )}
+            </div>
+            <div className="max-h-56 space-y-0.5 overflow-y-auto">
+              {visibleColumnIds.map((cid) => {
+                const isAsc = activeSort?.columnId === cid && activeSort.direction === "asc";
+                const isDesc = activeSort?.columnId === cid && activeSort.direction === "desc";
+                return (
+                  <div
+                    key={cid}
+                    className="hover:bg-accent/60 flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-xs"
+                  >
+                    <ColumnIcon columnId={cid} customColumn={customColumnMap.get(cid)} />
+                    <span className={cn("min-w-0 flex-1 truncate", (isAsc || isDesc) && "text-primary font-medium")}>
+                      {getColumnLabel(cid)}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={t("sortFilter.sortAsc")}
+                      onClick={() => project.stageTable.setSort?.(isAsc ? null : { columnId: cid, direction: "asc" })}
+                      className={cn(
+                        "flex size-6 cursor-pointer items-center justify-center rounded border transition-colors",
+                        isAsc
+                          ? "border-primary bg-primary/15 text-primary"
+                          : "text-muted-foreground hover:bg-background hover:text-foreground border-transparent",
+                      )}
+                    >
+                      <ArrowUp className="size-3" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={t("sortFilter.sortDesc")}
+                      onClick={() => project.stageTable.setSort?.(isDesc ? null : { columnId: cid, direction: "desc" })}
+                      className={cn(
+                        "flex size-6 cursor-pointer items-center justify-center rounded border transition-colors",
+                        isDesc
+                          ? "border-primary bg-primary/15 text-primary"
+                          : "text-muted-foreground hover:bg-background hover:text-foreground border-transparent",
+                      )}
+                    >
+                      <ArrowDown className="size-3" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </PopoverContent>
+        </Popover>
 
         <div className="bg-border mx-0.5 h-3.5 w-px shrink-0" />
 
@@ -2334,10 +3531,29 @@ export default function StageTablePanel({ project }: { project: Project }) {
           <UnfoldVertical className="size-3.5" />
           <span>{t("toolbar.rowHeight")}</span>
         </button>
+
+        {selectionSummaryText && (
+          <div
+            data-stage-table-selection-badge
+            className="bg-primary/12 text-primary ml-auto inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] font-medium select-none"
+          >
+            <span>{selectionSummaryText}</span>
+            <button
+              type="button"
+              aria-label={t("dateCell.clear")}
+              onClick={() =>
+                clearSelection(selection.mode === "rows" || selection.mode === "all" || selection.mode === "cells")
+              }
+              className="hover:bg-primary/20 cursor-pointer rounded-full p-0.5 transition-colors"
+            >
+              <X className="size-3" />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* 表格主体（tableLayout: fixed + 精确总像素宽，确保调整单列宽度时其它列绝不自动伸缩） */}
-      <TableScrollContainer layoutDepsKey={layoutDepsKey}>
+      <TableScrollContainer layoutDepsKey={layoutDepsKey} externalViewportRef={viewportRef}>
         <table
           data-stage-table-grid
           style={{ width: `${totalTableWidth}px`, tableLayout: "fixed" }}
@@ -2521,12 +3737,18 @@ export default function StageTablePanel({ project }: { project: Project }) {
             )}
 
             <tr ref={headerRowRef} className="border-border/60 border-b">
-              {/* 行计数表头 */}
+              {/* 行计数表头（点击全选/取消全选） */}
               <th
+                data-stage-table-select-all
+                title={t("selection.selectAllAria")}
+                onClick={handleToggleSelectAll}
                 style={frozenEndIndex >= 0 ? { left: "0px" } : undefined}
                 className={cn(
-                  "border-border/50 bg-muted text-muted-foreground/70 h-8 border-r px-1 text-center text-[11px] font-medium select-none",
-                  frozenEndIndex >= 0 && "sticky z-30",
+                  "border-border/50 bg-muted hover:bg-accent/70 h-9 cursor-pointer border-r px-1 text-center text-[11px] font-medium transition-colors select-none",
+                  selection.mode === "all"
+                    ? "text-primary after:bg-primary/18 font-semibold after:pointer-events-none after:absolute after:inset-0"
+                    : "text-muted-foreground/70",
+                  frozenEndIndex >= 0 ? "sticky z-30" : "relative",
                 )}
               >
                 #
@@ -2546,19 +3768,35 @@ export default function StageTablePanel({ project }: { project: Project }) {
                 const isHeaderEditing = editingFieldState?.colId === colId && editingFieldState.anchor === "header";
                 const isCreatingThis = creatingColState?.colId === colId;
                 const currentGroup = groupByColId.get(colId);
+                const isColSelected =
+                  selection.mode === "all" || (selection.mode === "columns" && selection.colIds.has(colId));
+                const colSortDir: TableSortDirection | null =
+                  activeSort?.columnId === colId ? activeSort.direction : null;
+                const colFilter = activeFilterByColId.get(colId) ?? null;
+                const isColFiltered = colFilter !== null;
+                const isFilterMenuOpen = filterPopoverColId === colId;
 
                 return (
                   <th
                     key={colId}
                     data-table-col-id={colId}
+                    data-col-selected={isColSelected ? "true" : undefined}
+                    data-col-sort={colSortDir ?? undefined}
+                    data-col-filtered={isColFiltered ? "true" : undefined}
                     style={isFrozen ? { left: `${columnLeftOffsets[colIdx]}px` } : undefined}
                     onPointerDown={(e) => startColumnDragReorder(colId, e)}
                     className={cn(
-                      "border-border/50 bg-muted text-muted-foreground relative h-8 border-r p-0 font-medium select-none",
-                      !isNameCol && !isCreatingThis && "cursor-grab active:cursor-grabbing",
+                      "group/th border-border/50 bg-muted text-muted-foreground h-9 border-r p-0 font-medium select-none",
+                      !isNameCol && !isCreatingThis ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
                       isDraggingThis && "bg-accent/60 opacity-60",
-                      isFrozen && "sticky z-30",
+                      isFrozen ? "sticky z-30" : "relative",
                       isFreezeBoundary && "border-r-primary/45 border-r-2",
+                      (colSortDir || isColFiltered) && "text-foreground",
+                      isColSelected &&
+                        "text-foreground after:bg-primary/15 after:border-b-primary after:pointer-events-none after:absolute after:inset-0 after:border-b-2",
+                      !isColSelected &&
+                        (colSortDir || isColFiltered || isFilterMenuOpen) &&
+                        "after:bg-primary/10 after:pointer-events-none after:absolute after:inset-0",
                     )}
                   >
                     {/* 锚定在当前列表头下方的图 1「修改字段」或图 4「新建/插入字段」浮层 */}
@@ -2596,9 +3834,99 @@ export default function StageTablePanel({ project }: { project: Project }) {
                           ) : (
                             <ContextMenu>
                               <ContextMenuTrigger asChild>
-                                <div className="hover:bg-accent/40 flex h-full w-full items-center gap-1.5 truncate px-2.5">
-                                  <ColumnIcon columnId={colId} customColumn={customCol} />
-                                  <span className="truncate">{getColumnLabel(colId)}</span>
+                                <div
+                                  onDoubleClick={(e) => {
+                                    const targetEl = e.target as HTMLElement | null;
+                                    if (targetEl?.closest("[data-col-filter-trigger], [data-col-sort-indicator]")) {
+                                      return;
+                                    }
+                                    e.stopPropagation();
+                                    project.stageTable.toggleColumnSort?.(colId);
+                                  }}
+                                  className="hover:bg-accent/40 relative flex h-full w-full items-stretch"
+                                >
+                                  {/* Windows 文件管理器风格顶部居中排序小箭头（向上升序 / 向下排序） */}
+                                  {colSortDir && (
+                                    <button
+                                      type="button"
+                                      data-col-sort-indicator={colId}
+                                      data-sort-direction={colSortDir}
+                                      aria-label={t("sortFilter.toggleSortAria")}
+                                      title={colSortDir === "asc" ? t("sortFilter.sortAsc") : t("sortFilter.sortDesc")}
+                                      onPointerDown={(e) => e.stopPropagation()}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        project.stageTable.toggleColumnSort?.(
+                                          colId,
+                                          colSortDir === "asc" ? "desc" : "asc",
+                                        );
+                                      }}
+                                      className="text-primary hover:bg-primary/15 absolute top-0 left-1/2 z-10 flex h-3.5 w-6 -translate-x-1/2 cursor-pointer items-center justify-center rounded-b transition-colors"
+                                    >
+                                      {colSortDir === "asc" ? (
+                                        <ChevronUp className="size-3 stroke-[2.25]" />
+                                      ) : (
+                                        <ChevronDown className="size-3 stroke-[2.25]" />
+                                      )}
+                                    </button>
+                                  )}
+
+                                  {/* 列标题主体 */}
+                                  <div
+                                    className={cn(
+                                      "flex min-w-0 flex-1 items-center gap-1.5 truncate pr-1 pl-2.5",
+                                      colSortDir && "pt-1.5",
+                                    )}
+                                  >
+                                    <ColumnIcon columnId={colId} customColumn={customCol} />
+                                    <span className="truncate">{getColumnLabel(colId)}</span>
+                                  </div>
+
+                                  {/* 右侧分隔下拉按钮（类 Windows 文件管理器列筛选/排序下拉） */}
+                                  <Popover
+                                    open={isFilterMenuOpen}
+                                    onOpenChange={(open) => setFilterPopoverColId(open ? colId : null)}
+                                  >
+                                    <PopoverTrigger asChild>
+                                      <button
+                                        type="button"
+                                        data-col-filter-trigger={colId}
+                                        aria-label={t("sortFilter.columnFilterAria")}
+                                        onPointerDown={(e) => e.stopPropagation()}
+                                        onClick={(e) => e.stopPropagation()}
+                                        className={cn(
+                                          "relative mr-1 flex w-6 shrink-0 cursor-pointer items-center justify-center border-l transition-all",
+                                          isColFiltered || colSortDir || isFilterMenuOpen
+                                            ? "border-border/70 bg-primary/10 text-primary opacity-100"
+                                            : "text-muted-foreground/80 group-hover/th:border-border/60 hover:bg-accent hover:text-foreground border-transparent opacity-45 group-hover/th:opacity-100",
+                                        )}
+                                      >
+                                        <ChevronDown className="size-3" />
+                                        {isColFiltered && (
+                                          <span className="bg-primary absolute top-1 right-1 size-1.5 rounded-full" />
+                                        )}
+                                      </button>
+                                    </PopoverTrigger>
+                                    <PopoverContent
+                                      align="end"
+                                      sideOffset={4}
+                                      className="w-auto p-0"
+                                      onWheel={(e) => e.stopPropagation()}
+                                      onMouseDown={(e) => e.stopPropagation()}
+                                      onPointerDown={(e) => e.stopPropagation()}
+                                    >
+                                      <ColumnFilterSortPopoverContent
+                                        columnId={colId}
+                                        customCol={customCol}
+                                        allRows={allRows}
+                                        activeSort={activeSort}
+                                        activeFilter={colFilter}
+                                        onSetSort={(nextSort) => project.stageTable.setSort?.(nextSort)}
+                                        onSetFilter={(nextFlt) => project.stageTable.setColumnFilter?.(colId, nextFlt)}
+                                        t={t}
+                                      />
+                                    </PopoverContent>
+                                  </Popover>
                                 </div>
                               </ContextMenuTrigger>
 
@@ -2618,6 +3946,16 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                     {getColumnTypeName(colId)}
                                   </span>
                                 </ContextMenuItem>
+
+                                {customCol?.type === "formula" && (
+                                  <ContextMenuItem
+                                    onSelect={() => scheduleAfterContextMenu(() => openFormulaEditorForColumn(colId))}
+                                    className="text-xs"
+                                  >
+                                    <FunctionSquare className="size-3.5" />
+                                    <span>{t("formulaEditor.editFormula")}</span>
+                                  </ContextMenuItem>
+                                )}
 
                                 {/* 图 3：插入字段 -> 向左插入 / 向右插入 */}
                                 <ContextMenuSub>
@@ -2726,7 +4064,10 @@ export default function StageTablePanel({ project }: { project: Project }) {
 
                                 <ContextMenuSeparator />
 
-                                <ContextMenuItem className="text-xs">
+                                <ContextMenuItem
+                                  onSelect={() => scheduleAfterContextMenu(() => setFilterPopoverColId(colId))}
+                                  className="text-xs"
+                                >
                                   <Filter className="size-3.5" />
                                   <span>{t("toolbar.filter")}</span>
                                 </ContextMenuItem>
@@ -2736,11 +4077,50 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                   <span>{t("toolbar.group")}</span>
                                 </ContextMenuItem>
 
-                                <ContextMenuItem className="text-xs">
-                                  <ArrowUpDown className="size-3.5" />
-                                  <span>{t("toolbar.sort")}</span>
-                                  <ChevronRight className="text-muted-foreground/60 ml-auto size-3.5 pl-4" />
-                                </ContextMenuItem>
+                                <ContextMenuSub>
+                                  <ContextMenuSubTrigger className="text-xs">
+                                    <ArrowUpDown className="size-3.5" />
+                                    <span>{t("toolbar.sort")}</span>
+                                  </ContextMenuSubTrigger>
+                                  <ContextMenuSubContent
+                                    className="w-36"
+                                    onWheel={(e) => e.stopPropagation()}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                  >
+                                    <ContextMenuItem
+                                      onSelect={() =>
+                                        project.stageTable.setSort?.({ columnId: colId, direction: "asc" })
+                                      }
+                                      className="text-xs"
+                                    >
+                                      <ArrowUp className="size-3.5" />
+                                      <span>{t("sortFilter.sortAsc")}</span>
+                                      {colSortDir === "asc" && <Check className="text-primary ml-auto size-3.5" />}
+                                    </ContextMenuItem>
+                                    <ContextMenuItem
+                                      onSelect={() =>
+                                        project.stageTable.setSort?.({ columnId: colId, direction: "desc" })
+                                      }
+                                      className="text-xs"
+                                    >
+                                      <ArrowDown className="size-3.5" />
+                                      <span>{t("sortFilter.sortDesc")}</span>
+                                      {colSortDir === "desc" && <Check className="text-primary ml-auto size-3.5" />}
+                                    </ContextMenuItem>
+                                    {colSortDir && (
+                                      <>
+                                        <ContextMenuSeparator />
+                                        <ContextMenuItem
+                                          onSelect={() => project.stageTable.setSort?.(null)}
+                                          className="text-xs"
+                                        >
+                                          <X className="size-3.5" />
+                                          <span>{t("sortFilter.clearSort")}</span>
+                                        </ContextMenuItem>
+                                      </>
+                                    )}
+                                  </ContextMenuSubContent>
+                                </ContextMenuSub>
 
                                 <ContextMenuSeparator />
 
@@ -2890,7 +4270,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
               })}
 
               {/* 列最右侧 + 号：点击新建自定义列并直接进入图 4 内联标题 + 双列类型选择 */}
-              <th className="border-border/50 bg-muted h-8 p-0 text-center select-none">
+              <th className="border-border/50 bg-muted h-9 p-0 text-center select-none">
                 <button
                   type="button"
                   data-stage-table-add-col
@@ -2908,179 +4288,308 @@ export default function StageTablePanel({ project }: { project: Project }) {
             {rows.length === 0 ? (
               <tr>
                 <td colSpan={visibleColumnIds.length + 2} className="text-muted-foreground py-12 text-center text-xs">
-                  {t("emptyCanvas")}
+                  {allRows.length > 0 && activeFilters.length > 0 ? (
+                    <div className="flex flex-col items-center gap-2">
+                      <span>{t("sortFilter.noFilterMatch")}</span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => project.stageTable.clearAllFilters?.()}
+                        className="h-7 px-3 text-xs"
+                      >
+                        {t("sortFilter.clearAllFilters")}
+                      </Button>
+                    </div>
+                  ) : (
+                    t("emptyCanvas")
+                  )}
                 </td>
               </tr>
             ) : (
-              rows.map((row, rowIndex) => (
-                <tr key={row.uuid} className="group/row border-border/40 hover:bg-muted/30 border-b transition-colors">
-                  {/* 从上到下 1, 2, 3... 行计数 */}
-                  <td
-                    data-stage-table-row-index
-                    style={frozenEndIndex >= 0 ? { left: "0px" } : undefined}
+              rows.map((row, rowIndex) => {
+                const isRowSelected =
+                  selection.mode === "all" || (selection.mode === "rows" && selection.rowIds.has(row.uuid));
+                return (
+                  <tr
+                    key={row.uuid}
+                    data-stage-table-row-id={row.uuid}
+                    data-row-selected={isRowSelected ? "true" : undefined}
                     className={cn(
-                      "border-border/40 text-muted-foreground border-r px-1 py-1 text-center text-[11px] tabular-nums select-none",
-                      frozenEndIndex >= 0 && "bg-background group-hover/row:bg-muted sticky z-10",
+                      "group/row border-border/40 border-b transition-colors",
+                      !isRowSelected && "hover:bg-muted/30",
                     )}
                   >
-                    {rowIndex + 1}
-                  </td>
+                    {/* 从上到下 1, 2, 3... 行计数（点击/Shift/Ctrl/拖动选中单行或多行并同步画布） */}
+                    <td
+                      data-stage-table-row-index
+                      data-row-id={row.uuid}
+                      onPointerDown={(e) => handleRowIndexPointerDown(row.uuid, e)}
+                      style={frozenEndIndex >= 0 ? { left: "0px" } : undefined}
+                      className={cn(
+                        "border-border/40 hover:bg-accent/60 cursor-pointer border-r px-1 py-1 text-center text-[11px] tabular-nums transition-colors select-none",
+                        frozenEndIndex >= 0 ? "bg-background sticky z-10" : "relative",
+                        frozenEndIndex >= 0 && !isRowSelected && "group-hover/row:bg-muted",
+                        isRowSelected
+                          ? "text-primary after:bg-primary/18 font-semibold shadow-[inset_3px_0_0_var(--primary)] after:pointer-events-none after:absolute after:inset-0"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      {rowIndex + 1}
+                    </td>
 
-                  {visibleColumnIds.map((colId, colIdx) => {
-                    const customCol = customColumnMap.get(colId);
-                    const isFrozen = colIdx <= frozenEndIndex;
-                    const isFreezeBoundary = colIdx === frozenEndIndex;
-                    return (
-                      <td
-                        key={colId}
-                        style={isFrozen ? { left: `${columnLeftOffsets[colIdx]}px` } : undefined}
-                        className={cn(
-                          "border-border/40 overflow-hidden border-r p-0 align-middle",
-                          isFrozen && "bg-background group-hover/row:bg-muted sticky z-10",
-                          isFreezeBoundary && "border-r-primary/45 border-r-2",
-                        )}
-                      >
-                        {colId === "name" && (
-                          <PrimaryTextCell
-                            row={row}
-                            t={t}
-                            onCommit={(nextText) => project.stageTable.updateRowPrimaryText(row.uuid, nextText)}
-                            onJump={() => project.stageTable.focusRowOnCanvas(row.uuid)}
-                          />
-                        )}
+                    {visibleColumnIds.map((colId, colIdx) => {
+                      const customCol = customColumnMap.get(colId);
+                      const isFrozen = colIdx <= frozenEndIndex;
+                      const isFreezeBoundary = colIdx === frozenEndIndex;
+                      const isColSelected =
+                        selection.mode === "all" || (selection.mode === "columns" && selection.colIds.has(colId));
+                      const isCellSelected =
+                        selection.mode === "cells" && selection.cells.has(makeCellKey(row.uuid, colId));
+                      const isActiveCell =
+                        selection.mode === "cells" &&
+                        selection.activeCell?.rowId === row.uuid &&
+                        selection.activeCell?.colId === colId;
+                      const isSelectedAny = isRowSelected || isColSelected || isCellSelected;
 
-                        {colId === "images" && (
-                          <ImagesCell
-                            project={project}
-                            images={row.images ?? []}
-                            disabled={row.canEditImages === false}
-                            onAddImages={(blobs) => {
-                              void project.stageTable.addRowImages?.(row.uuid, blobs);
-                            }}
-                            onRemoveImage={(imgUuid) => {
-                              project.stageTable.removeRowImage?.(row.uuid, imgUuid);
-                            }}
-                            onPreviewImage={(attachmentId) => setPreviewAttachmentId(attachmentId)}
-                            t={t}
-                          />
-                        )}
-
-                        {colId === "createdAt" && (
-                          <div className="text-muted-foreground truncate px-2.5 py-1.5 text-[11px] tabular-nums">
-                            {formatTimestamp(row.createdAt)}
-                          </div>
-                        )}
-
-                        {colId === "updatedAt" && (
-                          <div className="text-muted-foreground truncate px-2.5 py-1.5 text-[11px] tabular-nums">
-                            {formatTimestamp(row.updatedAt)}
-                          </div>
-                        )}
-
-                        {colId === "parents" && (
-                          <MultiRelationCell
-                            selectedItems={row.parents}
-                            candidates={rows.filter((c) => c.uuid !== row.uuid)}
-                            placeholder={t("relationPlaceholder")}
-                            searchPlaceholder={t("searchNodePlaceholder")}
-                            emptyText={t("noMatchingNodes")}
-                            onChange={(nextIds) => project.stageTable.setRowParents(row.uuid, nextIds)}
-                            t={t}
-                          />
-                        )}
-
-                        {colId === "children" && (
-                          <MultiRelationCell
-                            selectedItems={row.children}
-                            candidates={rows.filter((c) => c.uuid !== row.uuid)}
-                            placeholder={t("relationPlaceholder")}
-                            searchPlaceholder={t("searchNodePlaceholder")}
-                            emptyText={t("noMatchingNodes")}
-                            onChange={(nextIds) => project.stageTable.setRowChildren(row.uuid, nextIds)}
-                            t={t}
-                          />
-                        )}
-
-                        {colId === "outer" && (
-                          <SingleRelationCell
-                            selectedItem={row.outer}
-                            candidates={getOuterCandidatesForRow(row)}
-                            placeholder={t("relationPlaceholder")}
-                            searchPlaceholder={t("searchNodePlaceholder")}
-                            emptyText={t("noMatchingNodes")}
-                            onChange={(nextId) => project.stageTable.setRowOuter(row.uuid, nextId)}
-                            t={t}
-                          />
-                        )}
-
-                        {colId === "inner" && (
-                          <MultiRelationCell
-                            selectedItems={row.inner}
-                            candidates={getInnerCandidatesForRow(row)}
-                            disabled={!row.canEditInner}
-                            placeholder={t("relationPlaceholder")}
-                            searchPlaceholder={t("searchNodePlaceholder")}
-                            emptyText={t("noMatchingNodes")}
-                            onChange={(nextIds) => project.stageTable.setRowInner(row.uuid, nextIds)}
-                            t={t}
-                          />
-                        )}
-
-                        {customCol && customCol.type === "text" && (
-                          <TextCustomCell
-                            value={row.tableFields?.[customCol.id]}
-                            onCommit={(nextVal) =>
-                              project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
+                      return (
+                        <td
+                          key={colId}
+                          data-stage-table-cell
+                          data-row-id={row.uuid}
+                          data-col-id={colId}
+                          data-cell-selected={isSelectedAny ? "true" : undefined}
+                          data-cell-active={isActiveCell ? "true" : undefined}
+                          onPointerDown={(e) => handleCellPointerDown(row.uuid, colId, e)}
+                          onClickCapture={(e) => {
+                            if (suppressCellClickRef.current || e.shiftKey || e.ctrlKey || e.metaKey) {
+                              e.preventDefault();
+                              e.stopPropagation();
                             }
-                          />
-                        )}
+                          }}
+                          style={isFrozen ? { left: `${columnLeftOffsets[colIdx]}px` } : undefined}
+                          className={cn(
+                            "border-border/40 overflow-hidden border-r p-0 align-middle",
+                            isFrozen ? "bg-background sticky z-10" : "relative",
+                            isFrozen && !isSelectedAny && "group-hover/row:bg-muted",
+                            isFreezeBoundary && "border-r-primary/45 border-r-2",
+                            isSelectedAny &&
+                              "after:bg-primary/12 after:pointer-events-none after:absolute after:inset-0",
+                            isActiveCell && "after:ring-primary after:ring-2 after:ring-inset",
+                          )}
+                        >
+                          {colId === "name" && (
+                            <PrimaryTextCell
+                              row={row}
+                              t={t}
+                              canEditOnClick={() => wasSoleActiveOnDownRef.current}
+                              onCommit={(nextText) => project.stageTable.updateRowPrimaryText(row.uuid, nextText)}
+                              onJump={() => project.stageTable.focusRowOnCanvas(row.uuid)}
+                            />
+                          )}
 
-                        {customCol && customCol.type === "number" && (
-                          <NumberCustomCell
-                            value={row.tableFields?.[customCol.id]}
-                            onCommit={(nextVal) =>
-                              project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
-                            }
-                          />
-                        )}
+                          {colId === "images" && (
+                            <ImagesCell
+                              project={project}
+                              images={row.images ?? []}
+                              disabled={row.canEditImages === false}
+                              onAddImages={(blobs) => {
+                                void project.stageTable.addRowImages?.(row.uuid, blobs);
+                              }}
+                              onRemoveImage={(imgUuid) => {
+                                project.stageTable.removeRowImage?.(row.uuid, imgUuid);
+                              }}
+                              onPreviewImage={(attachmentId) => setPreviewAttachmentId(attachmentId)}
+                              t={t}
+                            />
+                          )}
 
-                        {customCol && customCol.type === "date" && (
-                          <DateCustomCell
-                            value={row.tableFields?.[customCol.id]}
-                            onCommit={(nextVal) =>
-                              project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
-                            }
-                            t={t}
-                          />
-                        )}
+                          {colId === "createdAt" && (
+                            <div className="text-muted-foreground truncate px-2.5 py-1.5 text-[11px] tabular-nums select-none">
+                              {formatTimestamp(row.createdAt)}
+                            </div>
+                          )}
 
-                        {customCol && (customCol.type === "select" || customCol.type === "multi_select") && (
-                          <SelectCustomCell
-                            column={customCol}
-                            value={row.tableFields?.[customCol.id]}
-                            onCommit={(nextVal) =>
-                              project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
-                            }
-                            onCreateOrGetOption={(optName) =>
-                              project.stageTable.createOrGetSelectOption?.(customCol.id, optName) ?? null
-                            }
-                            t={t}
-                          />
-                        )}
+                          {colId === "updatedAt" && (
+                            <div className="text-muted-foreground truncate px-2.5 py-1.5 text-[11px] tabular-nums select-none">
+                              {formatTimestamp(row.updatedAt)}
+                            </div>
+                          )}
 
-                        {customCol && customCol.type === "formula" && (
-                          <div className="text-muted-foreground truncate px-2.5 py-1.5 text-xs">
-                            {row.tableFields?.[customCol.id] ?? ""}
-                          </div>
-                        )}
-                      </td>
-                    );
-                  })}
+                          {colId === "parents" && (
+                            <MultiRelationCell
+                              selectedItems={row.parents}
+                              candidates={allRows.filter((c) => c.uuid !== row.uuid)}
+                              placeholder={t("relationPlaceholder")}
+                              searchPlaceholder={t("searchNodePlaceholder")}
+                              emptyText={t("noMatchingNodes")}
+                              onChange={(nextIds) => project.stageTable.setRowParents(row.uuid, nextIds)}
+                              t={t}
+                            />
+                          )}
 
-                  {/* + 列对应的右侧占位单元格 */}
-                  <td className="p-0" />
-                </tr>
-              ))
+                          {colId === "children" && (
+                            <MultiRelationCell
+                              selectedItems={row.children}
+                              candidates={allRows.filter((c) => c.uuid !== row.uuid)}
+                              placeholder={t("relationPlaceholder")}
+                              searchPlaceholder={t("searchNodePlaceholder")}
+                              emptyText={t("noMatchingNodes")}
+                              onChange={(nextIds) => project.stageTable.setRowChildren(row.uuid, nextIds)}
+                              t={t}
+                            />
+                          )}
+
+                          {colId === "outer" && (
+                            <SingleRelationCell
+                              selectedItem={row.outer}
+                              candidates={getOuterCandidatesForRow(row)}
+                              placeholder={t("relationPlaceholder")}
+                              searchPlaceholder={t("searchNodePlaceholder")}
+                              emptyText={t("noMatchingNodes")}
+                              onChange={(nextId) => project.stageTable.setRowOuter(row.uuid, nextId)}
+                              t={t}
+                            />
+                          )}
+
+                          {colId === "inner" && (
+                            <MultiRelationCell
+                              selectedItems={row.inner}
+                              candidates={getInnerCandidatesForRow(row)}
+                              disabled={!row.canEditInner}
+                              placeholder={t("relationPlaceholder")}
+                              searchPlaceholder={t("searchNodePlaceholder")}
+                              emptyText={t("noMatchingNodes")}
+                              onChange={(nextIds) => project.stageTable.setRowInner(row.uuid, nextIds)}
+                              t={t}
+                            />
+                          )}
+
+                          {customCol && customCol.type === "text" && (
+                            <TextCustomCell
+                              value={row.tableFields?.[customCol.id]}
+                              canEditOnClick={() => wasSoleActiveOnDownRef.current}
+                              onCommit={(nextVal) =>
+                                project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
+                              }
+                            />
+                          )}
+
+                          {customCol && customCol.type === "number" && (
+                            <NumberCustomCell
+                              value={row.tableFields?.[customCol.id]}
+                              canEditOnClick={() => wasSoleActiveOnDownRef.current}
+                              onCommit={(nextVal) =>
+                                project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
+                              }
+                            />
+                          )}
+
+                          {customCol && customCol.type === "date" && (
+                            <DateCustomCell
+                              value={row.tableFields?.[customCol.id]}
+                              onCommit={(nextVal) =>
+                                project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
+                              }
+                              t={t}
+                            />
+                          )}
+
+                          {customCol && (customCol.type === "select" || customCol.type === "multi_select") && (
+                            <SelectCustomCell
+                              column={customCol}
+                              value={row.tableFields?.[customCol.id]}
+                              onCommit={(nextVal) =>
+                                project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
+                              }
+                              onCreateOrGetOption={(optName) =>
+                                project.stageTable.createOrGetSelectOption?.(customCol.id, optName) ?? null
+                              }
+                              t={t}
+                            />
+                          )}
+
+                          {customCol &&
+                            customCol.type === "formula" &&
+                            (() => {
+                              const evaluated = row.formulaValues?.[customCol.id];
+                              const hasFormulaExpr = Boolean(customCol.formula?.trim());
+                              return (
+                                <div
+                                  data-formula-cell={customCol.id}
+                                  onDoubleClick={(e) => {
+                                    e.stopPropagation();
+                                    openFormulaEditorForColumn(customCol.id, row.uuid);
+                                  }}
+                                  title={
+                                    evaluated?.kind === "error"
+                                      ? `${evaluated.errorCode}: ${evaluated.errorMessage ?? ""}`
+                                      : evaluated?.displayText ||
+                                        (hasFormulaExpr ? "" : t("formulaEditor.doubleClickHint"))
+                                  }
+                                  className="flex h-full min-h-8 w-full cursor-default items-center px-2.5 py-1 text-xs select-none"
+                                >
+                                  {evaluated?.kind === "error" ? (
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <span className="bg-destructive/15 text-destructive inline-flex max-w-full items-center truncate rounded px-1.5 py-0.5 font-mono text-[11px] font-medium">
+                                          {evaluated.errorCode ?? "#ERROR!"}
+                                        </span>
+                                      </TooltipTrigger>
+                                      <TooltipContent side="top" className="max-w-72 text-xs">
+                                        {evaluated.errorMessage || evaluated.errorCode}
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  ) : evaluated?.kind === "boolean" ? (
+                                    <span
+                                      className={cn(
+                                        "inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[11px] font-medium",
+                                        evaluated.booleanValue
+                                          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                                          : "bg-muted text-muted-foreground",
+                                      )}
+                                    >
+                                      {evaluated.displayText}
+                                    </span>
+                                  ) : evaluated?.kind === "list" &&
+                                    evaluated.listItems &&
+                                    evaluated.listItems.length > 0 ? (
+                                    <div className="flex max-w-full items-center gap-1 overflow-hidden">
+                                      {evaluated.listItems.map((item, idx) => (
+                                        <span
+                                          key={`${idx}-${item}`}
+                                          className="bg-muted/80 text-foreground inline-flex max-w-28 shrink-0 truncate rounded px-1.5 py-0.5 text-[11px]"
+                                        >
+                                          {item}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  ) : evaluated && evaluated.kind !== "empty" ? (
+                                    <span
+                                      className={cn(
+                                        "truncate",
+                                        (evaluated.kind === "number" || evaluated.kind === "date") && "tabular-nums",
+                                      )}
+                                    >
+                                      {evaluated.displayText}
+                                    </span>
+                                  ) : !hasFormulaExpr ? (
+                                    <span className="text-muted-foreground/45 truncate text-[11px] italic">
+                                      {t("formulaEditor.unsetFormula")}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              );
+                            })()}
+                        </td>
+                      );
+                    })}
+
+                    {/* + 列对应的右侧占位单元格 */}
+                    <td className="p-0" />
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
@@ -3109,6 +4618,40 @@ export default function StageTablePanel({ project }: { project: Project }) {
           </DialogPrimitive.Content>
         </DialogPrimitive.Portal>
       </DialogPrimitive.Root>
+
+      {/* 公式编辑器弹窗（高配版：蓝色列胶囊 + 双栏函数文档 + 实时首行预览） */}
+      {(() => {
+        const targetCol = formulaEditorState ? customColumnMap.get(formulaEditorState.colId) : undefined;
+        return (
+          <StageTableFormulaEditorDialog
+            open={Boolean(formulaEditorState && targetCol)}
+            onOpenChange={(open) => {
+              if (!open) setFormulaEditorState(null);
+            }}
+            columnId={targetCol?.id ?? ""}
+            columnName={targetCol?.name ?? ""}
+            initialFormula={targetCol?.formula ?? ""}
+            initialFormat={targetCol?.format}
+            tableViewName={activeView.name || t("defaultViewName")}
+            columns={formulaEditorColumnOptions}
+            customColumnSchemas={customColumns}
+            systemColumnNames={project.table?.systemColumnNames}
+            systemColumnLabels={systemColumnLabels}
+            rows={allRows}
+            initialPreviewRowUuid={formulaEditorState?.previewRowUuid ?? null}
+            onSave={({ name, formula, format }) => {
+              if (!targetCol) return;
+              project.stageTable.updateColumn?.(targetCol.id, {
+                name,
+                type: "formula",
+                formula,
+                format,
+              });
+            }}
+            t={t}
+          />
+        );
+      })()}
 
       {/* 图片大图预览弹窗 */}
       <DialogPrimitive.Root

@@ -15,8 +15,15 @@ import { Color, Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
 import { describe, expect, it, vi } from "vitest";
 import { ControllerEntityClickSelectAndMoveClass } from "./ControllerEntityClickSelectAndMove";
+import { ControllerLayerMovingClass } from "./ControllerEntityLayerMoving";
 import { ControllerNodeConnectionClass } from "./ControllerNodeConnection";
-import { MindMapDrag, mindMapPorts, moveMindMapSibling, reflowMindMapTree } from "./MindMapDrag";
+import {
+  MindMapDrag,
+  mindMapPorts,
+  moveMindMapSibling,
+  reflowMindMapTree,
+  reflowMindMapTreesForEntities,
+} from "./MindMapDrag";
 import { ControllerUtils } from "./utilsControl";
 
 vi.mock("@/core/Project", () => ({ Project: class {}, service: () => () => {} }));
@@ -42,7 +49,13 @@ vi.mock("@/core/service/feedbackService/effectEngine/concrete/RectangleRenderEff
 }));
 vi.mock("@/utils/platform", () => ({ isMac: false }));
 vi.mock("@/core/service/feedbackService/SoundService", () => ({
-  SoundService: { play: { connectLineStart: vi.fn(), packEntityToSectionSoundFile: vi.fn() } },
+  SoundService: {
+    play: {
+      connectLineStart: vi.fn(),
+      packEntityToSectionSoundFile: vi.fn(),
+      entityJumpSoundFile: vi.fn(),
+    },
+  },
 }));
 vi.mock("@/core/stage/stageObject/entity/TextNode", () => ({ TextNode: class {} }));
 vi.mock("@/core/stage/stageObject/entity/ConnectPoint", () => ({ ConnectPoint: class {} }));
@@ -1202,5 +1215,217 @@ describe("mind-map drag shortcut", () => {
     controller.mouseup(release);
     expect(controller.mindMapDragPreview).toBeNull();
     expect(edges).toHaveLength(holdUntilDrop ? 1 : 0);
+  });
+
+  it.each(["preserve", "align"] as const)(
+    "disables auto-connect and keeps selection intact when Alt is held for projection in pinned %s mode",
+    (mode) => {
+      const { project, parent, root, edges, pressingKeySet, recordStep } = setup();
+      const controller = new ControllerEntityClickSelectAndMoveClass(project);
+      parent.isSelected = true;
+      root.isSelected = false;
+      Settings.persistentDragToConnectMindMap = mode === "preserve";
+      Settings.persistentDragToConnectMindMapAligned = mode === "align";
+      pressingKeySet.add("alt");
+      try {
+        const down = { ...press, shiftKey: false, altKey: true };
+        const up = { ...release, shiftKey: false, altKey: true };
+        controller.mousedown(down);
+        controller.mousemove(up);
+        expect(controller.mindMapDragPreview).toBeNull();
+        expect(parent.isSelected).toBe(true);
+        expect(root.isSelected).toBe(false);
+        controller.mouseup(up);
+        expect(edges).toHaveLength(0);
+        expect(recordStep).not.toHaveBeenCalled();
+      } finally {
+        pressingKeySet.clear();
+        Settings.persistentDragToConnectMindMap = false;
+        Settings.persistentDragToConnectMindMapAligned = false;
+      }
+    },
+  );
+
+  it("cancels pinned auto-connect preview when Alt is pressed mid-drag", () => {
+    const { project, parent, root, edges, pressingKeySet, recordStep } = setup();
+    const controller = new ControllerEntityClickSelectAndMoveClass(project);
+    Settings.persistentDragToConnectMindMap = true;
+    try {
+      const down = { ...press, shiftKey: false, altKey: false };
+      const mid = { ...release, shiftKey: false, altKey: false };
+      controller.mousedown(down);
+      controller.mousemove(mid);
+      expect(controller.mindMapDragPreview).toMatchObject({ node: root, contact: { node: parent, side: "right" } });
+
+      pressingKeySet.add("alt");
+      controller.keydown({ ...mid, key: "Alt", altKey: true } as unknown as KeyboardEvent);
+      expect(controller.mindMapDragPreview).toBeNull();
+
+      controller.mouseup({ ...mid, altKey: true } as MouseEvent);
+      expect(edges).toHaveLength(0);
+      expect(recordStep).not.toHaveBeenCalled();
+    } finally {
+      pressingKeySet.clear();
+      Settings.persistentDragToConnectMindMap = false;
+    }
+  });
+
+  it.each(["preserve", "align"] as const)(
+    "auto-aligns tree after left-button node-to-node and node-to-blank connections in pinned %s mode",
+    async (mode) => {
+      const { project, parent, root, node, edges, recordStep } = setup();
+      const { stageManager } = project;
+      const child = node(240, 140);
+      const grandchild = node(240, 260);
+      const subEdge = new LineEdge(project, {
+        associationList: [child, grandchild],
+        sourceRectangleRate: new Vector(0.5, 0.99),
+        targetRectangleRate: new Vector(0.5, 0.01),
+      });
+      edges.push(subEdge);
+      const connect = (
+        source: ConnectableEntity,
+        target: ConnectableEntity,
+        _text: string,
+        targetRate: [number, number],
+        sourceRate: [number, number],
+      ) => {
+        edges.push(
+          new LineEdge(project, {
+            associationList: [source, target],
+            sourceRectangleRate: new Vector(...sourceRate),
+            targetRectangleRate: new Vector(...targetRate),
+          }),
+        );
+      };
+      Object.assign(project, { nodeConnector: { connectConnectableEntity: connect } });
+      Object.assign(stageManager, {
+        findConnectableEntityByLocation: (point: Vector) =>
+          stageManager.getConnectableEntity().find((entity) => entity.collisionBox.getRectangle().isPointIn(point)) ??
+          null,
+        getTextNodeByUUID: stageManager.getConnectableEntityByUUID,
+        connectMultipleEntities: (
+          sources: ConnectableEntity[],
+          target: ConnectableEntity,
+          _isCrEdge: boolean,
+          from: [number, number],
+          to: [number, number],
+        ) => {
+          for (const source of sources) connect(source, target, "", to, from);
+        },
+      });
+      Object.assign(project.controllerUtils, {
+        addTextNodeByLocation: async (position: Vector) => node(position.x, position.y).uuid,
+        textNodeInEditModeByUUID: vi.fn(),
+      });
+      Object.assign(project.controller, { setCursorName: vi.fn(), isMouseDown: [false, false, false] });
+      Object.assign(project.effects, { addEffect: vi.fn() });
+      const color = { clone: () => color };
+      Object.assign(project, {
+        stageStyleManager: { currentStyle: { effects: { successShadow: color }, StageObjectBorder: color } },
+        edgeRenderer: { getConnectedEffects: () => [] },
+      });
+
+      const originalLeftMode = Settings.mouseLeftMode;
+      Settings.mouseLeftMode = "connectAndCut";
+      Settings.persistentDragToConnectMindMap = mode === "preserve";
+      Settings.persistentDragToConnectMindMapAligned = mode === "align";
+      vi.stubGlobal("window", new EventTarget());
+      const conn = new ControllerNodeConnectionClass(project);
+      try {
+        // 1. Left-button drag from parent to existing child -> connects with clean side ports & auto-aligns tree
+        conn.mousedown({ button: 0, clientX: 50, clientY: 40 } as MouseEvent);
+        conn.mouseup({ button: 0, clientX: 255, clientY: 150 } as MouseEvent);
+
+        expect(edges).toHaveLength(2);
+        const parentToChild = edges[1];
+        expect(parentToChild.source).toBe(parent);
+        expect(parentToChild.target).toBe(child);
+        expect(parentToChild.isLeftToRight()).toBe(true);
+        // Auto-layout aligns child horizontally to the right of parent
+        expect(child.collisionBox.getRectangle().center.y).toBe(parent.collisionBox.getRectangle().center.y);
+        // In align mode, child->grandchild edge is also unified to left-to-right; in preserve mode, it stays top-to-bottom
+        expect(subEdge.isLeftToRight()).toBe(mode === "align");
+        expect(recordStep).toHaveBeenCalledTimes(1);
+
+        // 2. Left-button drag from root to blank space -> creates child & auto-aligns
+        const rootCenter = root.collisionBox.getRectangle().center;
+        conn.mousedown({ button: 0, clientX: rootCenter.x, clientY: rootCenter.y } as MouseEvent);
+        conn.mouseup({ button: 0, clientX: rootCenter.x + 220, clientY: rootCenter.y + 60 } as MouseEvent);
+        await Promise.resolve();
+
+        expect(edges).toHaveLength(3);
+        const created = edges[2].target;
+        expect(edges[2].source).toBe(root);
+        expect(edges[2].isLeftToRight()).toBe(true);
+        expect(created.collisionBox.getRectangle().center.y).toBe(root.collisionBox.getRectangle().center.y);
+      } finally {
+        conn.dispose();
+        vi.unstubAllGlobals();
+        Settings.mouseLeftMode = originalLeftMode;
+        Settings.persistentDragToConnectMindMap = false;
+        Settings.persistentDragToConnectMindMapAligned = false;
+      }
+    },
+  );
+
+  it("auto-reflows trees after Alt-projection entering and leaving a Section in pinned drag mode", () => {
+    const { project, parent, node, section, edges, pressingKeySet, recordStep } = setup();
+    const innerSeed = node(250, 20, new Vector(40, 30));
+    const group = section(innerSeed);
+    const child = node(500, 20, new Vector(60, 40));
+    const largePayload = node(-400, 300, new Vector(320, 200));
+
+    edges.push(
+      new LineEdge(project, {
+        associationList: [parent, group],
+        sourceRectangleRate: new Vector(0.99, 0.5),
+        targetRectangleRate: new Vector(0.01, 0.5),
+      }),
+      new LineEdge(project, {
+        associationList: [group, child],
+        sourceRectangleRate: new Vector(0.99, 0.5),
+        targetRectangleRate: new Vector(0.01, 0.5),
+      }),
+    );
+
+    Object.assign(project.stageManager, {
+      findEntityByLocation: () => null,
+      getSelectedEntities: () => project.stageManager.getConnectableEntity().filter((e) => e.isSelected),
+    });
+    Object.assign(project.effects, { addEffect: vi.fn() });
+
+    // Initial tidy tree layout
+    Settings.persistentDragToConnectMindMap = true;
+    reflowMindMapTreesForEntities(project, [group]);
+    const childLeftBeforeEnter = child.collisionBox.getRectangle().left;
+
+    const layerMoving = new ControllerLayerMovingClass(project);
+    pressingKeySet.add("alt");
+    try {
+      // 1. Alt-project largePayload INTO group -> group expands, child auto-reflows further right with no overlap
+      largePayload.isSelected = true;
+      const groupCenter = group.collisionBox.getRectangle().center;
+      layerMoving.mouseup({ button: 0, clientX: groupCenter.x, clientY: groupCenter.y, altKey: true } as MouseEvent);
+
+      expect(largePayload.parentSection).toBe(group);
+      const groupRectAfterEnter = group.collisionBox.getRectangle();
+      const childRectAfterEnter = child.collisionBox.getRectangle();
+      expect(childRectAfterEnter.left).toBeGreaterThan(childLeftBeforeEnter);
+      expect(childRectAfterEnter.left).toBeGreaterThanOrEqual(groupRectAfterEnter.right + 100);
+      expect(recordStep).toHaveBeenCalledTimes(1);
+
+      // 2. Alt-project largePayload OUT of group onto blank canvas -> group shrinks, child auto-reflows back left
+      largePayload.isSelected = true;
+      layerMoving.mouseup({ button: 0, clientX: -500, clientY: 500, altKey: true } as MouseEvent);
+
+      expect(largePayload.parentSection).toBeNull();
+      const childRectAfterExit = child.collisionBox.getRectangle();
+      expect(childRectAfterExit.left).toBeLessThan(childRectAfterEnter.left);
+      expect(recordStep).toHaveBeenCalledTimes(2);
+    } finally {
+      pressingKeySet.clear();
+      Settings.persistentDragToConnectMindMap = false;
+    }
   });
 });

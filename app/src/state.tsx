@@ -43,7 +43,6 @@ export const activeResourceTabAtom = atom(
 );
 
 export const isClassroomModeAtom = atom(false);
-export const drawingPaletteOpenAtom = atom(false);
 export const stageTableOpenAtom = atom(false);
 // export const isPrivacyModeAtom = atom(false);
 export const nextProjectIdAtom = atom(1);

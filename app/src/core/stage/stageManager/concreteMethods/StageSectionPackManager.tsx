@@ -5,6 +5,7 @@ import {
   getMindMapSide,
   isPersistentMindMapDragEnabled,
   mindMapPorts,
+  reflowMindMapTreesForEntities,
 } from "@/core/service/controlService/controller/concrete/MindMapDrag";
 import { Settings } from "@/core/service/Settings";
 import { Entity } from "@/core/stage/stageObject/abstract/StageEntity";
@@ -320,7 +321,17 @@ export class SectionPackManager {
    */
   unpackSelectedSections() {
     const selectedSections = this.project.stageManager.getSelectedEntities();
+    const parentSections = selectedSections
+      .filter((entity): entity is Section => entity instanceof Section)
+      .map((sec) => sec.parentSection)
+      .filter((parent): parent is Section => Boolean(parent));
+    const previousCenters = new Map<string, Vector>(
+      parentSections.map((sec) => [sec.uuid, sec.collisionBox.getRectangle().center]),
+    );
     this.unpackSections(selectedSections);
+    if (parentSections.length > 0 && isPersistentMindMapDragEnabled()) {
+      reflowMindMapTreesForEntities(this.project, parentSections, previousCenters);
+    }
     this.project.historyManager.recordStep();
   }
 

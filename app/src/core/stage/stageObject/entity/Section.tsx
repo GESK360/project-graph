@@ -233,7 +233,7 @@ export class Section extends ConnectableEntity {
     return this._isSelected;
   }
   public set isSelected(value: boolean) {
-    this._isSelected = value;
+    super.isSelected = value;
   }
 
   /**

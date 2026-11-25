@@ -275,6 +275,8 @@ export const settingsSchema = z.object({
   autoFillNodeColorEnable: z.boolean().default(true),
   autoFillPenStrokeColor: z.tuple([z.number(), z.number(), z.number(), z.number()]).default([0, 0, 0, 0]),
   autoFillPenStrokeColorEnable: z.boolean().default(true),
+  drawingPaletteOpen: z.boolean().default(false),
+  stageTableAutoFocusCanvasOnSelect: z.boolean().default(true),
   handwritingPens: z
     .array(
       z.object({
