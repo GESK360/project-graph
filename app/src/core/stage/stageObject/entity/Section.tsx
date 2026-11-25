@@ -10,6 +10,7 @@ import { Color, Vector } from "@graphif/data-structures";
 import { id, passExtraAtArg1, passObject, serializable } from "@graphif/serializer";
 import { Line, Rectangle, Shape } from "@graphif/shapes";
 import { Value } from "platejs";
+import type { TableFields } from "@/types/table";
 
 @passExtraAtArg1
 @passObject
@@ -99,11 +100,15 @@ export class Section extends ConnectableEntity {
       children = [] as Entity[],
       details = [] as Value,
       borderStyle = "solid" as "solid" | "dashed" | "none",
+      createdAt = undefined as number | undefined,
+      updatedAt = undefined as number | undefined,
+      tableFields = undefined as TableFields | undefined,
     } = {},
     public unknown = false,
   ) {
     super();
     this.uuid = uuid;
+    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
 
     if (collisionBoxNormal) {
       // 从序列化数据恢复：直接使用保存的 _collisionBoxNormal（含正确位置）

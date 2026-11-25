@@ -48,6 +48,105 @@ findWindow:
   useRegex: Gunakan ekspresi reguler
   invalidRegex: Ekspresi reguler tidak valid
 
+stageTable:
+  expandPanel: Buka tabel multidimensi
+  collapsePanel: Tutup tabel multidimensi
+  defaultViewName: Tabel Utama
+  addViewPlaceholder: Tambah tampilan
+  jumpToNode: Lompat ke simpul
+  emptyCanvas: Belum ada simpul di kanvas ini
+  relationPlaceholder: Pilih simpul...
+  searchNodePlaceholder: Cari simpul di kanvas...
+  noMatchingNodes: Tidak ada simpul yang cocok
+  removeRelation: Hapus relasi
+  clearOuter: Keluarkan dari bagian (Kosongkan)
+  toolbar:
+    addRow: Tambah baris
+    properties: Properti
+    filter: Filter
+    group: Kelompok
+    sort: Urutkan
+    rowHeight: Tinggi baris
+  propertiesPopover:
+    searchPlaceholder: Cari properti...
+  columns:
+    name: Nama
+    images: Gambar
+    createdAt: Waktu dibuat
+    updatedAt: Terakhir diedit
+    parents: Simpul induk
+    children: Simpul anak
+    outer: Simpul luar
+    inner: Simpul dalam
+  columnTypes:
+    text: Teks
+    number: Angka
+    date: Tanggal
+    select: Pilihan tunggal
+    multi_select: Pilihan ganda
+    formula: Rumus
+  headerMenu:
+    editField: Ubah kolom
+    insertField: Sisipkan kolom
+    insertLeft: Sisipkan di kiri
+    insertRight: Sisipkan di kanan
+    duplicate: Duplikat kolom
+    copySuffix: Salinan
+    autoFitWidth: Sesuaikan lebar otomatis
+    freeze: Bekukan hingga kolom ini
+    unfreeze: Lepas pembekuan
+    hide: Sembunyikan kolom
+    delete: Hapus kolom
+  fieldTypePicker:
+    title: Pilih jenis kolom
+    navHint: Pilih
+    confirmHint: Selesai
+    tabAddNext: Tambah kolom lagi
+  insertFieldPopover:
+    titlePlaceholder: Judul kolom
+  columnGroups:
+    menuLabel: Grup kolom
+    defaultName: Info Dasar
+    createGroup: Grup kolom baru
+    manageGroup: Kelola grup kolom
+    groupNameLabel: Nama grup
+    includedColumns: Kolom dalam grup
+    removeFromGroup: Keluarkan dari grup
+    dissolveGroup: Bubarkan grup
+  addColumnPopover:
+    triggerAria: Tambah kolom khusus
+    namePlaceholder: Nama kolom (opsional)
+    typeLabel: Jenis kolom
+    create: Buat
+  fieldDialog:
+    title: Ubah kolom
+    nameLabel: Nama kolom
+    typeLabel: Jenis kolom
+    systemLocked: Sistem
+    delete: Hapus kolom
+    confirm: Konfirmasi
+    cancel: Batal
+    save: Simpan
+  imagesCell:
+    add: Tambah gambar
+    remove: Hapus gambar
+  dateCell:
+    clear: Hapus
+  selectCell:
+    searchOrAddPlaceholder: Cari atau tambah opsi
+    createPrefix: Buat
+    removeOption: Hapus opsi
+    emptyHint: Ketik nama lalu tekan Enter untuk membuat
+  fallbackLabels:
+    unnamedNode: Simpul tanpa nama
+    unnamedSection: Bagian tanpa nama
+    image: "[Gambar]"
+    svg: "[SVG]"
+    media: "[Media]"
+    url: "[Tautan]"
+    latex: "[Rumus]"
+    reference: "[Referensi]"
+
 projectStatus:
   nodes: "{{count}} simpul"
   edges: "{{count}} koneksi"

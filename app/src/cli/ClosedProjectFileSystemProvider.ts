@@ -1,8 +1,8 @@
-import { access, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import type { FileSystemProvider } from "@/core/interfaces/Service";
+import type { FileStatInfo, FileSystemProvider } from "@/core/interfaces/Service";
 import { RuntimeCleanupError } from "@/core/RuntimeCleanup";
 import type { DirEntry } from "@tauri-apps/plugin-fs";
 import type { URI } from "vscode-uri";
@@ -46,6 +46,18 @@ export class FileSystemProviderFile implements FileSystemProvider {
 
   async rename(oldUri: URI, newUri: URI): Promise<void> {
     await rename(oldUri.fsPath, newUri.fsPath);
+  }
+
+  async stat(uri: URI): Promise<FileStatInfo | undefined> {
+    try {
+      const info = await stat(uri.fsPath);
+      return {
+        createdAt: Number.isFinite(info.birthtimeMs) && info.birthtimeMs > 0 ? Math.trunc(info.birthtimeMs) : undefined,
+        modifiedAt: Number.isFinite(info.mtimeMs) && info.mtimeMs > 0 ? Math.trunc(info.mtimeMs) : undefined,
+      };
+    } catch {
+      return undefined;
+    }
   }
 }
 

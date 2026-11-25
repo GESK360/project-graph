@@ -396,6 +396,9 @@ export class HistoryManager extends HistoryManagerAbs {
 
   constructor(private readonly project: Project) {
     super();
+    if (this.project.getService?.("stageTable")) {
+      this.project.stageTable.captureBaselineDigests();
+    }
     this.memoryEfficient = new HistorymanagerMemoryEfficient(project);
     this.timeEfficient = new HistoryManagerTimeEfficient(project);
 
@@ -417,7 +420,13 @@ export class HistoryManager extends HistoryManagerAbs {
    * 记录一步骤
    */
   public recordStep(): void {
+    if (this.project.getService?.("stageTable")) {
+      this.project.stageTable.syncSemanticTimestamps();
+    }
     this.currentManager.recordStep();
+    if (this.project.getService?.("stageTable")) {
+      this.project.stageTable.notifyChange();
+    }
     this.project.emit("stage-commit");
   }
 
@@ -426,6 +435,9 @@ export class HistoryManager extends HistoryManagerAbs {
    */
   public undo(): void {
     this.currentManager.undo();
+    if (this.project.getService?.("stageTable")) {
+      this.project.stageTable.resetAfterStageRestore();
+    }
   }
 
   /**
@@ -433,6 +445,9 @@ export class HistoryManager extends HistoryManagerAbs {
    */
   public redo(): void {
     this.currentManager.redo();
+    if (this.project.getService?.("stageTable")) {
+      this.project.stageTable.resetAfterStageRestore();
+    }
   }
 
   /**
@@ -449,6 +464,9 @@ export class HistoryManager extends HistoryManagerAbs {
    */
   public clearHistory(): void {
     this.currentManager.clearHistory();
+    if (this.project.getService?.("stageTable")) {
+      this.project.stageTable.captureBaselineDigests();
+    }
   }
 
   /**

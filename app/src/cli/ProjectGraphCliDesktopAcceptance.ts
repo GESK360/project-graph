@@ -132,7 +132,7 @@ async function createProjectFixture(
   await writer.add("reference.msgpack", new Uint8ArrayReader(encoder.encode({ sections: {}, files: [] })), {
     level: 0,
   });
-  await writer.add("metadata.msgpack", new Uint8ArrayReader(encoder.encode({ version: "2.7.0" })), { level: 0 });
+  await writer.add("metadata.msgpack", new Uint8ArrayReader(encoder.encode({ version: "2.8.0" })), { level: 0 });
   if (fixture === "image") {
     await writer.add(
       `attachments/${attachmentId}.svg`,

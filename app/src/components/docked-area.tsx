@@ -3,20 +3,43 @@ import { Project, ProjectState } from "@/core/Project";
 import { Tab } from "@/core/Tab";
 import { FIXED_SIDE_GROUP_IDS, TabGroupNode } from "@/core/TabGroup";
 import { TabWorkspace } from "@/core/TabWorkspace";
-import { activeGroupIdAtom, activeTabAtom, store, tabDropTargetAtom, tabGroupRootAtom, tabsAtom } from "@/state";
+import {
+  activeGroupIdAtom,
+  activeResourceTabAtom,
+  activeTabAtom,
+  stageTableOpenAtom,
+  store,
+  tabDropTargetAtom,
+  tabGroupRootAtom,
+  tabsAtom,
+} from "@/state";
 import { cn } from "@/utils/cn";
-import { useAtomValue } from "jotai";
+import { useAtom, useAtomValue } from "jotai";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import StageTablePanel from "./stage-table-panel";
 import { Button } from "./ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 const WORKSPACE_WIDTH_KEY = "workspace:sidebar-width";
 const DEFAULT_WORKSPACE_WIDTH = 260;
 const MIN_WORKSPACE_WIDTH = 160;
 const MAX_WORKSPACE_WIDTH = 480;
 
+const STAGE_TABLE_WIDTH_KEY = "stage-table:sidebar-width";
+const DEFAULT_STAGE_TABLE_WIDTH = 480;
+const MIN_STAGE_TABLE_WIDTH = 320;
+const MAX_STAGE_TABLE_WIDTH = 960;
+
 function clampWorkspaceWidth(width: number) {
   return Math.max(MIN_WORKSPACE_WIDTH, Math.min(MAX_WORKSPACE_WIDTH, Math.round(width)));
+}
+
+function clampStageTableWidth(width: number, hostWidth?: number) {
+  const dynamicMax =
+    hostWidth && hostWidth > 0 ? Math.max(MIN_STAGE_TABLE_WIDTH, Math.round(hostWidth * 0.75)) : MAX_STAGE_TABLE_WIDTH;
+  return Math.max(MIN_STAGE_TABLE_WIDTH, Math.min(MAX_STAGE_TABLE_WIDTH, dynamicMax, Math.round(width)));
 }
 
 function ProjectStatus({ project, isClassroomMode }: { project: Project; isClassroomMode: boolean }) {
@@ -199,18 +222,33 @@ export default function DockedArea({
   onTitleBarMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void;
   isClassroomMode: boolean;
 }) {
+  const { t: tTable } = useTranslation("stageTable");
   const root = useAtomValue(tabGroupRootAtom);
   const tabs = useAtomValue(tabsAtom);
   const activeGroupId = useAtomValue(activeGroupIdAtom);
+  const activeResourceTab = useAtomValue(activeResourceTabAtom);
+  const [stageTableOpen, setStageTableOpen] = useAtom(stageTableOpenAtom);
   const containerRef = useRef<HTMLDivElement>(null);
+  const stageTableDragRef = useRef<{ id: number; startX: number; width: number; hostWidth: number } | null>(null);
   const [workspaceWidth, setWorkspaceWidth] = useState(() => {
     const saved = Number(localStorage.getItem(WORKSPACE_WIDTH_KEY));
     return Number.isFinite(saved) && saved > 0 ? clampWorkspaceWidth(saved) : DEFAULT_WORKSPACE_WIDTH;
   });
+  const [stageTableWidth, setStageTableWidth] = useState(() => {
+    const saved = Number(localStorage.getItem(STAGE_TABLE_WIDTH_KEY));
+    return Number.isFinite(saved) && saved > 0 ? clampStageTableWidth(saved) : DEFAULT_STAGE_TABLE_WIDTH;
+  });
+
+  const activeProject = activeResourceTab instanceof Project ? activeResourceTab : undefined;
+  const showStageTable = Boolean(activeProject && stageTableOpen && !isClassroomMode);
 
   useEffect(() => {
     localStorage.setItem(WORKSPACE_WIDTH_KEY, String(workspaceWidth));
   }, [workspaceWidth]);
+
+  useEffect(() => {
+    localStorage.setItem(STAGE_TABLE_WIDTH_KEY, String(stageTableWidth));
+  }, [stageTableWidth]);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -235,7 +273,7 @@ export default function DockedArea({
     observer.observe(tabSpace);
     update();
     return () => observer.disconnect();
-  }, [root]);
+  }, [root, showStageTable, stageTableWidth]);
 
   const renderNode = (node: TabGroupNode, atWindowTop = true): React.ReactNode => {
     if (node.type === "split") {
@@ -328,8 +366,89 @@ export default function DockedArea({
   };
 
   return (
-    <div ref={containerRef} className="absolute inset-0 min-h-0 min-w-0 overflow-hidden">
-      {root && renderNode(root)}
+    <div ref={containerRef} className="absolute inset-0 flex min-h-0 min-w-0 flex-row overflow-hidden">
+      <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+        {root && renderNode(root)}
+        {activeProject && !isClassroomMode && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                data-stage-table-toggle
+                aria-label={stageTableOpen ? tTable("collapsePanel") : tTable("expandPanel")}
+                onClick={() => setStageTableOpen((prev) => !prev)}
+                className="bg-popover/95 hover:bg-accent text-foreground border-border/70 absolute top-1/2 right-0 z-30 flex h-14 w-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded-l-xl border border-r-0 shadow-md backdrop-blur-md transition-colors"
+              >
+                {stageTableOpen ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="left">
+              {stageTableOpen ? tTable("collapsePanel") : tTable("expandPanel")}
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </div>
+
+      {showStageTable && activeProject && (
+        <>
+          <div
+            className="bg-background z-20 w-1 shrink-0 cursor-col-resize touch-none"
+            role="separator"
+            tabIndex={0}
+            aria-label={tTable("expandPanel")}
+            aria-orientation="vertical"
+            aria-valuemin={MIN_STAGE_TABLE_WIDTH}
+            aria-valuemax={MAX_STAGE_TABLE_WIDTH}
+            aria-valuenow={stageTableWidth}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              event.stopPropagation();
+              const delta = event.key === "ArrowLeft" ? 16 : -16;
+              setStageTableWidth((prev) => clampStageTableWidth(prev + delta, containerRef.current?.clientWidth));
+            }}
+            onPointerDown={(event) => {
+              const handle = event.currentTarget;
+              if (event.button !== 0 || stageTableDragRef.current) return;
+              handle.setPointerCapture(event.pointerId);
+              stageTableDragRef.current = {
+                id: event.pointerId,
+                startX: event.clientX,
+                width: stageTableWidth,
+                hostWidth: containerRef.current?.clientWidth ?? window.innerWidth,
+              };
+            }}
+            onPointerMove={(event) => {
+              const start = stageTableDragRef.current;
+              if (!start || start.id !== event.pointerId) return;
+              const delta = start.startX - event.clientX;
+              setStageTableWidth(clampStageTableWidth(start.width + delta, start.hostWidth));
+            }}
+            onLostPointerCapture={(event) => {
+              if (stageTableDragRef.current?.id === event.pointerId) {
+                stageTableDragRef.current = null;
+              }
+            }}
+          >
+            <div className="bg-border hover:bg-primary size-full cursor-[inherit] transition-colors" />
+          </div>
+
+          <aside
+            data-stage-table-docked-pane
+            style={{ flex: `0 0 ${stageTableWidth}px` }}
+            className="bg-background border-background outline-border relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden border outline-1 -outline-offset-1"
+          >
+            <div
+              aria-hidden="true"
+              className="border-border/60 bg-background h-[var(--pg-titlebar-band-h)] shrink-0 cursor-grab border-b active:cursor-grabbing"
+              onMouseDown={onTitleBarMouseDown}
+            />
+            <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+              <StageTablePanel project={activeProject} />
+            </div>
+          </aside>
+        </>
+      )}
     </div>
   );
 }

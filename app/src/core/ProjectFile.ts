@@ -1,16 +1,18 @@
 import type { PrgMetadata } from "@/types/metadata";
 import { createDefaultMetadata, isValidMetadata } from "@/types/metadata";
+import { createDefaultTableData, normalizeTableData, type PrgTableData } from "@/types/table";
 import type { Decoder } from "@msgpack/msgpack";
 import { BlobWriter, Uint8ArrayReader, Uint8ArrayWriter, ZipReader } from "@zip.js/zip.js";
 import mime from "mime";
 
-export const LATEST_PROJECT_VERSION = "2.7.0";
+export const LATEST_PROJECT_VERSION = "2.8.0";
 
 export type ParsedProjectFile = {
   serializedStageObjects: any[];
   tags: string[];
   references: { sections: Record<string, string[]>; files: string[] };
   metadata: PrgMetadata;
+  table: PrgTableData;
   readme?: string;
 };
 
@@ -40,6 +42,7 @@ export async function parseProjectFile(
   let tags: string[] = [];
   let references: { sections: Record<string, string[]>; files: string[] } = { sections: {}, files: [] };
   let metadata: PrgMetadata = createDefaultMetadata("2.0.0");
+  let table: PrgTableData = createDefaultTableData();
   let readme: string | undefined;
 
   for (const entry of entries) {
@@ -57,6 +60,9 @@ export async function parseProjectFile(
       const metadataRawData = await entry.getData!(new Uint8ArrayWriter());
       const decodedMetadata = decoder.decode(metadataRawData);
       metadata = isValidMetadata(decodedMetadata) ? decodedMetadata : createDefaultMetadata("2.0.0");
+    } else if (entry.filename === "table.msgpack") {
+      const tableRawData = await entry.getData!(new Uint8ArrayWriter());
+      table = normalizeTableData(decoder.decode(tableRawData));
     } else if (entry.filename === "README.md") {
       const readmeRawData = await entry.getData!(new Uint8ArrayWriter());
       readme = new TextDecoder().decode(readmeRawData);
@@ -72,5 +78,5 @@ export async function parseProjectFile(
     }
   }
 
-  return { serializedStageObjects, tags, references, metadata, readme };
+  return { serializedStageObjects, tags, references, metadata, table, readme };
 }

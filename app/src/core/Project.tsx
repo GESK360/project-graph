@@ -50,6 +50,7 @@ import type { AIEngine } from "@/core/service/dataManageService/aiEngine/AIEngin
 import type { ComplexityDetector } from "@/core/service/dataManageService/ComplexityDetector";
 import type { ContentSearch } from "@/core/service/dataManageService/contentSearchEngine/contentSearchEngine";
 import type { CopyEngine } from "@/core/service/dataManageService/copyEngine/copyEngine";
+import type { StageTableService } from "@/core/service/dataManageService/stageTableService/StageTableService";
 import type { Effects } from "@/core/service/feedbackService/effectEngine/effectMachine";
 import { StageStyleManager } from "@/core/service/feedbackService/stageStyle/StageStyleManager";
 import { Settings } from "@/core/service/Settings";
@@ -78,6 +79,7 @@ import type { StageManager } from "@/core/stage/stageManager/StageManager";
 import { StageObject } from "@/core/stage/stageObject/abstract/StageObject";
 import { nextProjectIdAtom, store, tabsAtom } from "@/state";
 import { createDefaultMetadata, PrgMetadata } from "@/types/metadata";
+import { createDefaultTableData, PrgTableData } from "@/types/table";
 import { deserialize, serialize } from "@graphif/serializer";
 import { Decoder, Encoder } from "@msgpack/msgpack";
 import { BlobReader, Uint8ArrayReader, Uint8ArrayWriter, ZipWriter } from "@zip.js/zip.js";
@@ -242,7 +244,7 @@ export class Project extends Tab {
     }
     try {
       // 解析项目文件
-      const { serializedStageObjects, tags, references, metadata, readme } = await parseProjectFile(
+      const { serializedStageObjects, tags, references, metadata, table, readme } = await parseProjectFile(
         await this.fs.read(this.uri),
         this.decoder,
         this.attachments,
@@ -254,10 +256,17 @@ export class Project extends Tab {
       const confirmed = await this.checkAndConfirmUpgrade(currentVersion, latestVersion);
       if (!confirmed) return; // 用户取消升级，不打开文件，跳过 this.projectState = ProjectState.Saved
 
+      const fileStat =
+        compareProjectVersions(currentVersion, latestVersion) < 0 ? await this.fs.stat?.(this.uri) : undefined;
+
       // 升级数据
       const [upgradedStageObjects, upgradedMetadata] = ProjectUpgrader.upgradeNAnyToNLatest(
         serializedStageObjects,
         metadata as any,
+        {
+          defaultCreatedAt: fileStat?.createdAt,
+          defaultUpdatedAt: fileStat?.modifiedAt,
+        },
       );
 
       // 应用升级后的数据
@@ -267,12 +276,16 @@ export class Project extends Tab {
       this.tags = tags;
       this.references = references;
       this.metadata = upgradedMetadata;
+      this.table = table;
       this.readme = readme;
 
       // 更新引用关系，包括双向线的偏移状态
       // 注意：这里需要在服务加载后才能调用，所以需要检查服务是否已加载
       if (this.getService("stageManager")) {
         this.stageManager.updateReferences();
+      }
+      if (this.getService("stageTable")) {
+        this.stageTable.resetAfterStageRestore();
       }
 
       this.wasUpgraded = currentVersion !== latestVersion;
@@ -370,6 +383,7 @@ export class Project extends Tab {
   // 反向引用数据
   public references: { sections: Record<string, string[]>; files: string[] } = { sections: {}, files: [] };
   public metadata: PrgMetadata = createDefaultMetadata(ProjectUpgrader.NLatestVersion);
+  public table: PrgTableData = createDefaultTableData();
   public readme?: string;
   public wasUpgraded = false;
 
@@ -397,6 +411,9 @@ export class Project extends Tab {
     const includeThumbnail = options.includeThumbnail !== false;
     // 触发一次 docId，保证老文件在被保存时补上身份并随 metadata 落盘
     void this.docId;
+    if (this.getService("stageTable")) {
+      this.stageTable.flushPendingTimestamps();
+    }
     const serializedStage = serialize(this.stage);
     const encodedStage = this.encoder.encode(serializedStage);
     const uwriter = new Uint8ArrayWriter();
@@ -407,6 +424,7 @@ export class Project extends Tab {
     await writer.add("tags.msgpack", new Uint8ArrayReader(this.encoder.encode(this.tags)), { level: 0 });
     await writer.add("reference.msgpack", new Uint8ArrayReader(this.encoder.encode(this.references)), { level: 0 });
     await writer.add("metadata.msgpack", new Uint8ArrayReader(this.encoder.encode(this.metadata)), { level: 0 });
+    await writer.add("table.msgpack", new Uint8ArrayReader(this.encoder.encode(this.table)), { level: 0 });
     if (this.readme) {
       await writer.add("README.md", new Uint8ArrayReader(new TextEncoder().encode(this.readme)), { level: 0 });
     }
@@ -646,6 +664,7 @@ declare module "./Project" {
     stageStyleManager: StageStyleManager;
     autoSaveBackup: AutoSaveBackupService;
     referenceManager: ReferenceManager;
+    stageTable: StageTableService;
     collaboration: CollaborationService;
   }
 }

@@ -86,6 +86,9 @@ export class LatexNode extends ConnectableEntity {
       collisionBox = new CollisionBox([new Rectangle(Vector.getZero(), Vector.getZero())]),
       color = Color.Transparent.clone(),
       fontScaleLevel = 0,
+      createdAt,
+      updatedAt,
+      tableFields,
     }: {
       uuid?: string;
       details?: any;
@@ -93,12 +96,16 @@ export class LatexNode extends ConnectableEntity {
       collisionBox?: CollisionBox;
       color?: Color;
       fontScaleLevel?: number;
+      createdAt?: number;
+      updatedAt?: number;
+      tableFields?: Record<string, unknown>;
     },
   ) {
     super();
     this.uuid = uuid;
     this.latexSource = latexSource;
     this.details = details;
+    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
     this.collisionBox = collisionBox;
     this.color = color;
     this.fontScaleLevel = fontScaleLevel;

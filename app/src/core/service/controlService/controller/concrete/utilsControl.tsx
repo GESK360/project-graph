@@ -1,4 +1,4 @@
-import { Project, service } from "@/core/Project";
+import { Project, ProjectState, service } from "@/core/Project";
 import { TabWorkspace } from "@/core/TabWorkspace";
 import { Renderer } from "@/core/render/canvas2d/renderer";
 import { Settings } from "@/core/service/Settings";
@@ -261,6 +261,11 @@ export class ControllerUtils {
       clickedNode.details = value;
       // 向孪生兄弟同步 details
       this.project.syncAssociationManager.syncFrom(clickedNode, "details");
+      if (this.project.getService("stageTable")) {
+        this.project.stageTable.syncSemanticTimestamps();
+        this.project.stageTable.notifyChange();
+      }
+      this.project.projectState = ProjectState.Unsaved;
     });
   }
 

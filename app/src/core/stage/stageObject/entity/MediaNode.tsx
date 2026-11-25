@@ -20,6 +20,9 @@ type MediaNodeOptions = {
   attachmentId?: string;
   mediaKind?: MediaKind;
   title?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  tableFields?: Record<string, unknown>;
 };
 
 @passExtraAtArg1
@@ -65,13 +68,14 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
     protected readonly project: Project,
     {
       uuid = crypto.randomUUID() as string,
-      collisionBox = new CollisionBox([
-        new Rectangle(Vector.getZero(), Vector.getZero()),
-      ]),
+      collisionBox = new CollisionBox([new Rectangle(Vector.getZero(), Vector.getZero())]),
       details = [] as Value,
       attachmentId = "",
       mediaKind = "video" as MediaKind,
       title = "",
+      createdAt,
+      updatedAt,
+      tableFields,
     }: MediaNodeOptions,
     public unknown = false,
     public onReady?: () => void,
@@ -80,6 +84,7 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
     this.uuid = uuid;
     this.collisionBox = collisionBox;
     this.details = details;
+    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
     this.attachmentId = attachmentId;
     this.mediaKind = mediaKind;
     this.title = title;
@@ -156,7 +161,9 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
       const tryPoster = () => {
         if (posterStarted) return;
         posterStarted = true;
-        this.generatePoster(el, 1280).catch(() => {}).then(() => finish("ready"));
+        this.generatePoster(el, 1280)
+          .catch(() => {})
+          .then(() => finish("ready"));
       };
 
       el.addEventListener("loadedmetadata", () => {
@@ -246,10 +253,7 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
     });
   }
 
-  private async generatePoster(
-    videoEl: HTMLVideoElement,
-    maxWidth: number,
-  ): Promise<void> {
+  private async generatePoster(videoEl: HTMLVideoElement, maxWidth: number): Promise<void> {
     const w = videoEl.videoWidth;
     const h = videoEl.videoHeight;
     if (w <= 0 || h <= 0) return;
@@ -302,13 +306,9 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
       this._cachedMediaUrl = undefined;
     }
     const errors = results
-      .filter(
-        (result): result is PromiseRejectedResult =>
-          result.status === "rejected",
-      )
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
       .map(({ reason }) => reason);
-    if (errors.length > 0)
-      throw new AggregateError(errors, "MediaNode cleanup failed");
+    if (errors.length > 0) throw new AggregateError(errors, "MediaNode cleanup failed");
   }
 
   public get rectangle(): Rectangle {
@@ -316,9 +316,7 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
   }
 
   public get geometryCenter() {
-    return this.rectangle.location
-      .clone()
-      .add(this.rectangle.size.clone().multiply(0.5));
+    return this.rectangle.location.clone().add(this.rectangle.size.clone().multiply(0.5));
   }
 
   move(delta: Vector): void {
@@ -341,18 +339,13 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
     const newWidth = Math.max(currentWidth + delta.x, 50);
     const newHeight = newWidth / this.aspectRatio;
 
-    this.collisionBox = new CollisionBox([
-      new Rectangle(rect.location, new Vector(newWidth, newHeight)),
-    ]);
+    this.collisionBox = new CollisionBox([new Rectangle(rect.location, new Vector(newWidth, newHeight))]);
     this.updateFatherSectionByMove();
   }
 
   getResizeHandleRect(): Rectangle {
     const rect = this.collisionBox.getRectangle();
-    return new Rectangle(
-      new Vector(rect.right - 25, rect.bottom - 25),
-      new Vector(25, 25),
-    );
+    return new Rectangle(new Vector(rect.right - 25, rect.bottom - 25), new Vector(25, 25));
   }
 
   isInProgressBar(worldPoint: Vector): boolean {
@@ -365,10 +358,7 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
     const barY = rect.bottom - Math.max(12, h * 0.16);
     const barHeight = Math.max(6, h * 0.08);
     return (
-      worldPoint.x >= barLeft &&
-      worldPoint.x <= barRight &&
-      worldPoint.y >= barY &&
-      worldPoint.y <= barY + barHeight
+      worldPoint.x >= barLeft && worldPoint.x <= barRight && worldPoint.y >= barY && worldPoint.y <= barY + barHeight
     );
   }
 

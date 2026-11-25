@@ -52,6 +52,105 @@ findWindow:
   useRegex: Use regular expression
   invalidRegex: Invalid regular expression
 
+stageTable:
+  expandPanel: Open table panel
+  collapsePanel: Close table panel
+  defaultViewName: Default Table
+  addViewPlaceholder: Add view
+  jumpToNode: Jump to node
+  emptyCanvas: No nodes on this canvas
+  relationPlaceholder: Select nodes...
+  searchNodePlaceholder: Search canvas nodes...
+  noMatchingNodes: No matching nodes
+  removeRelation: Remove relation
+  clearOuter: Move out of section (Clear)
+  toolbar:
+    addRow: Add row
+    properties: Properties
+    filter: Filter
+    group: Group
+    sort: Sort
+    rowHeight: Row height
+  propertiesPopover:
+    searchPlaceholder: Find property...
+  columns:
+    name: Name
+    images: Images
+    createdAt: Created time
+    updatedAt: Last edited time
+    parents: Parent nodes
+    children: Child nodes
+    outer: Outer node
+    inner: Inner nodes
+  columnTypes:
+    text: Text
+    number: Number
+    date: Date
+    select: Select
+    multi_select: Multi-select
+    formula: Formula
+  headerMenu:
+    editField: Edit field
+    insertField: Insert field
+    insertLeft: Insert left
+    insertRight: Insert right
+    duplicate: Duplicate field
+    copySuffix: Copy
+    autoFitWidth: Auto-fit width
+    freeze: Freeze up to column
+    unfreeze: Unfreeze columns
+    hide: Hide field
+    delete: Delete field
+  fieldTypePicker:
+    title: Select field type
+    navHint: Select
+    confirmHint: Done
+    tabAddNext: Add next
+  insertFieldPopover:
+    titlePlaceholder: Field title
+  columnGroups:
+    menuLabel: Column group
+    defaultName: Basic Info
+    createGroup: New column group
+    manageGroup: Manage column group
+    groupNameLabel: Group name
+    includedColumns: Included columns
+    removeFromGroup: Remove from group
+    dissolveGroup: Ungroup
+  addColumnPopover:
+    triggerAria: Add custom column
+    namePlaceholder: Field name (optional)
+    typeLabel: Field type
+    create: Create
+  fieldDialog:
+    title: Edit field
+    nameLabel: Field name
+    typeLabel: Field type
+    systemLocked: System
+    delete: Delete field
+    confirm: Confirm
+    cancel: Cancel
+    save: Save
+  imagesCell:
+    add: Add image
+    remove: Remove image
+  dateCell:
+    clear: Clear
+  selectCell:
+    searchOrAddPlaceholder: Find or add option
+    createPrefix: Create
+    removeOption: Remove option
+    emptyHint: Type a name and press Enter to create
+  fallbackLabels:
+    unnamedNode: Unnamed node
+    unnamedSection: Unnamed section
+    image: "[Image]"
+    svg: "[SVG]"
+    media: "[Media]"
+    url: "[URL]"
+    latex: "[LaTeX]"
+    reference: "[Reference]"
+
 projectStatus:
   emptyCanvas: No nodes on the canvas
   noVisibleNodes: No visible nodes in this view. Click to reset.

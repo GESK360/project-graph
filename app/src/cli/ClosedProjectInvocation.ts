@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { Project, ProjectState } from "@/core/Project";
 import { FileSystemProviderFile } from "./ClosedProjectFileSystemProvider";
 import { ClosedProjectEffects } from "./ClosedProjectEffects";
@@ -196,6 +196,7 @@ function createClosedProject(
   project.tags = parsed.tags;
   project.references = parsed.references;
   project.metadata = parsed.metadata;
+  project.table = parsed.table;
   project.readme = parsed.readme;
   project.stage = deserialize(parsed.serializedStageObjects, project);
   project.loadService(StageManager);
@@ -289,10 +290,21 @@ async function executeClosedProjectTool(
   }
   if (versionComparison < 0) {
     try {
+      const fileInfo = await stat(options.canonicalPath).catch(() => undefined);
       const { ProjectUpgrader } = await import("@/core/stage/ProjectUpgrader");
       [parsed.serializedStageObjects, parsed.metadata] = ProjectUpgrader.upgradeNAnyToNLatest(
         parsed.serializedStageObjects,
         parsed.metadata,
+        {
+          defaultCreatedAt:
+            fileInfo && Number.isFinite(fileInfo.birthtimeMs) && fileInfo.birthtimeMs > 0
+              ? Math.trunc(fileInfo.birthtimeMs)
+              : undefined,
+          defaultUpdatedAt:
+            fileInfo && Number.isFinite(fileInfo.mtimeMs) && fileInfo.mtimeMs > 0
+              ? Math.trunc(fileInfo.mtimeMs)
+              : undefined,
+        },
       );
     } catch {
       return { ok: false, error: { code: "PROJECT_LOAD_FAILED", message: "Project file could not be loaded." } };

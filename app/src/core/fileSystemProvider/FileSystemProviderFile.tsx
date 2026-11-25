@@ -1,5 +1,5 @@
-import { FileSystemProvider } from "@/core/interfaces/Service";
-import { exists, mkdir, readDir, readFile, remove, rename, writeFile } from "@tauri-apps/plugin-fs";
+import { FileStatInfo, FileSystemProvider } from "@/core/interfaces/Service";
+import { exists, mkdir, readDir, readFile, remove, rename, stat, writeFile } from "@tauri-apps/plugin-fs";
 import { URI } from "vscode-uri";
 
 export class FileSystemProviderFile implements FileSystemProvider {
@@ -25,5 +25,16 @@ export class FileSystemProviderFile implements FileSystemProvider {
   }
   async rename(oldUri: URI, newUri: URI) {
     return await rename(oldUri.fsPath, newUri.fsPath);
+  }
+  async stat(uri: URI): Promise<FileStatInfo | undefined> {
+    try {
+      const info = await stat(uri.fsPath);
+      return {
+        createdAt: info.birthtime ? info.birthtime.getTime() : undefined,
+        modifiedAt: info.mtime ? info.mtime.getTime() : undefined,
+      };
+    } catch {
+      return undefined;
+    }
   }
 }

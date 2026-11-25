@@ -5,6 +5,7 @@ import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import { Edge } from "@/core/stage/stageObject/association/Edge";
 import { MultiTargetUndirectedEdge } from "@/core/stage/stageObject/association/MutiTargetUndirectedEdge";
 import { CollisionBox } from "../../stageObject/collisionBox/collisionBox";
+import { SyncAssociation } from "@/core/stage/stageObject/association/SyncAssociation";
 
 /**
  * 管理所有东西进出StageSection的逻辑
@@ -20,6 +21,9 @@ export class SectionInOutManager {
     }
     if (changed) {
       this.project.stageManager.updateReferences();
+      if (this.project.getService?.("stageTable")) {
+        this.project.stageTable.notifyChange();
+      }
     }
   }
 
@@ -41,6 +45,9 @@ export class SectionInOutManager {
     }
     if (changed) {
       this.project.stageManager.updateReferences();
+      if (this.project.getService?.("stageTable")) {
+        this.project.stageTable.notifyChange();
+      }
     }
   }
 
@@ -51,6 +58,9 @@ export class SectionInOutManager {
     }
     if (changed) {
       this.project.stageManager.updateReferences();
+      if (this.project.getService?.("stageTable")) {
+        this.project.stageTable.notifyChange();
+      }
     }
   }
 
@@ -163,35 +173,42 @@ export class SectionInOutManager {
       this.sectionDropChild(fatherSection, section, false);
     }
 
-    // 创建新的TextNode，保持UUID不变
+    // 创建新的TextNode，保持UUID与表格元数据不变
     const textNode = new TextNode(this.project, {
-      uuid: section.uuid, // 保持UUID不变
+      uuid: section.uuid,
       text: section.text,
       details: section.details,
       collisionBox: new CollisionBox([section.collisionBox.getRectangle()]),
       color: section.color.clone(),
+      borderStyle: section.borderStyle,
+      createdAt: section.createdAt,
+      updatedAt: section.updatedAt,
+      tableFields: section.tableFields,
     });
 
-    // 将新的TextNode添加到舞台
-    this.project.stageManager.add(textNode);
+    // 原地替换舞台中的原section，避免出现重复UUID或删除爆炸特效
+    const stageIndex = this.project.stage.indexOf(section);
+    if (stageIndex !== -1) {
+      this.project.stage[stageIndex] = textNode;
+    } else {
+      this.project.stage.push(textNode);
+    }
 
     // 将新的TextNode添加到父section中
     if (fatherSection) {
       this.attachEntityToSection(textNode, fatherSection);
     }
 
-    // 处理所有连向section的边
+    // 处理所有连向section的边与孪生同步关系
     for (const edge of this.project.stageManager.getAssociations()) {
       if (edge instanceof Edge) {
-        // 处理有向边
         if (edge.target.uuid === section.uuid) {
           edge.target = textNode;
         }
         if (edge.source.uuid === section.uuid) {
           edge.source = textNode;
         }
-      } else if (edge instanceof MultiTargetUndirectedEdge) {
-        // 处理无向边
+      } else if (edge instanceof MultiTargetUndirectedEdge || edge instanceof SyncAssociation) {
         for (let i = 0; i < edge.associationList.length; i++) {
           if (edge.associationList[i].uuid === section.uuid) {
             edge.associationList[i] = textNode;
@@ -200,7 +217,6 @@ export class SectionInOutManager {
       }
     }
 
-    // 从舞台中删除原section
-    this.project.stageManager.deleteEntities([section]);
+    this.project.stageManager.updateReferences();
   }
 }

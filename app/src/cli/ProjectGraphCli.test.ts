@@ -60,7 +60,7 @@ function getOwnershipDirectory(): string {
 }
 
 async function createProjectFixture(
-  version = "2.7.0",
+  version = "2.8.0",
   stage: unknown[] = [],
   attachment?: { id: string; extension: string; data: Uint8Array },
 ): Promise<string> {
@@ -762,7 +762,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
         ],
       },
     }));
-    const projectPath = await createProjectFixture("2.7.0", [
+    const projectPath = await createProjectFixture("2.8.0", [
       ...nodes,
       {
         _: "LineEdge",
@@ -784,7 +784,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   });
 
   it("routes another Registry-declared read tool through the Closed Project Runtime Host", async () => {
-    const projectPath = await createProjectFixture("2.7.0", createMutationStage());
+    const projectPath = await createProjectFixture("2.8.0", createMutationStage());
     const before = readFileSync(projectPath);
 
     const discovered = runCli("tool", "invoke", "get_all_nodes", "--project", projectPath, "--input", "{}");
@@ -823,7 +823,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   });
 
   it("composes graph, layout, import, text, connection, deletion, and history services from Registry capabilities", async () => {
-    const projectPath = await createProjectFixture("2.7.0", createMutationStage());
+    const projectPath = await createProjectFixture("2.8.0", createMutationStage());
 
     expect(runCli("tool", "invoke", "get_all_nodes", "--project", projectPath, "--input", "{}")).toMatchObject({
       status: 0,
@@ -934,7 +934,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   }, 90_000);
 
   it("preserves recognize_image dependency failure as its normal result", async () => {
-    const projectPath = await createProjectFixture("2.7.0", [
+    const projectPath = await createProjectFixture("2.8.0", [
       {
         _: "ImageNode",
         uuid: "55555555-5555-4555-8555-555555555555",
@@ -977,7 +977,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   it("uses the saved model credentials and attachment for recognize_image", async () => {
     const attachmentId = "66666666-6666-4666-8666-666666666666";
     const projectPath = await createProjectFixture(
-      "2.7.0",
+      "2.8.0",
       [
         {
           _: "ImageNode",
@@ -1141,7 +1141,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   }, 15_000);
 
   it("restores stable Project Object References across independent CLI processes", async () => {
-    const projectPath = await createProjectFixture("2.7.0", [
+    const projectPath = await createProjectFixture("2.8.0", [
       {
         _: "TextNode",
         uuid: "11111111-1111-4111-8111-111111111111",
@@ -1180,8 +1180,8 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   }, 300_000);
 
   it("keeps snapshots for two different Projects updated concurrently", async () => {
-    const firstProjectPath = await createProjectFixture("2.7.0", createMutationStage().slice(0, 1));
-    const secondProjectPath = await createProjectFixture("2.7.0", createMutationStage().slice(1, 2));
+    const firstProjectPath = await createProjectFixture("2.8.0", createMutationStage().slice(0, 1));
+    const secondProjectPath = await createProjectFixture("2.8.0", createMutationStage().slice(1, 2));
 
     const [first, second] = await Promise.all(
       [firstProjectPath, secondProjectPath].map((projectPath) =>
@@ -1223,7 +1223,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   });
 
   it("reports a read-only Project Object Reference save failure", async () => {
-    const projectPath = await createProjectFixture("2.7.0", [
+    const projectPath = await createProjectFixture("2.8.0", [
       {
         _: "TextNode",
         uuid: "22222222-2222-4222-8222-222222222222",
@@ -1258,7 +1258,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   }, 15_000);
 
   it("persists a representative closed Project mutation through the shared executor", async () => {
-    const projectPath = await createProjectFixture("2.7.0", createMutationStage());
+    const projectPath = await createProjectFixture("2.8.0", createMutationStage());
     const before = readFileSync(projectPath);
     const discovered = runCli("tool", "invoke", "get_all_nodes", "--project", projectPath, "--input", "{}");
 
@@ -1291,7 +1291,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   }, 20_000);
 
   it("expands a closed Project tree without desktop-only effects or services", async () => {
-    const projectPath = await createProjectFixture("2.7.0", createMutationStage());
+    const projectPath = await createProjectFixture("2.8.0", createMutationStage());
     expect(runCli("tool", "invoke", "get_all_nodes", "--project", projectPath, "--input", "{}")).toMatchObject({
       status: 0,
       stderr: "",
@@ -1310,7 +1310,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   }, 20_000);
 
   it("preserves a stale Project Object Reference error after a deleted object is saved", async () => {
-    const projectPath = await createProjectFixture("2.7.0", createMutationStage());
+    const projectPath = await createProjectFixture("2.8.0", createMutationStage());
     expect(runCli("tool", "invoke", "get_all_nodes", "--project", projectPath, "--input", "{}")).toMatchObject({
       status: 0,
       stderr: "",
@@ -1340,7 +1340,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   }, 20_000);
 
   it("does not save a normal semantic failure when the Project remains unchanged", async () => {
-    const projectPath = await createProjectFixture("2.7.0", createMutationStage());
+    const projectPath = await createProjectFixture("2.8.0", createMutationStage());
     expect(runCli("tool", "invoke", "get_all_nodes", "--project", projectPath, "--input", "{}")).toMatchObject({
       status: 0,
       stderr: "",
@@ -1371,7 +1371,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   }, 15_000);
 
   it("persists a mutating tool's partial result exactly as returned", async () => {
-    const projectPath = await createProjectFixture("2.7.0", createMutationStage());
+    const projectPath = await createProjectFixture("2.8.0", createMutationStage());
     expect(runCli("tool", "invoke", "get_all_nodes", "--project", projectPath, "--input", "{}")).toMatchObject({
       status: 0,
       stderr: "",
@@ -1408,7 +1408,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   }, 20_000);
 
   it("does not save the Project or new references when the shared executor throws", async () => {
-    const projectPath = await createProjectFixture("2.7.0", createMutationStage());
+    const projectPath = await createProjectFixture("2.8.0", createMutationStage());
     expect(runCli("tool", "invoke", "get_all_nodes", "--project", projectPath, "--input", "{}")).toMatchObject({
       status: 0,
       stderr: "",
@@ -1438,7 +1438,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   }, 15_000);
 
   it("does not save new references when Project.save() fails", async () => {
-    const projectPath = await createProjectFixture("2.7.0", createMutationStage());
+    const projectPath = await createProjectFixture("2.8.0", createMutationStage());
     expect(runCli("tool", "invoke", "get_all_nodes", "--project", projectPath, "--input", "{}")).toMatchObject({
       status: 0,
       stderr: "",
@@ -1467,7 +1467,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   }, 15_000);
 
   it("reports a saved Project when the following reference snapshot save fails", async () => {
-    const projectPath = await createProjectFixture("2.7.0", createMutationStage());
+    const projectPath = await createProjectFixture("2.8.0", createMutationStage());
     expect(runCli("tool", "invoke", "get_all_nodes", "--project", projectPath, "--input", "{}")).toMatchObject({
       status: 0,
       stderr: "",
@@ -1750,7 +1750,7 @@ process.stdout.write(JSON.stringify({ status: "error", code: "PROJECT_LOAD_FAILE
   );
 
   it("does not save a closed Project or print partial success after handled cancellation", async () => {
-    const projectPath = await createProjectFixture("2.7.0", createMutationStage());
+    const projectPath = await createProjectFixture("2.8.0", createMutationStage());
     const projectBefore = readFileSync(projectPath);
     const invocation = spawnCliEntryProcess(
       {},

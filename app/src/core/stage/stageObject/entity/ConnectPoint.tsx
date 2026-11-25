@@ -77,6 +77,9 @@ export class ConnectPoint extends ConnectableEntity {
         new Rectangle(Vector.getZero(), Vector.same(ConnectPoint.CONNECT_POINT_SHRINK_RADIUS * 2)),
       ]),
       details = [],
+      createdAt = undefined as number | undefined,
+      updatedAt = undefined as number | undefined,
+      tableFields = undefined as Record<string, unknown> | undefined,
     },
     public unknown = false,
   ) {
@@ -84,6 +87,7 @@ export class ConnectPoint extends ConnectableEntity {
     this.uuid = uuid;
     this.collisionBox = collisionBox;
     this.details = details;
+    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
   }
 
   move(delta: Vector): void {

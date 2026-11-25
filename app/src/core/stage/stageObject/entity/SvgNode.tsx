@@ -37,11 +37,15 @@ export class SvgNode extends ConnectableEntity implements ResizeAble {
       collisionBox = new CollisionBox([new Rectangle(Vector.getZero(), Vector.getZero())]),
       scale = 1,
       color = Color.Transparent,
+      createdAt = undefined as number | undefined,
+      updatedAt = undefined as number | undefined,
+      tableFields = undefined as Record<string, unknown> | undefined,
     },
   ) {
     super();
     this.uuid = uuid;
     this.details = details;
+    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
     this.scale = scale;
     this.attachmentId = attachmentId;
     this.collisionBox = collisionBox;

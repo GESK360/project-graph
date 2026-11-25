@@ -45,7 +45,7 @@ Rust 主要负责本地文件等系统能力；绝大部分业务逻辑在前端
 - `controlService/` — 输入控制、快捷键、框选、自动布局等
 - `dataFileService/` — 工程文件读写
 - `dataGenerateService/` — 数据生成
-- `dataManageService/` — 内容搜索、复制、AI、节点工具等
+- `dataManageService/` — 内容搜索、复制、AI、节点工具、多维表格（`stageTableService/`）等
 - `feedbackService/` — 特效、音效、舞台样式、颜色
 - `Settings.tsx` 等 — 设置、主题、菜单、教程等全局服务
 
@@ -130,3 +130,8 @@ fix: 减弱节点创建动画
 AI 工具：<实际使用的 AI 工具名称>
 AI 模型：<实际使用的模型名称及版本>
 ```
+
+## Handoff & Local Desktop Testing
+
+- 多维表格架构、已落地的产品规则与避坑说明见根目录 `HANDOFF-多维表格.md`（同步维护于 Antigravity 工作区入口 `d:\Library Files D\antigravity\flux graph`）。
+- 本地桌面测试默认可执行文件为 `app/src-tauri/target/debug/project-graph.exe`（须以独立标识 `liren.project-graph.dev-test` 编译并配合 `1420` 端口纯前端 Vite 服务使用，切勿误杀或覆盖用户正式版目录 `D:\Program Files D\flux graph user`）。

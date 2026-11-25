@@ -57,8 +57,15 @@ export async function createImageNodeFromBlob(
           const section = Section.fromEntities(project, [imageNode]);
           section.text = "";
           project.stageManager.add(section);
+          if (project.getService?.("stageTable")) {
+            project.stageTable.notifyChange();
+          }
         }
-      : undefined,
+      : () => {
+          if (project.getService?.("stageTable")) {
+            project.stageTable.notifyChange();
+          }
+        },
   );
 
   project.stageManager.add(imageNode);
@@ -71,6 +78,10 @@ export async function createImageNodeFromBlob(
         containingSections[0].collisionBox.getRectangle(),
       ),
     );
+  }
+  project.historyManager?.recordStep?.();
+  if (project.getService?.("stageTable")) {
+    project.stageTable.notifyChange();
   }
 
   return { node: imageNode, width, height };

@@ -52,6 +52,7 @@ import { AIEngine } from "@/core/service/dataManageService/aiEngine/AIEngine";
 import { ComplexityDetector } from "@/core/service/dataManageService/ComplexityDetector";
 import { ContentSearch } from "@/core/service/dataManageService/contentSearchEngine/contentSearchEngine";
 import { CopyEngine } from "@/core/service/dataManageService/copyEngine/copyEngine";
+import { StageTableService } from "@/core/service/dataManageService/stageTableService/StageTableService";
 import { Effects } from "@/core/service/feedbackService/effectEngine/effectMachine";
 import { StageStyleManager } from "@/core/service/feedbackService/stageStyle/StageStyleManager";
 import { Camera } from "@/core/stage/Camera";
@@ -137,6 +138,7 @@ export function loadAllServicesBeforeInit(project: Project): void {
   project.loadService(TagManager);
   project.loadService(StageSyncAssociationManager);
   project.loadService(ReferenceManager);
+  project.loadService(StageTableService);
   project.loadService(KeyboardOnlyEngine);
   project.loadService(KeyboardOnlyGraphEngine);
   project.loadService(KeyboardOnlyTreeEngine);

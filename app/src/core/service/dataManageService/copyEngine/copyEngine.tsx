@@ -12,6 +12,7 @@ import { MediaNode } from "@/core/stage/stageObject/entity/MediaNode";
 import { SvgNode } from "@/core/stage/stageObject/entity/SvgNode";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import { Serialized } from "@/types/node";
+import { cloneTableFields } from "@/types/table";
 import { Color, ProgressNumber, Vector } from "@graphif/data-structures";
 import { deserialize, serialize } from "@graphif/serializer";
 import { Rectangle } from "@graphif/shapes";
@@ -136,6 +137,7 @@ export class CopyEngine {
     }
 
     // 粘贴的时候刷新UUID
+    const pasteTimestamp = Date.now();
     for (const stageObject of pasteData) {
       if (stageObject instanceof Entity) {
         // @ts-expect-error 没办法，只能这么做了，否则会出现移动速度2倍甚至n倍的bug
@@ -143,6 +145,9 @@ export class CopyEngine {
         const newUUID = v4();
         const oldUUID = stageObject.uuid;
         stageObject.uuid = newUUID;
+        stageObject.createdAt = pasteTimestamp;
+        stageObject.updatedAt = pasteTimestamp;
+        stageObject.tableFields = cloneTableFields(stageObject.tableFields);
 
         // 更新附件ID（如果是 ImageNode 或 SvgNode）
         if (stageObject instanceof ImageNode) {

@@ -1,6 +1,7 @@
 import { Settings } from "@/core/service/Settings";
 import { StageObject } from "@/core/stage/stageObject/abstract/StageObject";
 import type { Section } from "@/core/stage/stageObject/entity/Section";
+import { cloneTableFields, type TableFields } from "@/types/table";
 import { Vector } from "@graphif/data-structures";
 import { serializable } from "@graphif/serializer";
 import { Circle, Rectangle } from "@graphif/shapes";
@@ -37,6 +38,34 @@ export abstract class Entity extends StageObject {
    */
   @serializable
   public details: Value = [];
+
+  @serializable
+  public createdAt: number = Date.now();
+
+  @serializable
+  public updatedAt: number = this.createdAt;
+
+  @serializable
+  public tableFields: TableFields = {};
+
+  protected restoreEntityTableMetadata(raw?: {
+    createdAt?: number;
+    updatedAt?: number;
+    tableFields?: Record<string, unknown>;
+  }) {
+    const now = Date.now();
+    const created =
+      typeof raw?.createdAt === "number" && Number.isFinite(raw.createdAt) && raw.createdAt > 0
+        ? Math.trunc(raw.createdAt)
+        : now;
+    const updated =
+      typeof raw?.updatedAt === "number" && Number.isFinite(raw.updatedAt) && raw.updatedAt > 0
+        ? Math.trunc(raw.updatedAt)
+        : created;
+    this.createdAt = created;
+    this.updatedAt = updated;
+    this.tableFields = cloneTableFields(raw?.tableFields);
+  }
 
   /**
    * 运行时直接父级 Section。

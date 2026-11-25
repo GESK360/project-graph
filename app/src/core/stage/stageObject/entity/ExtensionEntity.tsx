@@ -50,12 +50,20 @@ export class ExtensionEntity extends ConnectableEntity {
       typeName = "",
       customData = {},
       collisionBox = new CollisionBox([new Rectangle(Vector.getZero(), new Vector(100, 80))]),
+      details = [],
+      createdAt,
+      updatedAt,
+      tableFields,
     }: {
       uuid?: string;
       extensionId?: string;
       typeName?: string;
       customData?: any;
       collisionBox?: CollisionBox;
+      details?: any;
+      createdAt?: number;
+      updatedAt?: number;
+      tableFields?: Record<string, unknown>;
     } = {},
   ) {
     super();
@@ -64,6 +72,8 @@ export class ExtensionEntity extends ConnectableEntity {
     this.typeName = typeName;
     this.customData = customData;
     this.collisionBox = collisionBox;
+    this.details = details;
+    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
   }
 
   public get rectangle(): Rectangle {

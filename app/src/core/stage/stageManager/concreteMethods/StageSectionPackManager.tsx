@@ -9,6 +9,8 @@ import {
 import { Settings } from "@/core/service/Settings";
 import { Entity } from "@/core/stage/stageObject/abstract/StageEntity";
 import { Edge } from "@/core/stage/stageObject/association/Edge";
+import { MultiTargetUndirectedEdge } from "@/core/stage/stageObject/association/MutiTargetUndirectedEdge";
+import { SyncAssociation } from "@/core/stage/stageObject/association/SyncAssociation";
 import type { LineEdge } from "@/core/stage/stageObject/association/LineEdge";
 import { Section } from "@/core/stage/stageObject/entity/Section";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
@@ -221,13 +223,34 @@ export class SectionPackManager {
     // 获取这个节点的父级Section
     const fatherSection = textNode.parentSection;
     const newSection = new Section(this.project, {
+      uuid: textNode.uuid,
       text: textNode.text,
       collisionBox: textNode.collisionBox,
       color: textNode.color,
       details: textNode.details,
       borderStyle: Settings.sectionInitBorderStyle,
+      createdAt: textNode.createdAt,
+      updatedAt: textNode.updatedAt,
+      tableFields: textNode.tableFields,
     });
     newSection.adjustLocationAndSize();
+
+    // 原地替换原来的 textNode，保持 UUID 与表格行身份一致
+    const stageIndex = this.project.stage.indexOf(textNode);
+    if (stageIndex !== -1) {
+      this.project.stage[stageIndex] = newSection;
+    } else {
+      this.project.stage.push(newSection);
+    }
+    if (fatherSection) {
+      const childIdx = fatherSection.children.indexOf(textNode);
+      if (childIdx !== -1) {
+        fatherSection.children[childIdx] = newSection;
+      } else {
+        this.project.sectionInOutManager.attachEntityToSection(newSection, fatherSection);
+      }
+      newSection.parentSection = fatherSection;
+    }
 
     // 创建左上角和右下角的质点
     if (addConnectPoints) {
@@ -258,12 +281,6 @@ export class SectionPackManager {
       this.project.sectionInOutManager.goInSection([topLeftPoint, bottomRightPoint], newSection);
     }
 
-    // 将新的Section加入舞台
-    this.project.stageManager.add(newSection);
-    if (fatherSection) {
-      this.project.sectionInOutManager.goInSection([newSection], fatherSection);
-    }
-
     if (!ignoreEdges) {
       for (const edge of this.project.stageManager.getAssociations()) {
         if (edge instanceof Edge) {
@@ -273,18 +290,28 @@ export class SectionPackManager {
           if (edge.source.uuid === textNode.uuid) {
             edge.source = newSection;
           }
+        } else if (edge instanceof MultiTargetUndirectedEdge || edge instanceof SyncAssociation) {
+          for (let i = 0; i < edge.associationList.length; i++) {
+            if (edge.associationList[i].uuid === textNode.uuid) {
+              edge.associationList[i] = newSection;
+            }
+          }
+        }
+      }
+    } else {
+      // ignoreEdges 为 true 时清理关联到原 textNode 的边
+      for (const edge of [...this.project.stageManager.getAssociations()]) {
+        if (edge instanceof Edge && (edge.source === textNode || edge.target === textNode)) {
+          this.project.stageManager.delete(edge);
         }
       }
     }
-    // 删除原来的textNode
-    if (skipHistory) {
-      // 直接调用底层方法，避免触发 recordStep（由调用方统一记录）
-      this.project.deleteManager.deleteEntities([textNode]);
-    } else {
-      this.project.stageManager.deleteEntities([textNode]);
-    }
+    this.project.stageManager.updateReferences();
     // 更新section的碰撞箱
     newSection.adjustLocationAndSize();
+    if (!skipHistory) {
+      this.project.historyManager.recordStep();
+    }
     return newSection;
   }
 
@@ -321,6 +348,10 @@ export class SectionPackManager {
         details: section.details,
         collisionBox: new CollisionBox([new Rectangle(sectionLocation.clone(), Vector.getZero())]),
         color: section.color.clone(),
+        borderStyle: section.borderStyle,
+        createdAt: section.createdAt,
+        updatedAt: section.updatedAt,
+        tableFields: section.tableFields,
       });
       // 将textNode添加到舞台
       this.project.stageManager.add(textNode);

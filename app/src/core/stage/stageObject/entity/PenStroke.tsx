@@ -75,13 +75,22 @@ export class PenStroke extends Entity {
 
   constructor(
     protected readonly project: Project,
-    { uuid = crypto.randomUUID() as string, segments = [] as PenStrokeSegment[], color = Color.White, width = 5 },
+    {
+      uuid = crypto.randomUUID() as string,
+      segments = [] as PenStrokeSegment[],
+      color = Color.White,
+      width = 5,
+      createdAt = undefined as number | undefined,
+      updatedAt = undefined as number | undefined,
+      tableFields = undefined as Record<string, unknown> | undefined,
+    },
   ) {
     super();
     this.uuid = uuid;
     this.segments = segments;
     this.color = color;
     this.width = width;
+    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
     this.updateCollisionBoxBySegmentList();
   }
 

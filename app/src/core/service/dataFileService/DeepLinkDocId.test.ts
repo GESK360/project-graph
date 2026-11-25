@@ -79,7 +79,7 @@ async function writePrg(path: string, docId: string) {
   const writer = new ZipWriter(new Uint8ArrayWriter(), { level: 0 });
   const encoder = new Encoder();
   await writer.add("stage.msgpack", new Uint8ArrayReader(encoder.encode([])), { level: 0 });
-  await writer.add("metadata.msgpack", new Uint8ArrayReader(encoder.encode({ version: "2.7.0", docId })), {
+  await writer.add("metadata.msgpack", new Uint8ArrayReader(encoder.encode({ version: "2.8.0", docId })), {
     level: 0,
   });
   const content = await writer.close();

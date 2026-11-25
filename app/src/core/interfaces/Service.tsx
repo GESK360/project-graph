@@ -6,6 +6,11 @@ export interface Service {
   dispose?(): void | Promise<void>;
 }
 
+export interface FileStatInfo {
+  createdAt?: number;
+  modifiedAt?: number;
+}
+
 export interface FileSystemProvider {
   read(uri: URI): Promise<Uint8Array>;
   readDir(uri: URI): Promise<DirEntry[]>;
@@ -14,4 +19,5 @@ export interface FileSystemProvider {
   exists(uri: URI): Promise<boolean>;
   mkdir(uri: URI): Promise<void>;
   rename(oldUri: URI, newUri: URI): Promise<void>;
+  stat?(uri: URI): Promise<FileStatInfo | undefined>;
 }

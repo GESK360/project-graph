@@ -261,6 +261,9 @@ export class CollaborationService implements Service {
       if (references) this.project.references = references;
       this.project.stageManager.updateReferences();
       this.project.historyManager.clearHistory();
+      if (this.project.getService("stageTable")) {
+        this.project.stageTable.resetAfterStageRestore();
+      }
       this.ackMap = cloneStageMap(doc);
     } finally {
       this.applyingRemote = false;

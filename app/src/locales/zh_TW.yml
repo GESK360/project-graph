@@ -52,6 +52,105 @@ findWindow:
   useRegex: 使用正則表達式
   invalidRegex: 正則表達式無效
 
+stageTable:
+  expandPanel: 展開多維表格
+  collapsePanel: 收起多維表格
+  defaultViewName: 原始表
+  addViewPlaceholder: 新建視圖
+  jumpToNode: 跳轉到節點
+  emptyCanvas: 當前畫布暫無節點
+  relationPlaceholder: 選擇節點...
+  searchNodePlaceholder: 搜索畫布節點...
+  noMatchingNodes: 沒有匹配的節點
+  removeRelation: 移除關聯
+  clearOuter: 移出分組框（設為空）
+  toolbar:
+    addRow: 添加一行
+    properties: 屬性
+    filter: 篩選
+    group: 分組
+    sort: 排序
+    rowHeight: 行高
+  propertiesPopover:
+    searchPlaceholder: 查找屬性...
+  columns:
+    name: 名稱
+    images: 圖片
+    createdAt: 創建時間
+    updatedAt: 最後編輯時間
+    parents: 父節點
+    children: 子節點
+    outer: 外節點
+    inner: 內節點
+  columnTypes:
+    text: 文本
+    number: 數字
+    date: 日期
+    select: 單選
+    multi_select: 多選
+    formula: 公式
+  headerMenu:
+    editField: 修改字段
+    insertField: 插入字段
+    insertLeft: 向左插入
+    insertRight: 向右插入
+    duplicate: 複製字段
+    copySuffix: 副本
+    autoFitWidth: 自適應列寬
+    freeze: 凍結至本列
+    unfreeze: 取消凍結
+    hide: 隱藏字段
+    delete: 刪除字段
+  fieldTypePicker:
+    title: 選擇字段類型
+    navHint: 選擇
+    confirmHint: 完成
+    tabAddNext: 再添加一列
+  insertFieldPopover:
+    titlePlaceholder: 字段標題
+  columnGroups:
+    menuLabel: 字段編組
+    defaultName: 基礎信息
+    createGroup: 新建字段編組
+    manageGroup: 管理字段編組
+    groupNameLabel: 編組名稱
+    includedColumns: 包含的列
+    removeFromGroup: 移出當前編組
+    dissolveGroup: 解散編組
+  addColumnPopover:
+    triggerAria: 新建自定義列
+    namePlaceholder: 字段名稱（可選）
+    typeLabel: 字段類型
+    create: 新建
+  fieldDialog:
+    title: 修改字段
+    nameLabel: 字段名稱
+    typeLabel: 字段類型
+    systemLocked: 系統屬性
+    delete: 刪除字段
+    confirm: 確定
+    cancel: 取消
+    save: 保存
+  imagesCell:
+    add: 添加圖片
+    remove: 移除圖片
+  dateCell:
+    clear: 清除
+  selectCell:
+    searchOrAddPlaceholder: 查找或添加選項
+    createPrefix: 創建
+    removeOption: 移除選項
+    emptyHint: 輸入名稱並回車創建選項
+  fallbackLabels:
+    unnamedNode: 未命名節點
+    unnamedSection: 未命名分組框
+    image: "[圖片]"
+    svg: "[SVG]"
+    media: "[媒體]"
+    url: "[鏈接]"
+    latex: "[公式]"
+    reference: "[引用塊]"
+
 projectStatus:
   emptyCanvas: 畫布裡沒有節點
   noVisibleNodes: 當前視野內沒有可見節點，點擊按鈕復位

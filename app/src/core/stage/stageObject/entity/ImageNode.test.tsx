@@ -8,6 +8,7 @@ vi.mock("@/core/stage/stageObject/abstract/ConnectableEntity", () => ({
     details = [];
     parentSection = null;
     updateFatherSectionByMove() {}
+    restoreEntityTableMetadata() {}
   },
 }));
 vi.mock("@/core/service/Settings", () => ({

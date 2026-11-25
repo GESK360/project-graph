@@ -105,11 +105,15 @@ export class UrlNode extends ConnectableEntity {
       url = "",
       collisionBox = new CollisionBox([new Rectangle(Vector.getZero(), new Vector(UrlNode.width, UrlNode.height))]),
       color = Color.Transparent,
+      createdAt = undefined as number | undefined,
+      updatedAt = undefined as number | undefined,
+      tableFields = undefined as Record<string, unknown> | undefined,
     },
   ) {
     super();
     this.uuid = uuid;
     this.details = details;
+    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
     this.title = title;
     this.url = url;
     this.color = color;

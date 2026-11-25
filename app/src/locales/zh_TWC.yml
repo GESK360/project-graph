@@ -48,6 +48,105 @@ findWindow:
   useRegex: 使用正規表示式
   invalidRegex: 正規表示式無效
 
+stageTable:
+  expandPanel: 展開多維表格
+  collapsePanel: 收合多維表格
+  defaultViewName: 原始表
+  addViewPlaceholder: 新增檢視
+  jumpToNode: 跳到節點
+  emptyCanvas: 目前畫布暫無節點
+  relationPlaceholder: 選擇節點...
+  searchNodePlaceholder: 搜尋畫布節點...
+  noMatchingNodes: 沒有符合的節點
+  removeRelation: 移除關聯
+  clearOuter: 移出群組框（設為空）
+  toolbar:
+    addRow: 新增一列
+    properties: 屬性
+    filter: 篩選
+    group: 分組
+    sort: 排序
+    rowHeight: 列高
+  propertiesPopover:
+    searchPlaceholder: 尋找屬性...
+  columns:
+    name: 名稱
+    images: 圖片
+    createdAt: 建立時間
+    updatedAt: 最後編輯時間
+    parents: 父節點
+    children: 子節點
+    outer: 外節點
+    inner: 內節點
+  columnTypes:
+    text: 文字
+    number: 數字
+    date: 日期
+    select: 單選
+    multi_select: 多選
+    formula: 公式
+  headerMenu:
+    editField: 修改欄位
+    insertField: 插入欄位
+    insertLeft: 向左插入
+    insertRight: 向右插入
+    duplicate: 複製欄位
+    copySuffix: 副本
+    autoFitWidth: 自動調整欄寬
+    freeze: 凍結至此欄
+    unfreeze: 取消凍結
+    hide: 隱藏欄位
+    delete: 刪除欄位
+  fieldTypePicker:
+    title: 選擇欄位類型
+    navHint: 選擇
+    confirmHint: 完成
+    tabAddNext: 再新增一欄
+  insertFieldPopover:
+    titlePlaceholder: 欄位標題
+  columnGroups:
+    menuLabel: 欄位編組
+    defaultName: 基礎資訊
+    createGroup: 新增欄位編組
+    manageGroup: 管理欄位編組
+    groupNameLabel: 編組名稱
+    includedColumns: 包含的欄位
+    removeFromGroup: 移出目前編組
+    dissolveGroup: 解散編組
+  addColumnPopover:
+    triggerAria: 新增自訂欄位
+    namePlaceholder: 欄位名稱（選填）
+    typeLabel: 欄位類型
+    create: 新增
+  fieldDialog:
+    title: 修改欄位
+    nameLabel: 欄位名稱
+    typeLabel: 欄位類型
+    systemLocked: 系統屬性
+    delete: 刪除欄位
+    confirm: 確定
+    cancel: 取消
+    save: 儲存
+  imagesCell:
+    add: 新增圖片
+    remove: 移除圖片
+  dateCell:
+    clear: 清除
+  selectCell:
+    searchOrAddPlaceholder: 尋找或新增選項
+    createPrefix: 建立
+    removeOption: 移除選項
+    emptyHint: 輸入名稱並按 Enter 建立選項
+  fallbackLabels:
+    unnamedNode: 未命名節點
+    unnamedSection: 未命名群組框
+    image: "[圖片]"
+    svg: "[SVG]"
+    media: "[媒體]"
+    url: "[連結]"
+    latex: "[公式]"
+    reference: "[引用區塊]"
+
 projectStatus:
   nodes: "{{count}} 節點"
   edges: "{{count}} 連線"

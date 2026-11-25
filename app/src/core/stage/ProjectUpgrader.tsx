@@ -336,13 +336,36 @@ export namespace ProjectUpgrader {
     return data;
   }
 
+  export interface UpgradeTimestampDefaults {
+    defaultCreatedAt?: number;
+    defaultUpdatedAt?: number;
+  }
+
+  const SERIALIZED_ENTITY_CLASSES = new Set([
+    "TextNode",
+    "Section",
+    "ConnectPoint",
+    "ImageNode",
+    "UrlNode",
+    "LatexNode",
+    "MediaNode",
+    "SvgNode",
+    "ReferenceBlockNode",
+    "ExtensionEntity",
+    "PenStroke",
+  ]);
+
   /**
    * N版本的prg文件升级，从任意N版本升级到最新N版本
    * @param data 原始N版本数据
    * @param metadata 原始metadata
    * @returns 升级后的N版本数据和metadata
    */
-  export function upgradeNAnyToNLatest(data: any[], metadata: any): [any[], PrgMetadata] {
+  export function upgradeNAnyToNLatest(
+    data: any[],
+    metadata: any,
+    options?: UpgradeTimestampDefaults,
+  ): [any[], PrgMetadata] {
     const currentVersion = metadata?.version || "2.0.0";
 
     // 如果版本小于 2.1.0，需要升级
@@ -378,6 +401,11 @@ export namespace ProjectUpgrader {
     // 如果版本小于 2.7.0，需要升级
     if (compareProjectVersions(currentVersion, "2.7.0") < 0) {
       [data, metadata] = convertN7toN8(data, metadata);
+    }
+
+    // 如果版本小于 2.8.0，需要升级
+    if (compareProjectVersions(currentVersion, "2.8.0") < 0) {
+      [data, metadata] = convertN8toN9(data, metadata, options);
     }
 
     return [data, metadata];
@@ -506,6 +534,56 @@ export namespace ProjectUpgrader {
       }
     }
     return [data, { ...metadata, version: "2.7.0" }];
+  }
+
+  /**
+   * 将 2.7.0 版本升级到 2.8.0 版本
+   * 为所有实体补充 createdAt / updatedAt / tableFields 字段，存量节点统一按文件时间初始化。
+   */
+  function convertN8toN9(data: any[], metadata: any, options?: UpgradeTimestampDefaults): [any[], PrgMetadata] {
+    const fallbackNow = Date.now();
+    const initCreatedAt =
+      typeof options?.defaultCreatedAt === "number" &&
+      Number.isFinite(options.defaultCreatedAt) &&
+      options.defaultCreatedAt > 0
+        ? Math.trunc(options.defaultCreatedAt)
+        : typeof options?.defaultUpdatedAt === "number" &&
+            Number.isFinite(options.defaultUpdatedAt) &&
+            options.defaultUpdatedAt > 0
+          ? Math.trunc(options.defaultUpdatedAt)
+          : fallbackNow;
+    const initUpdatedAt =
+      typeof options?.defaultUpdatedAt === "number" &&
+      Number.isFinite(options.defaultUpdatedAt) &&
+      options.defaultUpdatedAt > 0
+        ? Math.trunc(options.defaultUpdatedAt)
+        : initCreatedAt;
+
+    const visit = (node: any) => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        for (const child of node) visit(child);
+        return;
+      }
+      if (typeof node._ === "string" && SERIALIZED_ENTITY_CLASSES.has(node._)) {
+        if (typeof node.createdAt !== "number" || !Number.isFinite(node.createdAt) || node.createdAt <= 0) {
+          node.createdAt = initCreatedAt;
+        }
+        if (typeof node.updatedAt !== "number" || !Number.isFinite(node.updatedAt) || node.updatedAt <= 0) {
+          node.updatedAt = initUpdatedAt;
+        }
+        if (!node.tableFields || typeof node.tableFields !== "object" || Array.isArray(node.tableFields)) {
+          node.tableFields = {};
+        }
+      }
+      for (const key of Object.keys(node)) {
+        if (key === "_" || key === "$" || key === "tableFields" || key === "details") continue;
+        visit(node[key]);
+      }
+    };
+
+    visit(data);
+    return [data, { ...metadata, version: "2.8.0" }];
   }
 
   /**

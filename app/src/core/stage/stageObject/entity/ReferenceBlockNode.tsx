@@ -61,6 +61,9 @@ export class ReferenceBlockNode extends ConnectableEntity implements ResizeAble 
       scale = 1,
       attachmentId = "",
       details = [],
+      createdAt = undefined as number | undefined,
+      updatedAt = undefined as number | undefined,
+      tableFields = undefined as Record<string, unknown> | undefined,
     },
     public unknown = false,
   ) {
@@ -72,6 +75,7 @@ export class ReferenceBlockNode extends ConnectableEntity implements ResizeAble 
     this.scale = scale;
     this.attachmentId = attachmentId;
     this.details = details;
+    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
 
     // 如果已经有attachmentId，直接加载图片
     if (attachmentId) {

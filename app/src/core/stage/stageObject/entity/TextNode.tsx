@@ -11,6 +11,7 @@ import { Color, Vector } from "@graphif/data-structures";
 import { id, passExtraAtArg1, passObject, serializable } from "@graphif/serializer";
 import { Rectangle } from "@graphif/shapes";
 import type { Value } from "platejs";
+import type { TableFields } from "@/types/table";
 
 /**
  *
@@ -129,6 +130,9 @@ export class TextNode extends ConnectableEntity implements ResizeAble {
       fontWeight = "",
       borderStyle = "solid" as "solid" | "dashed" | "none",
       isBranchCollapsed = false,
+      createdAt,
+      updatedAt,
+      tableFields,
     }: {
       uuid?: string;
       text?: string;
@@ -141,6 +145,9 @@ export class TextNode extends ConnectableEntity implements ResizeAble {
       fontWeight?: string;
       borderStyle?: "solid" | "dashed" | "none";
       isBranchCollapsed?: boolean;
+      createdAt?: number;
+      updatedAt?: number;
+      tableFields?: TableFields;
     },
     public unknown = false,
   ) {
@@ -148,6 +155,7 @@ export class TextNode extends ConnectableEntity implements ResizeAble {
     this.uuid = uuid;
     this.text = text;
     this.details = details;
+    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
     this.collisionBox = collisionBox;
     this.color = color;
     this.sizeAdjust = sizeAdjust;

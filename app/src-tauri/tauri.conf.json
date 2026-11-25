@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Flux Graph",
-  "version": "4.6.9",
+  "version": "5.0.0",
   "identifier": "liren.project-graph",
   "build": {
     "beforeDevCommand": "pnpm --filter @graphif/project-graph dev",

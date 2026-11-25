@@ -9,6 +9,7 @@ import { Vector } from "@graphif/data-structures";
 import { id, passExtraAtArg1, passObject, serializable } from "@graphif/serializer";
 import { Rectangle } from "@graphif/shapes";
 import type { Value } from "platejs";
+import type { TableFields } from "@/types/table";
 
 type ImageNodeOptions = {
   uuid?: string;
@@ -17,6 +18,9 @@ type ImageNodeOptions = {
   attachmentId?: string;
   scale?: number;
   isBackground?: boolean;
+  createdAt?: number;
+  updatedAt?: number;
+  tableFields?: TableFields;
 };
 
 /**
@@ -81,6 +85,9 @@ export class ImageNode extends ConnectableEntity implements ResizeAble {
       attachmentId = "",
       scale = 1,
       isBackground = false,
+      createdAt,
+      updatedAt,
+      tableFields,
     }: ImageNodeOptions,
     public unknown = false,
     public onReady?: () => void,
@@ -89,6 +96,7 @@ export class ImageNode extends ConnectableEntity implements ResizeAble {
     this.uuid = uuid;
     this.collisionBox = collisionBox;
     this.details = details;
+    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
     this.attachmentId = attachmentId;
     this.scale = scale;
     this.isBackground = isBackground;

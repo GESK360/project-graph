@@ -54,6 +54,9 @@ export class DeleteManager {
       handler?.(entity);
     }
     this.project.stageManager.updateReferences();
+    if (this.project.getService?.("stageTable")) {
+      this.project.stageTable.notifyChange();
+    }
   }
 
   private findDeleteHandler(object: StageObject) {
