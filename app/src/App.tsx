@@ -1,6 +1,7 @@
 import appIcon from "@/assets/icon.png";
 import MyContextMenuContent from "@/components/context-menu-content";
 import FloatingTabs from "@/components/floating-tabs";
+import { GlobalImageLightbox } from "@/components/image-lightbox";
 import PieMenu from "@/components/pie-menu";
 import ThemeModeSwitch from "@/components/theme-mode-switch";
 import { Button } from "@/components/ui/button";
@@ -509,6 +510,7 @@ export default function App() {
         {activeResourceTab instanceof Project ? <DropWindowCover project={activeResourceTab} /> : null}
 
         <CommandPalette zoomStyle={zoomStyle} />
+        <GlobalImageLightbox />
         <RenderOverlays />
         {/* macOS uses native decorated-window resize regions; Tauri resize dragging is unsupported there. */}
         {!isMac && <WindowResizeHandles />}

@@ -457,6 +457,7 @@ export const settingsSchema = z.object({
         icon: "Palette",
       },
       { type: "item", id: "packEntityToSection", icon: "Box" },
+      { type: "item", id: "pasteImageIntoNode", icon: "ImagePlus" },
       { type: "item", id: "createUndirectedEdgeFromEntities", icon: "Asterisk" },
       { type: "item", id: "createMTUEdgeConvex", icon: "SquareRoundCorner" },
       { type: "item", id: "createTextNodeFromMouseLocation", icon: "TextSelect" },

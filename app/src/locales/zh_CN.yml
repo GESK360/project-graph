@@ -219,6 +219,129 @@ stageTable:
     url: "[链接]"
     latex: "[公式]"
     reference: "[引用块]"
+  views:
+    createViewTitle: 新建视图
+    createViewHint: 同一个多维表格可创建多个视图，共享画布节点数据并独立保存布局、筛选、排序与展示设置
+    type_table: 表格视图
+    type_kanban: 看板视图
+    type_gantt: 甘特视图
+    type_gallery: 画册视图
+    type_calendar: 日历视图
+    defaultName_table: 表格
+    defaultName_kanban: 看板
+    defaultName_gantt: 甘特
+    defaultName_gallery: 画册
+    defaultName_calendar: 日历
+    manageView: 管理视图
+    renameView: 重命名
+    duplicateView: 复制视图
+    deleteView: 删除视图
+    unnamedRecord: 未命名记录
+    editRecord: 编辑记录
+    pickDate: 选择日期...
+    showFieldNames: 显示字段名
+    cardFields: 卡片显示字段
+    colorBy: 颜色依据
+    defaultColor: 默认颜色
+  kanban:
+    settings: 看板设置
+    displayOptions: 展示设置
+    showCover: 显示封面图片
+    hideEmptyGroups: 隐藏空分组
+    groupBy: 分组依据
+    selectGroupField: 选择分组依据字段
+    noGrouping: 不分组
+    createSelectGroupField: 新建单选分组字段
+    defaultGroupColumnName: 状态
+    sampleOptionTodo: 待办
+    sampleOptionDoing: 进行中
+    sampleOptionDone: 已完成
+    ungrouped: 未分组
+    itemCount: "{{count}}项"
+    addCard: 添加卡片
+    addCardConfirm: 添加
+    cardTitlePlaceholder: 输入卡片名称，回车创建...
+    addGroup: 新建分组
+    groupNamePlaceholder: 输入分组名称，回车创建...
+  gantt:
+    tableSettings: 表格设置
+    leftTableFields: 左侧表格显示字段
+    settings: 甘特设置
+    startDateField: 开始时间字段
+    endDateField: 结束时间字段
+    singleDayMode: 无（仅单日）
+    createDateColumns: 新建开始/结束日期字段
+    defaultStartColName: 开始日期
+    defaultEndColName: 结束日期
+    showBarLabel: 显示任务名称
+    showDuration: 显示持续天数
+    highlightWeekends: 高亮周末
+    basicInfo: 基础信息
+    collapseTable: 收起左侧表格
+    expandTable: 展开左侧表格
+    monthHeader: "{{year}}年{{month}}月"
+    scale_week: 周
+    scale_month: 月
+    scale_quarter: 季
+    scale_year: 年
+    durationDays: "{{count}}天"
+    clickToSchedule: 点击时间轴排期
+  gallery:
+    addRecord: 添加记录
+    settings: 画册设置
+    coverSettings: 封面与卡片
+    coverSource: 封面图片
+    coverMode_images: 图片列
+    coverMode_none: 不显示
+    coverFit: 图片适应
+    fit_cover: 裁剪填充
+    fit_contain: 完整显示
+    cardSize: 卡片尺寸
+    size_small: 小
+    size_medium: 中
+    size_large: 大
+  calendar:
+    settings: 日历设置
+    dateField: 日期字段
+    createDateColumn: 新建日期字段
+    weekStartsOn: 每周起始日
+    calendarHeight: 日历高度
+    height_compact: 紧凑
+    height_medium: 默认
+    height_tall: 宽松
+    prevPeriod: 上一时段
+    nextPeriod: 下一时段
+    today: 今天
+    mode_day: 日
+    mode_week: 周
+    mode_month: 月
+    undatedCount: "无日期记录: {{count}}"
+    noUndated: 暂无无日期记录
+    setToday: 设为今天
+    noRecordsForDay: 当日暂无记录
+    firstOfMonth: "{{month}}月"
+    wdShort_0: 日
+    wdShort_1: 一
+    wdShort_2: 二
+    wdShort_3: 三
+    wdShort_4: 四
+    wdShort_5: 五
+    wdShort_6: 六
+    wdFull_0: 周日
+    wdFull_1: 周一
+    wdFull_2: 周二
+    wdFull_3: 周三
+    wdFull_4: 周四
+    wdFull_5: 周五
+    wdFull_6: 周六
+  lightbox:
+    prevImage: 上一张图片
+    nextImage: 下一张图片
+    zoomIn: 放大
+    zoomOut: 缩小
+    resetZoom: 重置缩放
+    currentNodeScope: "当前节点 ({{count}})"
+    allImagesScope: "全部图片 ({{count}})"
 
 projectStatus:
   emptyCanvas: 画布里没有节点
@@ -2290,6 +2413,9 @@ keyBinds:
   paste:
     title: 粘贴
     description: 按下后，粘贴剪贴板内容
+  pasteImageIntoNode:
+    title: 粘贴图片到节点
+    description: 将剪贴板中的图片直接粘贴进选中或右键命中的节点/分组框中
   changeTagBySelected:
     title: 添加或删除标签
     description: 按下后，为所有选中的实体添加或移除标签

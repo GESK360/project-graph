@@ -215,6 +215,129 @@ stageTable:
     url: "[Tautan]"
     latex: "[Rumus]"
     reference: "[Referensi]"
+  views:
+    createViewTitle: Tampilan Baru
+    createViewHint: Buat beberapa tampilan pada tabel yang sama. Semua tampilan berbagi data kanvas dengan tata letak, filter, dan urutan terpisah.
+    type_table: Tampilan Tabel
+    type_kanban: Tampilan Kanban
+    type_gantt: Tampilan Gantt
+    type_gallery: Tampilan Galeri
+    type_calendar: Tampilan Kalender
+    defaultName_table: Tabel
+    defaultName_kanban: Kanban
+    defaultName_gantt: Gantt
+    defaultName_gallery: Galeri
+    defaultName_calendar: Kalender
+    manageView: Kelola tampilan
+    renameView: Ganti nama
+    duplicateView: Duplikat tampilan
+    deleteView: Hapus tampilan
+    unnamedRecord: Catatan tanpa nama
+    editRecord: Edit catatan
+    pickDate: Pilih tanggal...
+    showFieldNames: Tampilkan nama kolom
+    cardFields: Kolom kartu
+    colorBy: Warna berdasarkan
+    defaultColor: Warna default
+  kanban:
+    settings: Pengaturan Kanban
+    displayOptions: Opsi tampilan
+    showCover: Tampilkan gambar sampul
+    hideEmptyGroups: Sembunyikan grup kosong
+    groupBy: Kelompokkan
+    selectGroupField: Kolom pengelompokan
+    noGrouping: Tanpa pengelompokan
+    createSelectGroupField: Buat kolom pilihan tunggal
+    defaultGroupColumnName: Status
+    sampleOptionTodo: Akan Dikerjakan
+    sampleOptionDoing: Sedang Berjalan
+    sampleOptionDone: Selesai
+    ungrouped: Tanpa grup
+    itemCount: "{{count}} item"
+    addCard: Tambah kartu
+    addCardConfirm: Tambah
+    cardTitlePlaceholder: Judul kartu, tekan Enter...
+    addGroup: Grup baru
+    groupNamePlaceholder: Nama grup, tekan Enter...
+  gantt:
+    tableSettings: Pengaturan Tabel
+    leftTableFields: Kolom tabel kiri
+    settings: Pengaturan Gantt
+    startDateField: Kolom tanggal mulai
+    endDateField: Kolom tanggal selesai
+    singleDayMode: Tidak ada (satu hari)
+    createDateColumns: Buat kolom Tanggal Mulai/Selesai
+    defaultStartColName: Tanggal Mulai
+    defaultEndColName: Tanggal Selesai
+    showBarLabel: Tampilkan judul
+    showDuration: Tampilkan durasi
+    highlightWeekends: Sorot akhir pekan
+    basicInfo: Informasi Dasar
+    collapseTable: Lipat tabel kiri
+    expandTable: Bentangkan tabel kiri
+    monthHeader: "{{year}}-{{month}}"
+    scale_week: Minggu
+    scale_month: Bulan
+    scale_quarter: Kuartal
+    scale_year: Tahun
+    durationDays: "{{count}} hari"
+    clickToSchedule: Klik linimasa untuk menjadwalkan
+  gallery:
+    addRecord: Tambah catatan
+    settings: Pengaturan Galeri
+    coverSettings: Sampul & Kartu
+    coverSource: Sumber sampul
+    coverMode_images: Gambar
+    coverMode_none: Tidak ada
+    coverFit: Penyesuaian gambar
+    fit_cover: Potong
+    fit_contain: Muat penuh
+    cardSize: Ukuran kartu
+    size_small: Kecil
+    size_medium: Sedang
+    size_large: Besar
+  calendar:
+    settings: Pengaturan Kalender
+    dateField: Kolom tanggal
+    createDateColumn: Buat kolom tanggal
+    weekStartsOn: Awal minggu
+    calendarHeight: Tinggi Kalender
+    height_compact: Ringkas
+    height_medium: Default
+    height_tall: Tinggi
+    prevPeriod: Sebelumnya
+    nextPeriod: Berikutnya
+    today: Hari ini
+    mode_day: Hari
+    mode_week: Minggu
+    mode_month: Bulan
+    undatedCount: "Tanpa tanggal: {{count}}"
+    noUndated: Tidak ada catatan tanpa tanggal
+    setToday: Atur hari ini
+    noRecordsForDay: Tidak ada catatan hari ini
+    firstOfMonth: "Bln {{month}}"
+    wdShort_0: Min
+    wdShort_1: Sen
+    wdShort_2: Sel
+    wdShort_3: Rab
+    wdShort_4: Kam
+    wdShort_5: Jum
+    wdShort_6: Sab
+    wdFull_0: Minggu
+    wdFull_1: Senin
+    wdFull_2: Selasa
+    wdFull_3: Rabu
+    wdFull_4: Kamis
+    wdFull_5: Jumat
+    wdFull_6: Sabtu
+  lightbox:
+    prevImage: Gambar sebelumnya
+    nextImage: Gambar berikutnya
+    zoomIn: Perbesar
+    zoomOut: Perkecil
+    resetZoom: Reset zoom
+    currentNodeScope: "Simpul saat ini ({{count}})"
+    allImagesScope: "Semua gambar ({{count}})"
 
 projectStatus:
   nodes: "{{count}} simpul"
@@ -2585,6 +2708,9 @@ keyBinds:
   changeTagBySelected:
     title: Tambah atau Hapus Tag
     description: Setelah ditekan, tambah atau hapus tag untuk semua entitas yang dipilih
+  pasteImageIntoNode:
+    title: Tempel gambar ke simpul
+    description: Tempel gambar dari papan klip langsung ke simpul atau bagian yang dipilih
   pasteWithOriginLocation:
     title: Tempel dengan Posisi Asli
     description: Setelah ditekan, konten yang ditempel akan tumpang tindih dengan posisi asli

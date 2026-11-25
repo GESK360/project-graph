@@ -1,6 +1,8 @@
+import { openGlobalImageLightbox, type ImageLightboxItem } from "@/components/image-lightbox";
 import { Project } from "@/core/Project";
 import { Settings } from "@/core/service/Settings";
 import { ControllerClass } from "@/core/service/controlService/controller/ControllerClass";
+import { ImageNode } from "@/core/stage/stageObject/entity/ImageNode";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import { UrlNode } from "@/core/stage/stageObject/entity/UrlNode";
 import { ReferenceBlockNode } from "@/core/stage/stageObject/entity/ReferenceBlockNode";
@@ -83,8 +85,53 @@ export class ControllerNodeEditClass extends ControllerClass {
         return;
       }
       MediaPlaybackManager.togglePlay(this.project, clickedEntity);
+    } else if (clickedEntity instanceof ImageNode && !clickedEntity.isBackground) {
+      this.openImageNodeLightbox(clickedEntity);
     }
   };
+
+  private openImageNodeLightbox(clickedImage: ImageNode) {
+    const allCanvasImages = this.project.stageManager
+      .getEntities()
+      .filter((e): e is ImageNode => e instanceof ImageNode && !e.isBackground);
+    const toItem = (img: ImageNode): ImageLightboxItem => ({
+      attachmentId: img.attachmentId,
+      label: img.parentSection?.text?.trim() || undefined,
+      imageNodeUuid: img.uuid,
+    });
+    const allItems = allCanvasImages.map(toItem);
+    const allIdx = Math.max(
+      0,
+      allCanvasImages.findIndex((img) => img.uuid === clickedImage.uuid),
+    );
+
+    const parentSection = clickedImage.parentSection;
+    if (parentSection) {
+      const sectionImages = parentSection.children.filter(
+        (child): child is ImageNode => child instanceof ImageNode && !child.isBackground,
+      );
+      if (sectionImages.length > 1) {
+        const secIdx = Math.max(
+          0,
+          sectionImages.findIndex((img) => img.uuid === clickedImage.uuid),
+        );
+        openGlobalImageLightbox({
+          project: this.project,
+          items: sectionImages.map(toItem),
+          initialIndex: secIdx,
+          allItems: allItems.length > sectionImages.length ? allItems : undefined,
+          allInitialIndex: allItems.length > sectionImages.length ? allIdx : undefined,
+        });
+        return;
+      }
+    }
+
+    openGlobalImageLightbox({
+      project: this.project,
+      items: allItems.length > 0 ? allItems : [toItem(clickedImage)],
+      initialIndex: allItems.length > 0 ? allIdx : 0,
+    });
+  }
 
   mouseup = (event: MouseEvent) => {
     if (event.button !== 0) {

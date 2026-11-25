@@ -19,6 +19,12 @@ import {
   StageTableFormulaEditorDialog,
   type FormulaEditorColumnOption,
 } from "@/components/stage-table-formula-editor";
+import { ImageLightbox, type ImageLightboxItem } from "@/components/image-lightbox";
+import { StageTableCalendarView } from "@/components/stage-table-calendar-view";
+import { StageTableGalleryView } from "@/components/stage-table-gallery-view";
+import { StageTableGanttView } from "@/components/stage-table-gantt-view";
+import { StageTableKanbanView } from "@/components/stage-table-kanban-view";
+import { StageTableRecordDialog, ViewTypeIcon } from "@/components/stage-table-views-shared";
 import { hasVolatileFormulas } from "@/core/service/dataManageService/stageTableService/formulaEngine";
 import type { Project } from "@/core/Project";
 import type {
@@ -30,6 +36,7 @@ import type {
 import {
   ALL_SYSTEM_COLUMN_IDS,
   OPTIONAL_SYSTEM_COLUMN_IDS,
+  TABLE_VIEW_TYPES,
   applyTableFiltersAndSort,
   collectColumnFilterBuckets,
   pickNextSelectOptionColor,
@@ -39,9 +46,12 @@ import {
   type TableColumnFilter,
   type TableColumnGroup,
   type TableColumnSchema,
+  type TableRowHeight,
   type TableSelectOption,
   type TableSortConfig,
   type TableSortDirection,
+  type TableViewSchema,
+  type TableViewType,
 } from "@/types/table";
 import { cn } from "@/utils/cn";
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
@@ -80,13 +90,13 @@ import {
   ListChecks,
   ListTree,
   MoreVertical,
+  Pencil,
   Plus,
   PlusCircle,
   Search,
   Sigma,
   SquareDashed,
   SquarePen,
-  Table2,
   Trash2,
   Type,
   UnfoldHorizontal,
@@ -2046,8 +2056,25 @@ export default function StageTablePanel({ project }: { project: Project }) {
   const [renamingGroupDraft, setRenamingGroupDraft] = useState("");
   const groupRenameInputRef = useRef<HTMLInputElement>(null);
 
-  // 图片放大预览弹窗状态
-  const [previewAttachmentId, setPreviewAttachmentId] = useState<string | null>(null);
+  // 图片放大预览灯箱状态（支持底部缩略图跳转、左右箭头切换与节点/全表作用域）
+  const [previewLightboxState, setPreviewLightboxState] = useState<{
+    items: ImageLightboxItem[];
+    initialIndex: number;
+    allItems?: ImageLightboxItem[];
+    allInitialIndex?: number;
+  } | null>(null);
+
+  // 多视图切换、新建菜单、重命名、指针拖拽排序与记录详情弹窗状态
+  const viewBarRef = useRef<HTMLDivElement>(null);
+  const suppressViewClickRef = useRef(false);
+  const [addViewPopoverOpen, setAddViewPopoverOpen] = useState(false);
+  const [viewMenuOpenId, setViewMenuOpenId] = useState<string | null>(null);
+  const [renamingViewId, setRenamingViewId] = useState<string | null>(null);
+  const [renamingViewDraft, setRenamingViewDraft] = useState("");
+  const viewRenameInputRef = useRef<HTMLInputElement>(null);
+  const [draggingViewId, setDraggingViewId] = useState<string | null>(null);
+  const [dropViewHint, setDropViewHint] = useState<{ targetViewId: string; position: "before" | "after" } | null>(null);
+  const [recordDialogRowUuid, setRecordDialogRowUuid] = useState<string | null>(null);
 
   // 表头拖拽重排状态（首列「名称」固定不可移动）
   const headerRowRef = useRef<HTMLTableRowElement>(null);
@@ -2158,6 +2185,16 @@ export default function StageTablePanel({ project }: { project: Project }) {
     }
   }, [renamingGroupId]);
 
+  useEffect(() => {
+    if (renamingViewId) {
+      const id = requestAnimationFrame(() => {
+        viewRenameInputRef.current?.focus();
+        viewRenameInputRef.current?.select();
+      });
+      return () => cancelAnimationFrame(id);
+    }
+  }, [renamingViewId]);
+
   const hasVolatileFormulaCols = project.getService?.("stageTable")
     ? hasVolatileFormulas(project.stageTable.getColumns?.() ?? [])
     : false;
@@ -2175,6 +2212,9 @@ export default function StageTablePanel({ project }: { project: Project }) {
   }
 
   const activeView = project.stageTable.getActiveView();
+  const views: TableViewSchema[] = project.stageTable.getViews?.() ?? project.table?.views ?? [activeView];
+  const activeViewType: TableViewType = activeView.type ?? "table";
+  const tableRowHeight: TableRowHeight = activeView.rowHeight ?? "medium";
   const customColumns = project.stageTable.getColumns?.() ?? [];
   const customColumnMap = new Map<string, TableColumnSchema>(customColumns.map((col) => [col.id, col]));
 
@@ -3226,6 +3266,189 @@ export default function StageTablePanel({ project }: { project: Project }) {
     );
   };
 
+  const selectedRowIdsForViews = new Set<string>(
+    selection.mode === "all"
+      ? rows.map((r) => r.uuid)
+      : selection.mode === "rows"
+        ? selection.rowIds
+        : selection.mode === "cells"
+          ? extractRowIdsFromCells(selection.cells)
+          : [],
+  );
+
+  const handleViewSelectRows = (uuids: string[], focusCamera?: boolean) => {
+    if (uuids.length === 0) {
+      clearSelection(true);
+      return;
+    }
+    setSelection({
+      mode: "rows",
+      rowIds: new Set(uuids),
+      colIds: new Set<string>(),
+      cells: new Set<string>(),
+      anchorRowId: uuids[0],
+      anchorColId: null,
+      activeCell: null,
+    });
+    syncSelectedRowsToCanvas(uuids, focusCamera);
+  };
+
+  const commitRenameView = (viewId: string) => {
+    const trimmed = renamingViewDraft.trim();
+    if (trimmed) {
+      project.stageTable.renameView?.(viewId, trimmed);
+    }
+    setRenamingViewId(null);
+  };
+
+  const handleCreateView = (type: TableViewType) => {
+    project.stageTable.createView?.({
+      type,
+      name: t(`views.defaultName_${type}`),
+    });
+    setAddViewPopoverOpen(false);
+    setSelection(EMPTY_SELECTION);
+  };
+
+  const handleTableAddRow = () => {
+    const created = project.stageTable.createRow?.({ text: "" });
+    if (created) {
+      handleViewSelectRows([created.uuid], false);
+      requestAnimationFrame(() => scrollRowIntoViewIfNeeded(created.uuid));
+    }
+  };
+
+  const tableRowHeightClass = tableRowHeight === "compact" ? "h-8" : tableRowHeight === "tall" ? "h-14" : "h-10";
+
+  const openImagePreview = (attachmentId: string, sourceRowUuid?: string) => {
+    const allTableImages: ImageLightboxItem[] = [];
+    for (const r of rows) {
+      const label = getDisplayLabel(r, t);
+      for (const img of r.images ?? []) {
+        allTableImages.push({
+          attachmentId: img.attachmentId,
+          label,
+          rowUuid: r.uuid,
+          imageNodeUuid: img.uuid,
+        });
+      }
+    }
+
+    const findIdx = (list: ImageLightboxItem[]) => {
+      const exact = sourceRowUuid
+        ? list.findIndex((item) => item.attachmentId === attachmentId && item.rowUuid === sourceRowUuid)
+        : -1;
+      if (exact >= 0) return exact;
+      const byAtt = list.findIndex((item) => item.attachmentId === attachmentId);
+      return byAtt >= 0 ? byAtt : 0;
+    };
+
+    const sourceRow = sourceRowUuid ? rows.find((r) => r.uuid === sourceRowUuid) : undefined;
+    const rowImages: ImageLightboxItem[] = sourceRow
+      ? (sourceRow.images ?? []).map((img) => ({
+          attachmentId: img.attachmentId,
+          label: getDisplayLabel(sourceRow, t),
+          rowUuid: sourceRow.uuid,
+          imageNodeUuid: img.uuid,
+        }))
+      : [];
+
+    if (rowImages.length > 1) {
+      setPreviewLightboxState({
+        items: rowImages,
+        initialIndex: findIdx(rowImages),
+        allItems: allTableImages.length > rowImages.length ? allTableImages : undefined,
+        allInitialIndex: allTableImages.length > rowImages.length ? findIdx(allTableImages) : undefined,
+      });
+      return;
+    }
+
+    if (allTableImages.length > 0) {
+      setPreviewLightboxState({
+        items: allTableImages,
+        initialIndex: findIdx(allTableImages),
+      });
+      return;
+    }
+
+    setPreviewLightboxState({
+      items: [{ attachmentId }],
+      initialIndex: 0,
+    });
+  };
+
+  const startViewTabDragReorder = (viewId: string, event: React.PointerEvent) => {
+    if (event.button !== 0 || renamingViewId === viewId) return;
+    const targetEl = event.target as HTMLElement | null;
+    if (targetEl?.closest("[data-view-tab-menu-trigger], input, button")) {
+      return;
+    }
+
+    const startX = event.clientX;
+    let isDragging = false;
+    let latestHint: { targetViewId: string; position: "before" | "after" } | null = null;
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      if (!isDragging) {
+        if (Math.abs(moveEvent.clientX - startX) < 5) return;
+        isDragging = true;
+        setDraggingViewId(viewId);
+      }
+
+      const barEl = viewBarRef.current;
+      if (!barEl) return;
+      const tabNodes = Array.from(barEl.querySelectorAll<HTMLElement>("[data-stage-table-view-tab]"));
+      let matched: { targetViewId: string; position: "before" | "after" } | null = null;
+
+      for (const tabEl of tabNodes) {
+        const tabId = tabEl.dataset.stageTableViewTab;
+        if (!tabId || tabId === viewId) continue;
+        const rect = tabEl.getBoundingClientRect();
+        if (moveEvent.clientX >= rect.left && moveEvent.clientX <= rect.right) {
+          const mid = rect.left + rect.width / 2;
+          matched = { targetViewId: tabId, position: moveEvent.clientX < mid ? "before" : "after" };
+          break;
+        }
+      }
+
+      if (!matched && tabNodes.length > 0) {
+        const firstOther = tabNodes.find((n) => n.dataset.stageTableViewTab && n.dataset.stageTableViewTab !== viewId);
+        const lastOther = [...tabNodes]
+          .reverse()
+          .find((n) => n.dataset.stageTableViewTab && n.dataset.stageTableViewTab !== viewId);
+        if (firstOther && moveEvent.clientX < firstOther.getBoundingClientRect().left) {
+          matched = { targetViewId: firstOther.dataset.stageTableViewTab!, position: "before" };
+        } else if (lastOther && moveEvent.clientX > lastOther.getBoundingClientRect().right) {
+          matched = { targetViewId: lastOther.dataset.stageTableViewTab!, position: "after" };
+        }
+      }
+
+      latestHint = matched;
+      setDropViewHint(matched);
+    };
+
+    const onPointerUp = () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      if (isDragging) {
+        suppressViewClickRef.current = true;
+        queueMicrotask(() => {
+          suppressViewClickRef.current = false;
+        });
+        if (latestHint) {
+          project.stageTable.reorderViews?.(viewId, latestHint.targetViewId, latestHint.position);
+        }
+      }
+      setDraggingViewId(null);
+      setDropViewHint(null);
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  };
+
+  const recordDialogRow = recordDialogRowUuid ? (allRows.find((r) => r.uuid === recordDialogRowUuid) ?? null) : null;
+
   return (
     <div
       ref={panelRef}
@@ -3237,1363 +3460,1732 @@ export default function StageTablePanel({ project }: { project: Project }) {
       onMouseUp={(e) => e.stopPropagation()}
       className="bg-background relative flex size-full min-h-0 min-w-0 flex-col overflow-hidden outline-none"
     >
-      {/* 第一行：顶部视图栏（默认「原始表」，不可删除，右侧 + 占位） */}
-      <div className="border-border/60 flex h-10 shrink-0 items-center gap-1 border-b px-3 pt-1">
-        <div className="bg-accent text-accent-foreground inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium select-none">
-          <Table2 className="size-3.5 shrink-0" />
-          <span>{activeView.name || t("defaultViewName")}</span>
-          <MoreVertical className="text-muted-foreground size-3 shrink-0 opacity-70" />
-        </div>
+      {/* 第一行：顶部多视图标签栏（支持多视图创建、切换、重命名、复制、删除、指针拖拽排序） */}
+      <div
+        ref={viewBarRef}
+        data-stage-table-view-bar
+        className="border-border/60 flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b px-3 pt-1 [scrollbar-width:none]"
+      >
+        {views.map((view) => {
+          const isActive = view.id === activeView.id;
+          const isRenaming = renamingViewId === view.id;
+          const canDelete = view.deletable && views.length > 1;
+          const showBefore = dropViewHint?.targetViewId === view.id && dropViewHint.position === "before";
+          const showAfter = dropViewHint?.targetViewId === view.id && dropViewHint.position === "after";
 
-        <div className="bg-border mx-1 h-3.5 w-px shrink-0" />
-
-        <button
-          type="button"
-          aria-label={t("addViewPlaceholder")}
-          className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-6 items-center justify-center rounded-md transition-colors"
-        >
-          <Plus className="size-3.5" />
-        </button>
-      </div>
-
-      {/* 第二行：功能区 */}
-      <div className="border-border/60 flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b px-3 text-xs [scrollbar-width:none]">
-        <button
-          type="button"
-          className="text-primary hover:bg-accent inline-flex h-6 shrink-0 items-center gap-1 rounded px-2 font-medium transition-colors"
-        >
-          <PlusCircle className="size-3.5" />
-          <span>{t("toolbar.addRow")}</span>
-        </button>
-
-        <div className="bg-border mx-0.5 h-3.5 w-px shrink-0" />
-
-        {/* 功能区 - 属性弹窗（含系统列 + 自定义列显隐与编辑入口） */}
-        <Popover
-          onOpenChange={(open) => {
-            if (!open) setPropertySearch("");
-          }}
-        >
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              className="text-foreground hover:bg-accent data-[state=open]:bg-accent inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded px-2 transition-colors"
-            >
-              <List className="size-3.5" />
-              <span>{t("toolbar.properties")}</span>
-            </button>
-          </PopoverTrigger>
-          <PopoverContent
-            align="start"
-            className="w-60 p-0"
-            onWheel={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <div className="border-b p-2">
-              <div className="relative flex items-center">
-                <Search className="text-muted-foreground pointer-events-none absolute left-2 size-3.5" />
-                <Input
-                  value={propertySearch}
-                  onChange={(e) => setPropertySearch(e.target.value)}
-                  onKeyDown={(e) => e.stopPropagation()}
-                  placeholder={t("propertiesPopover.searchPlaceholder")}
-                  className="h-7 pl-7 text-xs"
-                />
-              </div>
-            </div>
-            <div className="max-h-72 overflow-y-auto p-1">
-              {filteredPropertyIds.map((colId) => {
-                const isPrimary = colId === "name";
-                const checked = project.stageTable.isColumnVisible(colId);
-                const customCol = customColumnMap.get(colId);
-                return (
-                  <div
-                    key={colId}
-                    className={cn(
-                      "hover:bg-accent flex items-center gap-2 rounded-sm px-2 py-1.5 text-xs select-none",
-                      isPrimary && "opacity-85",
-                    )}
-                  >
-                    <Checkbox
-                      checked={checked}
-                      disabled={isPrimary}
-                      onCheckedChange={(val) => {
-                        if (!isPrimary) {
-                          project.stageTable.setColumnVisible(colId, Boolean(val));
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!isPrimary) {
-                          project.stageTable.setColumnVisible(colId, !checked);
-                        }
-                      }}
-                      className={cn(
-                        "flex min-w-0 flex-1 items-center gap-2 text-left",
-                        isPrimary ? "cursor-default" : "cursor-pointer",
-                      )}
-                    >
-                      <ColumnIcon columnId={colId} customColumn={customCol} />
-                      <span className="min-w-0 flex-1 truncate">{getColumnLabel(colId)}</span>
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={t("headerMenu.editField")}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openEditFieldPanel(colId, "floating");
-                      }}
-                      className="text-muted-foreground/70 hover:bg-background hover:text-foreground rounded p-0.5"
-                    >
-                      <ChevronRight className="size-3.5 shrink-0" />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </PopoverContent>
-        </Popover>
-
-        <div className="bg-border mx-0.5 h-3.5 w-px shrink-0" />
-
-        <Popover>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              data-stage-table-filter-toolbar
-              className={cn(
-                "hover:bg-accent inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded px-2 transition-colors",
-                activeFilters.length > 0
-                  ? "bg-primary/15 text-primary font-medium"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <Filter className="size-3.5" />
-              <span>
-                {activeFilters.length > 0 ? `${t("toolbar.filter")} (${activeFilters.length})` : t("toolbar.filter")}
-              </span>
-            </button>
-          </PopoverTrigger>
-          <PopoverContent
-            align="start"
-            className="w-60 p-2 text-xs select-none"
-            onWheel={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <div className="mb-1.5 flex items-center justify-between px-1">
-              <span className="text-muted-foreground text-[11px] font-medium">{t("sortFilter.filterTitle")}</span>
-              {activeFilters.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => project.stageTable.clearAllFilters?.()}
-                  className="text-primary cursor-pointer text-[11px] hover:underline"
-                >
-                  {t("sortFilter.clearAllFilters")}
-                </button>
-              )}
-            </div>
-            {activeFilters.length === 0 && (
-              <div className="text-muted-foreground mb-1.5 px-1 text-[11px]">{t("sortFilter.noActiveFilters")}</div>
-            )}
-            <div className="max-h-56 space-y-0.5 overflow-y-auto">
-              {visibleColumnIds.map((cid) => {
-                const hasFilter = activeFilterByColId.has(cid);
-                return (
-                  <div
-                    key={cid}
-                    className="hover:bg-accent flex items-center gap-2 rounded-sm px-2 py-1 text-xs transition-colors"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setFilterPopoverColId(cid)}
-                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
-                    >
-                      <ColumnIcon columnId={cid} customColumn={customColumnMap.get(cid)} />
-                      <span className={cn("min-w-0 flex-1 truncate", hasFilter && "text-primary font-medium")}>
-                        {getColumnLabel(cid)}
-                      </span>
-                    </button>
-                    {hasFilter && (
-                      <button
-                        type="button"
-                        aria-label={t("sortFilter.clearFilter")}
-                        onClick={() => project.stageTable.setColumnFilter?.(cid, null)}
-                        className="text-muted-foreground hover:text-foreground cursor-pointer rounded p-0.5"
-                      >
-                        <X className="size-3" />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </PopoverContent>
-        </Popover>
-
-        <button
-          type="button"
-          className="text-muted-foreground hover:bg-accent hover:text-foreground inline-flex h-6 shrink-0 items-center gap-1 rounded px-2 transition-colors"
-        >
-          <ListTree className="size-3.5" />
-          <span>{t("toolbar.group")}</span>
-        </button>
-
-        <Popover>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              data-stage-table-sort-toolbar
-              className={cn(
-                "hover:bg-accent inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded px-2 transition-colors",
-                activeSort ? "bg-primary/15 text-primary font-medium" : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <ArrowUpDown className="size-3.5" />
-              <span>
-                {activeSort
-                  ? `${t("toolbar.sort")}: ${getColumnLabel(activeSort.columnId)} ${activeSort.direction === "asc" ? "↑" : "↓"}`
-                  : t("toolbar.sort")}
-              </span>
-            </button>
-          </PopoverTrigger>
-          <PopoverContent
-            align="start"
-            className="w-64 p-2 text-xs select-none"
-            onWheel={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <div className="mb-1.5 flex items-center justify-between px-1">
-              <span className="text-muted-foreground text-[11px] font-medium">{t("sortFilter.sortTitle")}</span>
-              {activeSort && (
-                <button
-                  type="button"
-                  onClick={() => project.stageTable.setSort?.(null)}
-                  className="text-primary cursor-pointer text-[11px] hover:underline"
-                >
-                  {t("sortFilter.clearSort")}
-                </button>
-              )}
-            </div>
-            <div className="max-h-56 space-y-0.5 overflow-y-auto">
-              {visibleColumnIds.map((cid) => {
-                const isAsc = activeSort?.columnId === cid && activeSort.direction === "asc";
-                const isDesc = activeSort?.columnId === cid && activeSort.direction === "desc";
-                return (
-                  <div
-                    key={cid}
-                    className="hover:bg-accent/60 flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-xs"
-                  >
-                    <ColumnIcon columnId={cid} customColumn={customColumnMap.get(cid)} />
-                    <span className={cn("min-w-0 flex-1 truncate", (isAsc || isDesc) && "text-primary font-medium")}>
-                      {getColumnLabel(cid)}
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={t("sortFilter.sortAsc")}
-                      onClick={() => project.stageTable.setSort?.(isAsc ? null : { columnId: cid, direction: "asc" })}
-                      className={cn(
-                        "flex size-6 cursor-pointer items-center justify-center rounded border transition-colors",
-                        isAsc
-                          ? "border-primary bg-primary/15 text-primary"
-                          : "text-muted-foreground hover:bg-background hover:text-foreground border-transparent",
-                      )}
-                    >
-                      <ArrowUp className="size-3" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={t("sortFilter.sortDesc")}
-                      onClick={() => project.stageTable.setSort?.(isDesc ? null : { columnId: cid, direction: "desc" })}
-                      className={cn(
-                        "flex size-6 cursor-pointer items-center justify-center rounded border transition-colors",
-                        isDesc
-                          ? "border-primary bg-primary/15 text-primary"
-                          : "text-muted-foreground hover:bg-background hover:text-foreground border-transparent",
-                      )}
-                    >
-                      <ArrowDown className="size-3" />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </PopoverContent>
-        </Popover>
-
-        <div className="bg-border mx-0.5 h-3.5 w-px shrink-0" />
-
-        <button
-          type="button"
-          className="text-muted-foreground hover:bg-accent hover:text-foreground inline-flex h-6 shrink-0 items-center gap-1 rounded px-2 transition-colors"
-        >
-          <UnfoldVertical className="size-3.5" />
-          <span>{t("toolbar.rowHeight")}</span>
-        </button>
-
-        {selectionSummaryText && (
-          <div
-            data-stage-table-selection-badge
-            className="bg-primary/12 text-primary ml-auto inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] font-medium select-none"
-          >
-            <span>{selectionSummaryText}</span>
-            <button
-              type="button"
-              aria-label={t("dateCell.clear")}
-              onClick={() =>
-                clearSelection(selection.mode === "rows" || selection.mode === "all" || selection.mode === "cells")
-              }
-              className="hover:bg-primary/20 cursor-pointer rounded-full p-0.5 transition-colors"
-            >
-              <X className="size-3" />
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* 表格主体（tableLayout: fixed + 精确总像素宽，确保调整单列宽度时其它列绝不自动伸缩） */}
-      <TableScrollContainer layoutDepsKey={layoutDepsKey} externalViewportRef={viewportRef}>
-        <table
-          data-stage-table-grid
-          style={{ width: `${totalTableWidth}px`, tableLayout: "fixed" }}
-          className="border-collapse text-left text-xs"
-        >
-          <colgroup>
-            <col style={{ width: `${INDEX_COLUMN_WIDTH}px` }} />
-            {visibleColumnIds.map((colId) => (
-              <col key={colId} style={{ width: `${getColumnWidth(colId)}px` }} />
-            ))}
-            <col style={{ width: `${ADD_COLUMN_WIDTH}px` }} />
-          </colgroup>
-
-          <thead className="bg-muted sticky top-0 z-20">
-            {/* 图 6：跨列合并的顶部分组表头（如「基础信息 / 自我理解 / 后台数据」） */}
-            {hasVisibleColumnGroups && (
-              <tr data-stage-table-group-row className="border-border/60 border-b">
-                <th
-                  style={frozenEndIndex >= 0 ? { left: "0px" } : undefined}
+          return (
+            <ContextMenu key={view.id}>
+              <ContextMenuTrigger asChild>
+                <div
+                  data-stage-table-view-tab={view.id}
+                  data-view-type={view.type}
+                  data-view-active={isActive ? "true" : undefined}
+                  onPointerDown={(e) => startViewTabDragReorder(view.id, e)}
+                  onClick={() => {
+                    if (suppressViewClickRef.current) return;
+                    if (!isActive && !isRenaming) {
+                      project.stageTable.setActiveView?.(view.id);
+                      setSelection(EMPTY_SELECTION);
+                    }
+                  }}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    setRenamingViewId(view.id);
+                    setRenamingViewDraft(view.name);
+                  }}
                   className={cn(
-                    "border-border/50 bg-muted h-7 border-r p-0 select-none",
-                    frozenEndIndex >= 0 && "sticky z-30",
+                    "relative inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs transition-colors select-none",
+                    !isRenaming ? "cursor-grab active:cursor-grabbing" : "cursor-text",
+                    isActive
+                      ? "bg-accent text-accent-foreground font-medium"
+                      : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                    draggingViewId === view.id && "opacity-50",
                   )}
-                />
-                {superHeaderSegments.map((seg) => {
-                  const grp = seg.group;
-                  const isRenamingThis = grp && renamingGroupId === grp.id;
-                  return (
-                    <th
-                      key={seg.key}
-                      colSpan={seg.colIds.length}
-                      style={seg.isFrozen ? { left: `${seg.stickyLeftPx ?? 0}px` } : undefined}
-                      className={cn(
-                        "border-border/50 bg-muted relative h-7 border-r px-2 font-medium select-none",
-                        seg.isFrozen && "sticky z-30",
-                        seg.isFreezeBoundary && "border-r-primary/45 border-r-2",
-                      )}
-                    >
-                      {grp ? (
-                        isRenamingThis ? (
-                          <Input
-                            ref={groupRenameInputRef}
-                            value={renamingGroupDraft}
-                            onChange={(e) => setRenamingGroupDraft(e.target.value)}
-                            onBlur={() => {
-                              if (renamingGroupDraft.trim()) {
-                                project.stageTable.renameColumnGroup?.(grp.id, renamingGroupDraft);
-                              }
-                              setRenamingGroupId(null);
-                            }}
-                            onKeyDown={(e) => {
-                              e.stopPropagation();
-                              if (e.key === "Enter") {
-                                e.preventDefault();
-                                if (renamingGroupDraft.trim()) {
-                                  project.stageTable.renameColumnGroup?.(grp.id, renamingGroupDraft);
-                                }
-                                setRenamingGroupId(null);
-                              } else if (e.key === "Escape") {
-                                e.preventDefault();
-                                setRenamingGroupId(null);
-                              }
-                            }}
-                            className="h-5 px-1.5 py-0 text-center text-[11px]"
-                          />
-                        ) : (
-                          <div
-                            onDoubleClick={() => {
-                              setRenamingGroupId(grp.id);
-                              setRenamingGroupDraft(grp.name);
-                            }}
-                            className="flex h-full w-full items-center justify-center gap-1"
-                          >
-                            <span className="text-foreground/90 truncate text-[11px] font-medium">{grp.name}</span>
-                            <Popover>
-                              <PopoverTrigger asChild>
-                                <button
-                                  type="button"
-                                  data-column-group-menu-trigger={grp.id}
-                                  aria-label={t("columnGroups.manageGroup")}
-                                  className="text-muted-foreground hover:bg-accent hover:text-foreground absolute right-1.5 flex size-4 items-center justify-center rounded-xs transition-colors"
-                                >
-                                  <ChevronDown className="size-3" />
-                                </button>
-                              </PopoverTrigger>
-                              <PopoverContent
-                                align="end"
-                                className="w-56 p-2"
-                                onWheel={(e) => e.stopPropagation()}
-                                onMouseDown={(e) => e.stopPropagation()}
-                              >
-                                <div className="mb-2 space-y-1">
-                                  <div className="text-muted-foreground px-1 text-[11px] font-medium">
-                                    {t("columnGroups.groupNameLabel")}
-                                  </div>
-                                  <Input
-                                    defaultValue={grp.name}
-                                    onBlur={(e) => {
-                                      if (e.target.value.trim()) {
-                                        project.stageTable.renameColumnGroup?.(grp.id, e.target.value);
-                                      }
-                                    }}
-                                    onKeyDown={(e) => {
-                                      e.stopPropagation();
-                                      if (e.key === "Enter") {
-                                        e.preventDefault();
-                                        const val = (e.currentTarget as HTMLInputElement).value;
-                                        if (val.trim()) {
-                                          project.stageTable.renameColumnGroup?.(grp.id, val);
-                                        }
-                                      }
-                                    }}
-                                    className="h-7 text-xs"
-                                  />
-                                </div>
-                                <div className="text-muted-foreground mb-1 px-1 text-[11px] font-medium">
-                                  {t("columnGroups.includedColumns")}
-                                </div>
-                                <div className="max-h-44 space-y-0.5 overflow-y-auto">
-                                  {visibleColumnIds.map((cid) => {
-                                    const inThisGroup = grp.columnIds.includes(cid);
-                                    return (
-                                      <label
-                                        key={cid}
-                                        className="hover:bg-accent flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 text-xs"
-                                      >
-                                        <Checkbox
-                                          checked={inThisGroup}
-                                          onCheckedChange={(checked) => {
-                                            project.stageTable.setColumnInGroup?.(cid, checked ? grp.id : null);
-                                          }}
-                                        />
-                                        <ColumnIcon columnId={cid} customColumn={customColumnMap.get(cid)} />
-                                        <span className="truncate">{getColumnLabel(cid)}</span>
-                                      </label>
-                                    );
-                                  })}
-                                </div>
-                                <div className="border-border/60 mt-2 border-t pt-1.5">
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => project.stageTable.dissolveColumnGroup?.(grp.id)}
-                                    className="text-destructive hover:text-destructive h-7 w-full justify-start gap-1.5 px-2 text-xs"
-                                  >
-                                    <Trash2 className="size-3.5" />
-                                    <span>{t("columnGroups.dissolveGroup")}</span>
-                                  </Button>
-                                </div>
-                              </PopoverContent>
-                            </Popover>
-                          </div>
-                        )
-                      ) : (
-                        <div className="group/ungrp flex h-full w-full items-center justify-center">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const createdGrp = project.stageTable.createColumnGroup?.(
-                                t("columnGroups.defaultName"),
-                                seg.colIds,
-                              );
-                              if (createdGrp) {
-                                setRenamingGroupId(createdGrp.id);
-                                setRenamingGroupDraft(createdGrp.name);
-                              }
-                            }}
-                            className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-[11px] opacity-0 transition-opacity group-hover/ungrp:opacity-100"
-                          >
-                            <Plus className="size-3" />
-                            <span>{t("columnGroups.createGroup")}</span>
-                          </button>
-                        </div>
-                      )}
-                    </th>
-                  );
-                })}
-                <th className="bg-muted h-7 p-0" />
-              </tr>
-            )}
+                >
+                  {showBefore && (
+                    <div className="bg-primary pointer-events-none absolute top-1 bottom-1 left-0 w-0.5 rounded-full" />
+                  )}
+                  {showAfter && (
+                    <div className="bg-primary pointer-events-none absolute top-1 right-0 bottom-1 w-0.5 rounded-full" />
+                  )}
 
-            <tr ref={headerRowRef} className="border-border/60 border-b">
-              {/* 行计数表头（点击全选/取消全选） */}
-              <th
-                data-stage-table-select-all
-                title={t("selection.selectAllAria")}
-                onClick={handleToggleSelectAll}
-                style={frozenEndIndex >= 0 ? { left: "0px" } : undefined}
-                className={cn(
-                  "border-border/50 bg-muted hover:bg-accent/70 h-9 cursor-pointer border-r px-1 text-center text-[11px] font-medium transition-colors select-none",
-                  selection.mode === "all"
-                    ? "text-primary after:bg-primary/18 font-semibold after:pointer-events-none after:absolute after:inset-0"
-                    : "text-muted-foreground/70",
-                  frozenEndIndex >= 0 ? "sticky z-30" : "relative",
-                )}
-              >
-                #
-              </th>
+                  <ViewTypeIcon type={view.type} />
 
-              {/* 数据列表头 */}
-              {visibleColumnIds.map((colId, colIdx) => {
-                const width = getColumnWidth(colId);
-                const customCol = customColumnMap.get(colId);
-                const isNameCol = colId === "name";
-                const isDraggingThis = draggingColId === colId;
-                const showDropBefore = dropHint?.targetColId === colId && dropHint.position === "before";
-                const showDropAfter = dropHint?.targetColId === colId && dropHint.position === "after";
-                const isFrozen = colIdx <= frozenEndIndex;
-                const isFreezeBoundary = colIdx === frozenEndIndex;
-                const isFrozenTarget = frozenColumnId === colId;
-                const isHeaderEditing = editingFieldState?.colId === colId && editingFieldState.anchor === "header";
-                const isCreatingThis = creatingColState?.colId === colId;
-                const currentGroup = groupByColId.get(colId);
-                const isColSelected =
-                  selection.mode === "all" || (selection.mode === "columns" && selection.colIds.has(colId));
-                const colSortDir: TableSortDirection | null =
-                  activeSort?.columnId === colId ? activeSort.direction : null;
-                const colFilter = activeFilterByColId.get(colId) ?? null;
-                const isColFiltered = colFilter !== null;
-                const isFilterMenuOpen = filterPopoverColId === colId;
-
-                return (
-                  <th
-                    key={colId}
-                    data-table-col-id={colId}
-                    data-col-selected={isColSelected ? "true" : undefined}
-                    data-col-sort={colSortDir ?? undefined}
-                    data-col-filtered={isColFiltered ? "true" : undefined}
-                    style={isFrozen ? { left: `${columnLeftOffsets[colIdx]}px` } : undefined}
-                    onPointerDown={(e) => startColumnDragReorder(colId, e)}
-                    className={cn(
-                      "group/th border-border/50 bg-muted text-muted-foreground h-9 border-r p-0 font-medium select-none",
-                      !isNameCol && !isCreatingThis ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
-                      isDraggingThis && "bg-accent/60 opacity-60",
-                      isFrozen ? "sticky z-30" : "relative",
-                      isFreezeBoundary && "border-r-primary/45 border-r-2",
-                      (colSortDir || isColFiltered) && "text-foreground",
-                      isColSelected &&
-                        "text-foreground after:bg-primary/15 after:border-b-primary after:pointer-events-none after:absolute after:inset-0 after:border-b-2",
-                      !isColSelected &&
-                        (colSortDir || isColFiltered || isFilterMenuOpen) &&
-                        "after:bg-primary/10 after:pointer-events-none after:absolute after:inset-0",
-                    )}
-                  >
-                    {/* 锚定在当前列表头下方的图 1「修改字段」或图 4「新建/插入字段」浮层 */}
-                    <Popover
-                      open={isHeaderEditing || isCreatingThis}
-                      onOpenChange={(open) => {
-                        if (!open) {
-                          if (isHeaderEditing) {
-                            setEditTypeDropdownOpen(false);
-                            setEditingFieldState(null);
-                          }
-                          if (isCreatingThis) {
-                            commitCreatingColumn();
-                          }
+                  {isRenaming ? (
+                    <Input
+                      ref={viewRenameInputRef}
+                      data-view-rename-input
+                      value={renamingViewDraft}
+                      onChange={(e) => setRenamingViewDraft(e.target.value)}
+                      onBlur={() => commitRenameView(view.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(e) => {
+                        e.stopPropagation();
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          commitRenameView(view.id);
+                        } else if (e.key === "Escape") {
+                          e.preventDefault();
+                          setRenamingViewId(null);
                         }
                       }}
+                      className="h-5 w-24 px-1.5 py-0 text-xs"
+                    />
+                  ) : (
+                    <span className="max-w-32 truncate">{view.name || t("defaultViewName")}</span>
+                  )}
+
+                  {isActive && !isRenaming && (
+                    <Popover
+                      open={viewMenuOpenId === view.id}
+                      onOpenChange={(open) => setViewMenuOpenId(open ? view.id : null)}
                     >
-                      <PopoverAnchor asChild>
-                        <div data-col-popover-anchor={colId} className="size-full">
-                          {isCreatingThis ? (
-                            /* 图 4：创建/插入字段后的表头内联标题输入框（蓝底线高亮） */
-                            <div className="border-b-primary bg-background/90 flex h-full w-full items-center border-b-2 px-2">
-                              <input
-                                ref={creatingTitleInputRef}
-                                data-creating-col-title-input
-                                value={creatingColState.draftTitle}
-                                onChange={(e) =>
-                                  setCreatingColState({ ...creatingColState, draftTitle: e.target.value })
-                                }
-                                onKeyDown={handleCreateTitleKeyDown}
-                                placeholder={t("insertFieldPopover.titlePlaceholder")}
-                                className="text-foreground placeholder:text-muted-foreground h-full w-full bg-transparent text-center text-xs outline-none"
-                              />
-                            </div>
-                          ) : (
-                            <ContextMenu>
-                              <ContextMenuTrigger asChild>
-                                <div
-                                  onDoubleClick={(e) => {
-                                    const targetEl = e.target as HTMLElement | null;
-                                    if (targetEl?.closest("[data-col-filter-trigger], [data-col-sort-indicator]")) {
-                                      return;
-                                    }
-                                    e.stopPropagation();
-                                    project.stageTable.toggleColumnSort?.(colId);
-                                  }}
-                                  className="hover:bg-accent/40 relative flex h-full w-full items-stretch"
-                                >
-                                  {/* Windows 文件管理器风格顶部居中排序小箭头（向上升序 / 向下排序） */}
-                                  {colSortDir && (
-                                    <button
-                                      type="button"
-                                      data-col-sort-indicator={colId}
-                                      data-sort-direction={colSortDir}
-                                      aria-label={t("sortFilter.toggleSortAria")}
-                                      title={colSortDir === "asc" ? t("sortFilter.sortAsc") : t("sortFilter.sortDesc")}
-                                      onPointerDown={(e) => e.stopPropagation()}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        project.stageTable.toggleColumnSort?.(
-                                          colId,
-                                          colSortDir === "asc" ? "desc" : "asc",
-                                        );
-                                      }}
-                                      className="text-primary hover:bg-primary/15 absolute top-0 left-1/2 z-10 flex h-3.5 w-6 -translate-x-1/2 cursor-pointer items-center justify-center rounded-b transition-colors"
-                                    >
-                                      {colSortDir === "asc" ? (
-                                        <ChevronUp className="size-3 stroke-[2.25]" />
-                                      ) : (
-                                        <ChevronDown className="size-3 stroke-[2.25]" />
-                                      )}
-                                    </button>
-                                  )}
-
-                                  {/* 列标题主体 */}
-                                  <div
-                                    className={cn(
-                                      "flex min-w-0 flex-1 items-center gap-1.5 truncate pr-1 pl-2.5",
-                                      colSortDir && "pt-1.5",
-                                    )}
-                                  >
-                                    <ColumnIcon columnId={colId} customColumn={customCol} />
-                                    <span className="truncate">{getColumnLabel(colId)}</span>
-                                  </div>
-
-                                  {/* 右侧分隔下拉按钮（类 Windows 文件管理器列筛选/排序下拉） */}
-                                  <Popover
-                                    open={isFilterMenuOpen}
-                                    onOpenChange={(open) => setFilterPopoverColId(open ? colId : null)}
-                                  >
-                                    <PopoverTrigger asChild>
-                                      <button
-                                        type="button"
-                                        data-col-filter-trigger={colId}
-                                        aria-label={t("sortFilter.columnFilterAria")}
-                                        onPointerDown={(e) => e.stopPropagation()}
-                                        onClick={(e) => e.stopPropagation()}
-                                        className={cn(
-                                          "relative mr-1 flex w-6 shrink-0 cursor-pointer items-center justify-center border-l transition-all",
-                                          isColFiltered || colSortDir || isFilterMenuOpen
-                                            ? "border-border/70 bg-primary/10 text-primary opacity-100"
-                                            : "text-muted-foreground/80 group-hover/th:border-border/60 hover:bg-accent hover:text-foreground border-transparent opacity-45 group-hover/th:opacity-100",
-                                        )}
-                                      >
-                                        <ChevronDown className="size-3" />
-                                        {isColFiltered && (
-                                          <span className="bg-primary absolute top-1 right-1 size-1.5 rounded-full" />
-                                        )}
-                                      </button>
-                                    </PopoverTrigger>
-                                    <PopoverContent
-                                      align="end"
-                                      sideOffset={4}
-                                      className="w-auto p-0"
-                                      onWheel={(e) => e.stopPropagation()}
-                                      onMouseDown={(e) => e.stopPropagation()}
-                                      onPointerDown={(e) => e.stopPropagation()}
-                                    >
-                                      <ColumnFilterSortPopoverContent
-                                        columnId={colId}
-                                        customCol={customCol}
-                                        allRows={allRows}
-                                        activeSort={activeSort}
-                                        activeFilter={colFilter}
-                                        onSetSort={(nextSort) => project.stageTable.setSort?.(nextSort)}
-                                        onSetFilter={(nextFlt) => project.stageTable.setColumnFilter?.(colId, nextFlt)}
-                                        t={t}
-                                      />
-                                    </PopoverContent>
-                                  </Popover>
-                                </div>
-                              </ContextMenuTrigger>
-
-                              {/* 表头右键菜单（整合图 1 修改字段 + 图 3 左右插入子菜单 + 图 6 字段编组 + 图 5 底部五图标栏） */}
-                              <ContextMenuContent
-                                className="w-52"
-                                onWheel={(e) => e.stopPropagation()}
-                                onMouseDown={(e) => e.stopPropagation()}
-                              >
-                                <ContextMenuItem
-                                  onSelect={() => scheduleAfterContextMenu(() => openEditFieldPanel(colId, "header"))}
-                                  className="text-xs"
-                                >
-                                  <SquarePen className="size-3.5" />
-                                  <span>{t("headerMenu.editField")}</span>
-                                  <span className="text-muted-foreground ml-auto pl-4 text-[11px]">
-                                    {getColumnTypeName(colId)}
-                                  </span>
-                                </ContextMenuItem>
-
-                                {customCol?.type === "formula" && (
-                                  <ContextMenuItem
-                                    onSelect={() => scheduleAfterContextMenu(() => openFormulaEditorForColumn(colId))}
-                                    className="text-xs"
-                                  >
-                                    <FunctionSquare className="size-3.5" />
-                                    <span>{t("formulaEditor.editFormula")}</span>
-                                  </ContextMenuItem>
-                                )}
-
-                                {/* 图 3：插入字段 -> 向左插入 / 向右插入 */}
-                                <ContextMenuSub>
-                                  <ContextMenuSubTrigger inset className="text-xs">
-                                    <span>{t("headerMenu.insertField")}</span>
-                                  </ContextMenuSubTrigger>
-                                  <ContextMenuSubContent
-                                    className="w-36"
-                                    onWheel={(e) => e.stopPropagation()}
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                  >
-                                    <ContextMenuItem
-                                      disabled={isNameCol}
-                                      onSelect={() =>
-                                        scheduleAfterContextMenu(() => triggerInsertNewColumn(colId, "left"))
-                                      }
-                                      className="text-xs"
-                                    >
-                                      <ArrowLeft className="size-3.5" />
-                                      <span>{t("headerMenu.insertLeft")}</span>
-                                    </ContextMenuItem>
-                                    <ContextMenuItem
-                                      onSelect={() =>
-                                        scheduleAfterContextMenu(() => triggerInsertNewColumn(colId, "right"))
-                                      }
-                                      className="text-xs"
-                                    >
-                                      <ArrowRight className="size-3.5" />
-                                      <span>{t("headerMenu.insertRight")}</span>
-                                    </ContextMenuItem>
-                                  </ContextMenuSubContent>
-                                </ContextMenuSub>
-
-                                {/* 图 6：跨列分组表头（字段编组）管理入口 */}
-                                <ContextMenuSub>
-                                  <ContextMenuSubTrigger className="text-xs">
-                                    <FolderPlus className="size-3.5" />
-                                    <span>{t("columnGroups.menuLabel")}</span>
-                                  </ContextMenuSubTrigger>
-                                  <ContextMenuSubContent
-                                    className="w-44"
-                                    onWheel={(e) => e.stopPropagation()}
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                  >
-                                    <ContextMenuItem
-                                      onSelect={() =>
-                                        scheduleAfterContextMenu(() => {
-                                          const grp = project.stageTable.createColumnGroup?.(
-                                            t("columnGroups.defaultName"),
-                                            [colId],
-                                          );
-                                          if (grp) {
-                                            setRenamingGroupId(grp.id);
-                                            setRenamingGroupDraft(grp.name);
-                                          }
-                                        })
-                                      }
-                                      className="text-xs"
-                                    >
-                                      <Plus className="size-3.5" />
-                                      <span>{t("columnGroups.createGroup")}</span>
-                                    </ContextMenuItem>
-
-                                    {columnGroups.length > 0 && <ContextMenuSeparator />}
-
-                                    {columnGroups.map((grp) => {
-                                      const active = currentGroup?.id === grp.id;
-                                      return (
-                                        <ContextMenuItem
-                                          key={grp.id}
-                                          onSelect={() =>
-                                            project.stageTable.setColumnInGroup?.(colId, active ? null : grp.id)
-                                          }
-                                          className="text-xs"
-                                        >
-                                          <span className="flex size-3.5 shrink-0 items-center justify-center">
-                                            {active && <Check className="text-primary size-3.5" />}
-                                          </span>
-                                          <span className="truncate">{grp.name}</span>
-                                        </ContextMenuItem>
-                                      );
-                                    })}
-
-                                    {currentGroup && (
-                                      <>
-                                        <ContextMenuSeparator />
-                                        <ContextMenuItem
-                                          onSelect={() => project.stageTable.setColumnInGroup?.(colId, null)}
-                                          className="text-xs"
-                                        >
-                                          <X className="size-3.5" />
-                                          <span>{t("columnGroups.removeFromGroup")}</span>
-                                        </ContextMenuItem>
-                                        <ContextMenuItem
-                                          variant="destructive"
-                                          onSelect={() => project.stageTable.dissolveColumnGroup?.(currentGroup.id)}
-                                          className="text-xs"
-                                        >
-                                          <Trash2 className="size-3.5" />
-                                          <span>{t("columnGroups.dissolveGroup")}</span>
-                                        </ContextMenuItem>
-                                      </>
-                                    )}
-                                  </ContextMenuSubContent>
-                                </ContextMenuSub>
-
-                                <ContextMenuSeparator />
-
-                                <ContextMenuItem
-                                  onSelect={() => scheduleAfterContextMenu(() => setFilterPopoverColId(colId))}
-                                  className="text-xs"
-                                >
-                                  <Filter className="size-3.5" />
-                                  <span>{t("toolbar.filter")}</span>
-                                </ContextMenuItem>
-
-                                <ContextMenuItem className="text-xs">
-                                  <ListTree className="size-3.5" />
-                                  <span>{t("toolbar.group")}</span>
-                                </ContextMenuItem>
-
-                                <ContextMenuSub>
-                                  <ContextMenuSubTrigger className="text-xs">
-                                    <ArrowUpDown className="size-3.5" />
-                                    <span>{t("toolbar.sort")}</span>
-                                  </ContextMenuSubTrigger>
-                                  <ContextMenuSubContent
-                                    className="w-36"
-                                    onWheel={(e) => e.stopPropagation()}
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                  >
-                                    <ContextMenuItem
-                                      onSelect={() =>
-                                        project.stageTable.setSort?.({ columnId: colId, direction: "asc" })
-                                      }
-                                      className="text-xs"
-                                    >
-                                      <ArrowUp className="size-3.5" />
-                                      <span>{t("sortFilter.sortAsc")}</span>
-                                      {colSortDir === "asc" && <Check className="text-primary ml-auto size-3.5" />}
-                                    </ContextMenuItem>
-                                    <ContextMenuItem
-                                      onSelect={() =>
-                                        project.stageTable.setSort?.({ columnId: colId, direction: "desc" })
-                                      }
-                                      className="text-xs"
-                                    >
-                                      <ArrowDown className="size-3.5" />
-                                      <span>{t("sortFilter.sortDesc")}</span>
-                                      {colSortDir === "desc" && <Check className="text-primary ml-auto size-3.5" />}
-                                    </ContextMenuItem>
-                                    {colSortDir && (
-                                      <>
-                                        <ContextMenuSeparator />
-                                        <ContextMenuItem
-                                          onSelect={() => project.stageTable.setSort?.(null)}
-                                          className="text-xs"
-                                        >
-                                          <X className="size-3.5" />
-                                          <span>{t("sortFilter.clearSort")}</span>
-                                        </ContextMenuItem>
-                                      </>
-                                    )}
-                                  </ContextMenuSubContent>
-                                </ContextMenuSub>
-
-                                <ContextMenuSeparator />
-
-                                {/* 图 5：底部五图标栏（复制 | 自适应列宽 | 冻结 | 隐藏 | 分隔竖线 | 删除） */}
-                                <div
-                                  data-header-menu-bottom-actions
-                                  className="flex items-center justify-between gap-0.5 px-1 py-0.5"
-                                >
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <ContextMenuPrimitive.Item
-                                        disabled={!customCol}
-                                        aria-label={t("headerMenu.duplicate")}
-                                        onSelect={() =>
-                                          project.stageTable.duplicateCustomColumn?.(colId, t("headerMenu.copySuffix"))
-                                        }
-                                        className="text-muted-foreground hover:bg-accent hover:text-foreground focus:bg-accent focus:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-35"
-                                      >
-                                        <CopyPlus className="size-3.5" />
-                                      </ContextMenuPrimitive.Item>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="bottom">{t("headerMenu.duplicate")}</TooltipContent>
-                                  </Tooltip>
-
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <ContextMenuPrimitive.Item
-                                        aria-label={t("headerMenu.autoFitWidth")}
-                                        onSelect={() =>
-                                          project.stageTable.autoFitColumnWidth?.(colId, getColumnLabel(colId))
-                                        }
-                                        className="text-muted-foreground hover:bg-accent hover:text-foreground focus:bg-accent focus:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md outline-none"
-                                      >
-                                        <UnfoldHorizontal className="size-3.5" />
-                                      </ContextMenuPrimitive.Item>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="bottom">{t("headerMenu.autoFitWidth")}</TooltipContent>
-                                  </Tooltip>
-
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <ContextMenuPrimitive.Item
-                                        aria-label={isFrozenTarget ? t("headerMenu.unfreeze") : t("headerMenu.freeze")}
-                                        onSelect={() => project.stageTable.toggleFreezeUpToColumn?.(colId)}
-                                        className={cn(
-                                          "hover:bg-accent hover:text-foreground focus:bg-accent focus:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md outline-none",
-                                          isFrozenTarget ? "bg-accent text-primary" : "text-muted-foreground",
-                                        )}
-                                      >
-                                        <FreezeColumnIcon />
-                                      </ContextMenuPrimitive.Item>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="bottom">
-                                      {isFrozenTarget ? t("headerMenu.unfreeze") : t("headerMenu.freeze")}
-                                    </TooltipContent>
-                                  </Tooltip>
-
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <ContextMenuPrimitive.Item
-                                        disabled={isNameCol}
-                                        aria-label={t("headerMenu.hide")}
-                                        onSelect={() => project.stageTable.setColumnVisible(colId, false)}
-                                        className="text-muted-foreground hover:bg-accent hover:text-foreground focus:bg-accent focus:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-35"
-                                      >
-                                        <EyeOff className="size-3.5" />
-                                      </ContextMenuPrimitive.Item>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="bottom">{t("headerMenu.hide")}</TooltipContent>
-                                  </Tooltip>
-
-                                  <div className="bg-border mx-0.5 h-4 w-px shrink-0" />
-
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <ContextMenuPrimitive.Item
-                                        disabled={!customCol}
-                                        aria-label={t("headerMenu.delete")}
-                                        onSelect={() => project.stageTable.deleteCustomColumn?.(colId)}
-                                        className="text-muted-foreground hover:bg-destructive/15 hover:text-destructive focus:bg-destructive/15 focus:text-destructive flex size-7 cursor-pointer items-center justify-center rounded-md outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-35"
-                                      >
-                                        <Trash2 className="size-3.5" />
-                                      </ContextMenuPrimitive.Item>
-                                    </TooltipTrigger>
-                                    <TooltipContent side="bottom">{t("headerMenu.delete")}</TooltipContent>
-                                  </Tooltip>
-                                </div>
-                              </ContextMenuContent>
-                            </ContextMenu>
-                          )}
-                        </div>
-                      </PopoverAnchor>
-
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          data-view-tab-menu-trigger={view.id}
+                          aria-label={t("views.manageView")}
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-muted-foreground hover:bg-background/70 hover:text-foreground -mr-1 flex size-4 cursor-pointer items-center justify-center rounded transition-colors"
+                        >
+                          <MoreVertical className="size-3 shrink-0" />
+                        </button>
+                      </PopoverTrigger>
                       <PopoverContent
                         align="start"
-                        sideOffset={2}
-                        className="w-auto p-0"
-                        onOpenAutoFocus={(e) => e.preventDefault()}
-                        onFocusOutside={(e) => {
-                          const target = e.target as Element | null;
-                          if (target?.closest?.(`[data-col-popover-anchor="${colId}"]`)) {
-                            e.preventDefault();
-                          }
-                        }}
-                        onPointerDownOutside={(e) => {
-                          const target = e.target as Element | null;
-                          if (
-                            target?.closest?.(`[data-col-popover-anchor="${colId}"]`) ||
-                            target?.closest?.("[data-stage-table-add-col]")
-                          ) {
-                            e.preventDefault();
-                          }
-                        }}
+                        className="w-40 p-1 text-xs select-none"
                         onWheel={(e) => e.stopPropagation()}
                         onMouseDown={(e) => e.stopPropagation()}
                       >
-                        {isHeaderEditing && renderEditFieldFormContent(colId)}
-                        {isCreatingThis && creatingColState && (
-                          <FieldTypeGridPicker
-                            selectedType={creatingColState.selectedType}
-                            onSelectType={(chosenType) => commitCreatingColumn(chosenType)}
-                            showTabNextHint
-                            t={t}
-                          />
-                        )}
+                        <button
+                          type="button"
+                          data-view-action-rename
+                          onClick={() => {
+                            setViewMenuOpenId(null);
+                            setRenamingViewId(view.id);
+                            setRenamingViewDraft(view.name);
+                          }}
+                          className="hover:bg-accent flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left"
+                        >
+                          <Pencil className="size-3.5" />
+                          <span>{t("views.renameView")}</span>
+                        </button>
+                        <button
+                          type="button"
+                          data-view-action-duplicate
+                          onClick={() => {
+                            setViewMenuOpenId(null);
+                            project.stageTable.duplicateView?.(view.id, t("headerMenu.copySuffix"));
+                          }}
+                          className="hover:bg-accent flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left"
+                        >
+                          <CopyPlus className="size-3.5" />
+                          <span>{t("views.duplicateView")}</span>
+                        </button>
+                        <div className="bg-border/70 my-1 h-px" />
+                        <button
+                          type="button"
+                          data-view-action-delete
+                          disabled={!canDelete}
+                          onClick={() => {
+                            setViewMenuOpenId(null);
+                            project.stageTable.deleteView?.(view.id);
+                          }}
+                          className="text-destructive hover:bg-destructive/12 flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left disabled:pointer-events-none disabled:opacity-40"
+                        >
+                          <Trash2 className="size-3.5" />
+                          <span>{t("views.deleteView")}</span>
+                        </button>
                       </PopoverContent>
                     </Popover>
+                  )}
+                </div>
+              </ContextMenuTrigger>
+              <ContextMenuContent
+                className="w-40"
+                onWheel={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <ContextMenuItem
+                  onSelect={() =>
+                    scheduleAfterContextMenu(() => {
+                      setRenamingViewId(view.id);
+                      setRenamingViewDraft(view.name);
+                    })
+                  }
+                  className="text-xs"
+                >
+                  <Pencil className="size-3.5" />
+                  <span>{t("views.renameView")}</span>
+                </ContextMenuItem>
+                <ContextMenuItem
+                  onSelect={() => project.stageTable.duplicateView?.(view.id, t("headerMenu.copySuffix"))}
+                  className="text-xs"
+                >
+                  <CopyPlus className="size-3.5" />
+                  <span>{t("views.duplicateView")}</span>
+                </ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem
+                  variant="destructive"
+                  disabled={!canDelete}
+                  onSelect={() => project.stageTable.deleteView?.(view.id)}
+                  className="text-xs"
+                >
+                  <Trash2 className="size-3.5" />
+                  <span>{t("views.deleteView")}</span>
+                </ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
+          );
+        })}
 
-                    {/* 拖拽落点高亮指示线 */}
-                    {showDropBefore && (
-                      <div className="bg-primary pointer-events-none absolute top-0 bottom-0 left-0 z-30 w-0.5" />
-                    )}
-                    {showDropAfter && (
-                      <div className="bg-primary pointer-events-none absolute top-0 right-0 bottom-0 z-30 w-0.5" />
-                    )}
+        <div className="bg-border mx-1 h-3.5 w-px shrink-0" />
 
-                    {/* 列宽拖拽手柄 */}
-                    <div
-                      role="separator"
-                      data-col-resizer={colId}
-                      aria-orientation="vertical"
-                      onPointerDown={(e) => startColumnResize(colId, width, e)}
-                      className="hover:bg-primary/60 absolute top-0 -right-0.5 bottom-0 z-20 w-1.5 cursor-col-resize"
-                    />
-                  </th>
-                );
-              })}
+        {/* 新建视图菜单（表格视图 / 看板视图 / 甘特视图 / 画册视图 / 日历视图） */}
+        <Popover open={addViewPopoverOpen} onOpenChange={setAddViewPopoverOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              data-stage-table-add-view-btn
+              aria-label={t("addViewPlaceholder")}
+              className="text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors"
+            >
+              <Plus className="size-3.5" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            data-stage-table-add-view-menu
+            className="w-44 p-1.5 text-xs select-none"
+            onWheel={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="text-muted-foreground mb-1 flex items-center gap-1 px-2 py-1 text-[11px] font-medium">
+              <span>{t("views.createViewTitle")}</span>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex cursor-help items-center">
+                    <Info className="size-3 opacity-75" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="right" className="max-w-52 text-xs">
+                  {t("views.createViewHint")}
+                </TooltipContent>
+              </Tooltip>
+            </div>
+            <div className="space-y-0.5">
+              {TABLE_VIEW_TYPES.map((viewType) => (
+                <button
+                  key={viewType}
+                  type="button"
+                  data-create-view-option={viewType}
+                  onClick={() => handleCreateView(viewType)}
+                  className="hover:bg-accent text-foreground flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs transition-colors"
+                >
+                  <ViewTypeIcon type={viewType} className="size-4" />
+                  <span>{t(`views.type_${viewType}`)}</span>
+                </button>
+              ))}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
 
-              {/* 列最右侧 + 号：点击新建自定义列并直接进入图 4 内联标题 + 双列类型选择 */}
-              <th className="border-border/50 bg-muted h-9 p-0 text-center select-none">
+      {/* 按当前激活视图类型渲染功能栏与主体 */}
+      {activeViewType === "kanban" && (
+        <StageTableKanbanView
+          project={project}
+          activeView={activeView}
+          allRows={allRows}
+          rows={rows}
+          allColumnIds={allPropertyIds}
+          visibleColumnIds={visibleColumnIds}
+          customColumns={customColumns}
+          customColumnMap={customColumnMap}
+          activeFilters={activeFilters}
+          activeSort={activeSort}
+          selectedRowIds={selectedRowIdsForViews}
+          getColumnLabel={getColumnLabel}
+          onSelectRows={handleViewSelectRows}
+          onOpenRecord={(uuid) => setRecordDialogRowUuid(uuid)}
+          onPreviewImage={(attId, rowUuid) => openImagePreview(attId, rowUuid)}
+          t={t}
+        />
+      )}
+
+      {activeViewType === "gantt" && (
+        <StageTableGanttView
+          project={project}
+          activeView={activeView}
+          allRows={allRows}
+          rows={rows}
+          allColumnIds={allPropertyIds}
+          visibleColumnIds={visibleColumnIds}
+          customColumns={customColumns}
+          customColumnMap={customColumnMap}
+          activeFilters={activeFilters}
+          activeSort={activeSort}
+          selectedRowIds={selectedRowIdsForViews}
+          getColumnLabel={getColumnLabel}
+          onSelectRows={handleViewSelectRows}
+          onOpenRecord={(uuid) => setRecordDialogRowUuid(uuid)}
+          onPreviewImage={(attId, rowUuid) => openImagePreview(attId, rowUuid)}
+          t={t}
+        />
+      )}
+
+      {activeViewType === "gallery" && (
+        <StageTableGalleryView
+          project={project}
+          activeView={activeView}
+          allRows={allRows}
+          rows={rows}
+          allColumnIds={allPropertyIds}
+          visibleColumnIds={visibleColumnIds}
+          customColumnMap={customColumnMap}
+          activeFilters={activeFilters}
+          activeSort={activeSort}
+          selectedRowIds={selectedRowIdsForViews}
+          getColumnLabel={getColumnLabel}
+          onSelectRows={handleViewSelectRows}
+          onOpenRecord={(uuid) => setRecordDialogRowUuid(uuid)}
+          onPreviewImage={(attId, rowUuid) => openImagePreview(attId, rowUuid)}
+          t={t}
+        />
+      )}
+
+      {activeViewType === "calendar" && (
+        <StageTableCalendarView
+          project={project}
+          activeView={activeView}
+          allRows={allRows}
+          rows={rows}
+          allColumnIds={allPropertyIds}
+          visibleColumnIds={visibleColumnIds}
+          customColumns={customColumns}
+          customColumnMap={customColumnMap}
+          activeFilters={activeFilters}
+          activeSort={activeSort}
+          selectedRowIds={selectedRowIdsForViews}
+          getColumnLabel={getColumnLabel}
+          onSelectRows={handleViewSelectRows}
+          onOpenRecord={(uuid) => setRecordDialogRowUuid(uuid)}
+          onPreviewImage={(attId, rowUuid) => openImagePreview(attId, rowUuid)}
+          t={t}
+        />
+      )}
+
+      {activeViewType === "table" && (
+        <>
+          {/* 第二行：表格视图功能区 */}
+          <div className="border-border/60 flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b px-3 text-xs [scrollbar-width:none]">
+            <button
+              type="button"
+              data-stage-table-add-row
+              onClick={handleTableAddRow}
+              className="text-primary hover:bg-accent inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded px-2 font-medium transition-colors"
+            >
+              <PlusCircle className="size-3.5" />
+              <span>{t("toolbar.addRow")}</span>
+            </button>
+
+            <div className="bg-border mx-0.5 h-3.5 w-px shrink-0" />
+
+            {/* 功能区 - 属性弹窗（含系统列 + 自定义列显隐与编辑入口） */}
+            <Popover
+              onOpenChange={(open) => {
+                if (!open) setPropertySearch("");
+              }}
+            >
+              <PopoverTrigger asChild>
                 <button
                   type="button"
-                  data-stage-table-add-col
-                  aria-label={t("addColumnPopover.triggerAria")}
-                  onClick={() => triggerInsertNewColumn()}
-                  className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-full items-center justify-center transition-colors"
+                  className="text-foreground hover:bg-accent data-[state=open]:bg-accent inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded px-2 transition-colors"
                 >
-                  <Plus className="size-3.5" />
+                  <List className="size-3.5" />
+                  <span>{t("toolbar.properties")}</span>
                 </button>
-              </th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {rows.length === 0 ? (
-              <tr>
-                <td colSpan={visibleColumnIds.length + 2} className="text-muted-foreground py-12 text-center text-xs">
-                  {allRows.length > 0 && activeFilters.length > 0 ? (
-                    <div className="flex flex-col items-center gap-2">
-                      <span>{t("sortFilter.noFilterMatch")}</span>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => project.stageTable.clearAllFilters?.()}
-                        className="h-7 px-3 text-xs"
+              </PopoverTrigger>
+              <PopoverContent
+                align="start"
+                className="w-60 p-0"
+                onWheel={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <div className="border-b p-2">
+                  <div className="relative flex items-center">
+                    <Search className="text-muted-foreground pointer-events-none absolute left-2 size-3.5" />
+                    <Input
+                      value={propertySearch}
+                      onChange={(e) => setPropertySearch(e.target.value)}
+                      onKeyDown={(e) => e.stopPropagation()}
+                      placeholder={t("propertiesPopover.searchPlaceholder")}
+                      className="h-7 pl-7 text-xs"
+                    />
+                  </div>
+                </div>
+                <div className="max-h-72 overflow-y-auto p-1">
+                  {filteredPropertyIds.map((colId) => {
+                    const isPrimary = colId === "name";
+                    const checked = project.stageTable.isColumnVisible(colId);
+                    const customCol = customColumnMap.get(colId);
+                    return (
+                      <div
+                        key={colId}
+                        className={cn(
+                          "hover:bg-accent flex items-center gap-2 rounded-sm px-2 py-1.5 text-xs select-none",
+                          isPrimary && "opacity-85",
+                        )}
                       >
-                        {t("sortFilter.clearAllFilters")}
-                      </Button>
-                    </div>
-                  ) : (
-                    t("emptyCanvas")
-                  )}
-                </td>
-              </tr>
-            ) : (
-              rows.map((row, rowIndex) => {
-                const isRowSelected =
-                  selection.mode === "all" || (selection.mode === "rows" && selection.rowIds.has(row.uuid));
-                return (
-                  <tr
-                    key={row.uuid}
-                    data-stage-table-row-id={row.uuid}
-                    data-row-selected={isRowSelected ? "true" : undefined}
-                    className={cn(
-                      "group/row border-border/40 border-b transition-colors",
-                      !isRowSelected && "hover:bg-muted/30",
-                    )}
-                  >
-                    {/* 从上到下 1, 2, 3... 行计数（点击/Shift/Ctrl/拖动选中单行或多行并同步画布） */}
-                    <td
-                      data-stage-table-row-index
-                      data-row-id={row.uuid}
-                      onPointerDown={(e) => handleRowIndexPointerDown(row.uuid, e)}
-                      style={frozenEndIndex >= 0 ? { left: "0px" } : undefined}
-                      className={cn(
-                        "border-border/40 hover:bg-accent/60 cursor-pointer border-r px-1 py-1 text-center text-[11px] tabular-nums transition-colors select-none",
-                        frozenEndIndex >= 0 ? "bg-background sticky z-10" : "relative",
-                        frozenEndIndex >= 0 && !isRowSelected && "group-hover/row:bg-muted",
-                        isRowSelected
-                          ? "text-primary after:bg-primary/18 font-semibold shadow-[inset_3px_0_0_var(--primary)] after:pointer-events-none after:absolute after:inset-0"
-                          : "text-muted-foreground",
-                      )}
-                    >
-                      {rowIndex + 1}
-                    </td>
-
-                    {visibleColumnIds.map((colId, colIdx) => {
-                      const customCol = customColumnMap.get(colId);
-                      const isFrozen = colIdx <= frozenEndIndex;
-                      const isFreezeBoundary = colIdx === frozenEndIndex;
-                      const isColSelected =
-                        selection.mode === "all" || (selection.mode === "columns" && selection.colIds.has(colId));
-                      const isCellSelected =
-                        selection.mode === "cells" && selection.cells.has(makeCellKey(row.uuid, colId));
-                      const isActiveCell =
-                        selection.mode === "cells" &&
-                        selection.activeCell?.rowId === row.uuid &&
-                        selection.activeCell?.colId === colId;
-                      const isSelectedAny = isRowSelected || isColSelected || isCellSelected;
-
-                      return (
-                        <td
-                          key={colId}
-                          data-stage-table-cell
-                          data-row-id={row.uuid}
-                          data-col-id={colId}
-                          data-cell-selected={isSelectedAny ? "true" : undefined}
-                          data-cell-active={isActiveCell ? "true" : undefined}
-                          onPointerDown={(e) => handleCellPointerDown(row.uuid, colId, e)}
-                          onClickCapture={(e) => {
-                            if (suppressCellClickRef.current || e.shiftKey || e.ctrlKey || e.metaKey) {
-                              e.preventDefault();
-                              e.stopPropagation();
+                        <Checkbox
+                          checked={checked}
+                          disabled={isPrimary}
+                          onCheckedChange={(val) => {
+                            if (!isPrimary) {
+                              project.stageTable.setColumnVisible(colId, Boolean(val));
                             }
                           }}
-                          style={isFrozen ? { left: `${columnLeftOffsets[colIdx]}px` } : undefined}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!isPrimary) {
+                              project.stageTable.setColumnVisible(colId, !checked);
+                            }
+                          }}
                           className={cn(
-                            "border-border/40 overflow-hidden border-r p-0 align-middle",
-                            isFrozen ? "bg-background sticky z-10" : "relative",
-                            isFrozen && !isSelectedAny && "group-hover/row:bg-muted",
-                            isFreezeBoundary && "border-r-primary/45 border-r-2",
-                            isSelectedAny &&
-                              "after:bg-primary/12 after:pointer-events-none after:absolute after:inset-0",
-                            isActiveCell && "after:ring-primary after:ring-2 after:ring-inset",
+                            "flex min-w-0 flex-1 items-center gap-2 text-left",
+                            isPrimary ? "cursor-default" : "cursor-pointer",
                           )}
                         >
-                          {colId === "name" && (
-                            <PrimaryTextCell
-                              row={row}
-                              t={t}
-                              canEditOnClick={() => wasSoleActiveOnDownRef.current}
-                              onCommit={(nextText) => project.stageTable.updateRowPrimaryText(row.uuid, nextText)}
-                              onJump={() => project.stageTable.focusRowOnCanvas(row.uuid)}
-                            />
-                          )}
+                          <ColumnIcon columnId={colId} customColumn={customCol} />
+                          <span className="min-w-0 flex-1 truncate">{getColumnLabel(colId)}</span>
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={t("headerMenu.editField")}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEditFieldPanel(colId, "floating");
+                          }}
+                          className="text-muted-foreground/70 hover:bg-background hover:text-foreground rounded p-0.5"
+                        >
+                          <ChevronRight className="size-3.5 shrink-0" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </PopoverContent>
+            </Popover>
 
-                          {colId === "images" && (
-                            <ImagesCell
-                              project={project}
-                              images={row.images ?? []}
-                              disabled={row.canEditImages === false}
-                              onAddImages={(blobs) => {
-                                void project.stageTable.addRowImages?.(row.uuid, blobs);
-                              }}
-                              onRemoveImage={(imgUuid) => {
-                                project.stageTable.removeRowImage?.(row.uuid, imgUuid);
-                              }}
-                              onPreviewImage={(attachmentId) => setPreviewAttachmentId(attachmentId)}
-                              t={t}
-                            />
-                          )}
+            <div className="bg-border mx-0.5 h-3.5 w-px shrink-0" />
 
-                          {colId === "createdAt" && (
-                            <div className="text-muted-foreground truncate px-2.5 py-1.5 text-[11px] tabular-nums select-none">
-                              {formatTimestamp(row.createdAt)}
-                            </div>
-                          )}
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  data-stage-table-filter-toolbar
+                  className={cn(
+                    "hover:bg-accent inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded px-2 transition-colors",
+                    activeFilters.length > 0
+                      ? "bg-primary/15 text-primary font-medium"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <Filter className="size-3.5" />
+                  <span>
+                    {activeFilters.length > 0
+                      ? `${t("toolbar.filter")} (${activeFilters.length})`
+                      : t("toolbar.filter")}
+                  </span>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="start"
+                className="w-60 p-2 text-xs select-none"
+                onWheel={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <div className="mb-1.5 flex items-center justify-between px-1">
+                  <span className="text-muted-foreground text-[11px] font-medium">{t("sortFilter.filterTitle")}</span>
+                  {activeFilters.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => project.stageTable.clearAllFilters?.()}
+                      className="text-primary cursor-pointer text-[11px] hover:underline"
+                    >
+                      {t("sortFilter.clearAllFilters")}
+                    </button>
+                  )}
+                </div>
+                {activeFilters.length === 0 && (
+                  <div className="text-muted-foreground mb-1.5 px-1 text-[11px]">{t("sortFilter.noActiveFilters")}</div>
+                )}
+                <div className="max-h-56 space-y-0.5 overflow-y-auto">
+                  {visibleColumnIds.map((cid) => {
+                    const hasFilter = activeFilterByColId.has(cid);
+                    return (
+                      <div
+                        key={cid}
+                        className="hover:bg-accent flex items-center gap-2 rounded-sm px-2 py-1 text-xs transition-colors"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setFilterPopoverColId(cid)}
+                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
+                        >
+                          <ColumnIcon columnId={cid} customColumn={customColumnMap.get(cid)} />
+                          <span className={cn("min-w-0 flex-1 truncate", hasFilter && "text-primary font-medium")}>
+                            {getColumnLabel(cid)}
+                          </span>
+                        </button>
+                        {hasFilter && (
+                          <button
+                            type="button"
+                            aria-label={t("sortFilter.clearFilter")}
+                            onClick={() => project.stageTable.setColumnFilter?.(cid, null)}
+                            className="text-muted-foreground hover:text-foreground cursor-pointer rounded p-0.5"
+                          >
+                            <X className="size-3" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </PopoverContent>
+            </Popover>
 
-                          {colId === "updatedAt" && (
-                            <div className="text-muted-foreground truncate px-2.5 py-1.5 text-[11px] tabular-nums select-none">
-                              {formatTimestamp(row.updatedAt)}
-                            </div>
-                          )}
+            <button
+              type="button"
+              className="text-muted-foreground hover:bg-accent hover:text-foreground inline-flex h-6 shrink-0 items-center gap-1 rounded px-2 transition-colors"
+            >
+              <ListTree className="size-3.5" />
+              <span>{t("toolbar.group")}</span>
+            </button>
 
-                          {colId === "parents" && (
-                            <MultiRelationCell
-                              selectedItems={row.parents}
-                              candidates={allRows.filter((c) => c.uuid !== row.uuid)}
-                              placeholder={t("relationPlaceholder")}
-                              searchPlaceholder={t("searchNodePlaceholder")}
-                              emptyText={t("noMatchingNodes")}
-                              onChange={(nextIds) => project.stageTable.setRowParents(row.uuid, nextIds)}
-                              t={t}
-                            />
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  data-stage-table-sort-toolbar
+                  className={cn(
+                    "hover:bg-accent inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded px-2 transition-colors",
+                    activeSort
+                      ? "bg-primary/15 text-primary font-medium"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <ArrowUpDown className="size-3.5" />
+                  <span>
+                    {activeSort
+                      ? `${t("toolbar.sort")}: ${getColumnLabel(activeSort.columnId)} ${activeSort.direction === "asc" ? "↑" : "↓"}`
+                      : t("toolbar.sort")}
+                  </span>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="start"
+                className="w-64 p-2 text-xs select-none"
+                onWheel={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <div className="mb-1.5 flex items-center justify-between px-1">
+                  <span className="text-muted-foreground text-[11px] font-medium">{t("sortFilter.sortTitle")}</span>
+                  {activeSort && (
+                    <button
+                      type="button"
+                      onClick={() => project.stageTable.setSort?.(null)}
+                      className="text-primary cursor-pointer text-[11px] hover:underline"
+                    >
+                      {t("sortFilter.clearSort")}
+                    </button>
+                  )}
+                </div>
+                <div className="max-h-56 space-y-0.5 overflow-y-auto">
+                  {visibleColumnIds.map((cid) => {
+                    const isAsc = activeSort?.columnId === cid && activeSort.direction === "asc";
+                    const isDesc = activeSort?.columnId === cid && activeSort.direction === "desc";
+                    return (
+                      <div
+                        key={cid}
+                        className="hover:bg-accent/60 flex items-center gap-1.5 rounded-sm px-1.5 py-1 text-xs"
+                      >
+                        <ColumnIcon columnId={cid} customColumn={customColumnMap.get(cid)} />
+                        <span
+                          className={cn("min-w-0 flex-1 truncate", (isAsc || isDesc) && "text-primary font-medium")}
+                        >
+                          {getColumnLabel(cid)}
+                        </span>
+                        <button
+                          type="button"
+                          aria-label={t("sortFilter.sortAsc")}
+                          onClick={() =>
+                            project.stageTable.setSort?.(isAsc ? null : { columnId: cid, direction: "asc" })
+                          }
+                          className={cn(
+                            "flex size-6 cursor-pointer items-center justify-center rounded border transition-colors",
+                            isAsc
+                              ? "border-primary bg-primary/15 text-primary"
+                              : "text-muted-foreground hover:bg-background hover:text-foreground border-transparent",
                           )}
-
-                          {colId === "children" && (
-                            <MultiRelationCell
-                              selectedItems={row.children}
-                              candidates={allRows.filter((c) => c.uuid !== row.uuid)}
-                              placeholder={t("relationPlaceholder")}
-                              searchPlaceholder={t("searchNodePlaceholder")}
-                              emptyText={t("noMatchingNodes")}
-                              onChange={(nextIds) => project.stageTable.setRowChildren(row.uuid, nextIds)}
-                              t={t}
-                            />
+                        >
+                          <ArrowUp className="size-3" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={t("sortFilter.sortDesc")}
+                          onClick={() =>
+                            project.stageTable.setSort?.(isDesc ? null : { columnId: cid, direction: "desc" })
+                          }
+                          className={cn(
+                            "flex size-6 cursor-pointer items-center justify-center rounded border transition-colors",
+                            isDesc
+                              ? "border-primary bg-primary/15 text-primary"
+                              : "text-muted-foreground hover:bg-background hover:text-foreground border-transparent",
                           )}
+                        >
+                          <ArrowDown className="size-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </PopoverContent>
+            </Popover>
 
-                          {colId === "outer" && (
-                            <SingleRelationCell
-                              selectedItem={row.outer}
-                              candidates={getOuterCandidatesForRow(row)}
-                              placeholder={t("relationPlaceholder")}
-                              searchPlaceholder={t("searchNodePlaceholder")}
-                              emptyText={t("noMatchingNodes")}
-                              onChange={(nextId) => project.stageTable.setRowOuter(row.uuid, nextId)}
-                              t={t}
-                            />
+            <div className="bg-border mx-0.5 h-3.5 w-px shrink-0" />
+
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  data-stage-table-row-height
+                  className="text-muted-foreground hover:bg-accent hover:text-foreground inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded px-2 transition-colors"
+                >
+                  <UnfoldVertical className="size-3.5" />
+                  <span>{t("toolbar.rowHeight")}</span>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent
+                align="start"
+                className="w-32 p-1 text-xs select-none"
+                onWheel={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                {(["compact", "medium", "tall"] as const).map((h) => (
+                  <button
+                    key={h}
+                    type="button"
+                    onClick={() => project.stageTable.updateActiveViewConfig?.({ rowHeight: h })}
+                    className="hover:bg-accent flex w-full cursor-pointer items-center justify-between rounded px-2 py-1.5"
+                  >
+                    <span>{t(`calendar.height_${h}`)}</span>
+                    {tableRowHeight === h && <Check className="text-primary size-3.5" />}
+                  </button>
+                ))}
+              </PopoverContent>
+            </Popover>
+
+            {selectionSummaryText && (
+              <div
+                data-stage-table-selection-badge
+                className="bg-primary/12 text-primary ml-auto inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] font-medium select-none"
+              >
+                <span>{selectionSummaryText}</span>
+                <button
+                  type="button"
+                  aria-label={t("dateCell.clear")}
+                  onClick={() =>
+                    clearSelection(selection.mode === "rows" || selection.mode === "all" || selection.mode === "cells")
+                  }
+                  className="hover:bg-primary/20 cursor-pointer rounded-full p-0.5 transition-colors"
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 表格主体（tableLayout: fixed + 精确总像素宽，确保调整单列宽度时其它列绝不自动伸缩） */}
+          <TableScrollContainer layoutDepsKey={layoutDepsKey} externalViewportRef={viewportRef}>
+            <table
+              data-stage-table-grid
+              style={{ width: `${totalTableWidth}px`, tableLayout: "fixed" }}
+              className="border-collapse text-left text-xs"
+            >
+              <colgroup>
+                <col style={{ width: `${INDEX_COLUMN_WIDTH}px` }} />
+                {visibleColumnIds.map((colId) => (
+                  <col key={colId} style={{ width: `${getColumnWidth(colId)}px` }} />
+                ))}
+                <col style={{ width: `${ADD_COLUMN_WIDTH}px` }} />
+              </colgroup>
+
+              <thead className="bg-muted sticky top-0 z-20">
+                {/* 图 6：跨列合并的顶部分组表头（如「基础信息 / 自我理解 / 后台数据」） */}
+                {hasVisibleColumnGroups && (
+                  <tr data-stage-table-group-row className="border-border/60 border-b">
+                    <th
+                      style={frozenEndIndex >= 0 ? { left: "0px" } : undefined}
+                      className={cn(
+                        "border-border/50 bg-muted h-7 border-r p-0 select-none",
+                        frozenEndIndex >= 0 && "sticky z-30",
+                      )}
+                    />
+                    {superHeaderSegments.map((seg) => {
+                      const grp = seg.group;
+                      const isRenamingThis = grp && renamingGroupId === grp.id;
+                      return (
+                        <th
+                          key={seg.key}
+                          colSpan={seg.colIds.length}
+                          style={seg.isFrozen ? { left: `${seg.stickyLeftPx ?? 0}px` } : undefined}
+                          className={cn(
+                            "border-border/50 bg-muted relative h-7 border-r px-2 font-medium select-none",
+                            seg.isFrozen && "sticky z-30",
+                            seg.isFreezeBoundary && "border-r-primary/45 border-r-2",
                           )}
-
-                          {colId === "inner" && (
-                            <MultiRelationCell
-                              selectedItems={row.inner}
-                              candidates={getInnerCandidatesForRow(row)}
-                              disabled={!row.canEditInner}
-                              placeholder={t("relationPlaceholder")}
-                              searchPlaceholder={t("searchNodePlaceholder")}
-                              emptyText={t("noMatchingNodes")}
-                              onChange={(nextIds) => project.stageTable.setRowInner(row.uuid, nextIds)}
-                              t={t}
-                            />
-                          )}
-
-                          {customCol && customCol.type === "text" && (
-                            <TextCustomCell
-                              value={row.tableFields?.[customCol.id]}
-                              canEditOnClick={() => wasSoleActiveOnDownRef.current}
-                              onCommit={(nextVal) =>
-                                project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
-                              }
-                            />
-                          )}
-
-                          {customCol && customCol.type === "number" && (
-                            <NumberCustomCell
-                              value={row.tableFields?.[customCol.id]}
-                              canEditOnClick={() => wasSoleActiveOnDownRef.current}
-                              onCommit={(nextVal) =>
-                                project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
-                              }
-                            />
-                          )}
-
-                          {customCol && customCol.type === "date" && (
-                            <DateCustomCell
-                              value={row.tableFields?.[customCol.id]}
-                              onCommit={(nextVal) =>
-                                project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
-                              }
-                              t={t}
-                            />
-                          )}
-
-                          {customCol && (customCol.type === "select" || customCol.type === "multi_select") && (
-                            <SelectCustomCell
-                              column={customCol}
-                              value={row.tableFields?.[customCol.id]}
-                              onCommit={(nextVal) =>
-                                project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
-                              }
-                              onCreateOrGetOption={(optName) =>
-                                project.stageTable.createOrGetSelectOption?.(customCol.id, optName) ?? null
-                              }
-                              t={t}
-                            />
-                          )}
-
-                          {customCol &&
-                            customCol.type === "formula" &&
-                            (() => {
-                              const evaluated = row.formulaValues?.[customCol.id];
-                              const hasFormulaExpr = Boolean(customCol.formula?.trim());
-                              return (
-                                <div
-                                  data-formula-cell={customCol.id}
-                                  onDoubleClick={(e) => {
-                                    e.stopPropagation();
-                                    openFormulaEditorForColumn(customCol.id, row.uuid);
-                                  }}
-                                  title={
-                                    evaluated?.kind === "error"
-                                      ? `${evaluated.errorCode}: ${evaluated.errorMessage ?? ""}`
-                                      : evaluated?.displayText ||
-                                        (hasFormulaExpr ? "" : t("formulaEditor.doubleClickHint"))
+                        >
+                          {grp ? (
+                            isRenamingThis ? (
+                              <Input
+                                ref={groupRenameInputRef}
+                                value={renamingGroupDraft}
+                                onChange={(e) => setRenamingGroupDraft(e.target.value)}
+                                onBlur={() => {
+                                  if (renamingGroupDraft.trim()) {
+                                    project.stageTable.renameColumnGroup?.(grp.id, renamingGroupDraft);
                                   }
-                                  className="flex h-full min-h-8 w-full cursor-default items-center px-2.5 py-1 text-xs select-none"
-                                >
-                                  {evaluated?.kind === "error" ? (
-                                    <Tooltip>
-                                      <TooltipTrigger asChild>
-                                        <span className="bg-destructive/15 text-destructive inline-flex max-w-full items-center truncate rounded px-1.5 py-0.5 font-mono text-[11px] font-medium">
-                                          {evaluated.errorCode ?? "#ERROR!"}
-                                        </span>
-                                      </TooltipTrigger>
-                                      <TooltipContent side="top" className="max-w-72 text-xs">
-                                        {evaluated.errorMessage || evaluated.errorCode}
-                                      </TooltipContent>
-                                    </Tooltip>
-                                  ) : evaluated?.kind === "boolean" ? (
-                                    <span
-                                      className={cn(
-                                        "inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[11px] font-medium",
-                                        evaluated.booleanValue
-                                          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                                          : "bg-muted text-muted-foreground",
-                                      )}
+                                  setRenamingGroupId(null);
+                                }}
+                                onKeyDown={(e) => {
+                                  e.stopPropagation();
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    if (renamingGroupDraft.trim()) {
+                                      project.stageTable.renameColumnGroup?.(grp.id, renamingGroupDraft);
+                                    }
+                                    setRenamingGroupId(null);
+                                  } else if (e.key === "Escape") {
+                                    e.preventDefault();
+                                    setRenamingGroupId(null);
+                                  }
+                                }}
+                                className="h-5 px-1.5 py-0 text-center text-[11px]"
+                              />
+                            ) : (
+                              <div
+                                onDoubleClick={() => {
+                                  setRenamingGroupId(grp.id);
+                                  setRenamingGroupDraft(grp.name);
+                                }}
+                                className="flex h-full w-full items-center justify-center gap-1"
+                              >
+                                <span className="text-foreground/90 truncate text-[11px] font-medium">{grp.name}</span>
+                                <Popover>
+                                  <PopoverTrigger asChild>
+                                    <button
+                                      type="button"
+                                      data-column-group-menu-trigger={grp.id}
+                                      aria-label={t("columnGroups.manageGroup")}
+                                      className="text-muted-foreground hover:bg-accent hover:text-foreground absolute right-1.5 flex size-4 items-center justify-center rounded-xs transition-colors"
                                     >
-                                      {evaluated.displayText}
-                                    </span>
-                                  ) : evaluated?.kind === "list" &&
-                                    evaluated.listItems &&
-                                    evaluated.listItems.length > 0 ? (
-                                    <div className="flex max-w-full items-center gap-1 overflow-hidden">
-                                      {evaluated.listItems.map((item, idx) => (
-                                        <span
-                                          key={`${idx}-${item}`}
-                                          className="bg-muted/80 text-foreground inline-flex max-w-28 shrink-0 truncate rounded px-1.5 py-0.5 text-[11px]"
-                                        >
-                                          {item}
-                                        </span>
-                                      ))}
+                                      <ChevronDown className="size-3" />
+                                    </button>
+                                  </PopoverTrigger>
+                                  <PopoverContent
+                                    align="end"
+                                    className="w-56 p-2"
+                                    onWheel={(e) => e.stopPropagation()}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                  >
+                                    <div className="mb-2 space-y-1">
+                                      <div className="text-muted-foreground px-1 text-[11px] font-medium">
+                                        {t("columnGroups.groupNameLabel")}
+                                      </div>
+                                      <Input
+                                        defaultValue={grp.name}
+                                        onBlur={(e) => {
+                                          if (e.target.value.trim()) {
+                                            project.stageTable.renameColumnGroup?.(grp.id, e.target.value);
+                                          }
+                                        }}
+                                        onKeyDown={(e) => {
+                                          e.stopPropagation();
+                                          if (e.key === "Enter") {
+                                            e.preventDefault();
+                                            const val = (e.currentTarget as HTMLInputElement).value;
+                                            if (val.trim()) {
+                                              project.stageTable.renameColumnGroup?.(grp.id, val);
+                                            }
+                                          }
+                                        }}
+                                        className="h-7 text-xs"
+                                      />
                                     </div>
-                                  ) : evaluated && evaluated.kind !== "empty" ? (
-                                    <span
-                                      className={cn(
-                                        "truncate",
-                                        (evaluated.kind === "number" || evaluated.kind === "date") && "tabular-nums",
-                                      )}
-                                    >
-                                      {evaluated.displayText}
-                                    </span>
-                                  ) : !hasFormulaExpr ? (
-                                    <span className="text-muted-foreground/45 truncate text-[11px] italic">
-                                      {t("formulaEditor.unsetFormula")}
-                                    </span>
-                                  ) : null}
-                                </div>
-                              );
-                            })()}
-                        </td>
+                                    <div className="text-muted-foreground mb-1 px-1 text-[11px] font-medium">
+                                      {t("columnGroups.includedColumns")}
+                                    </div>
+                                    <div className="max-h-44 space-y-0.5 overflow-y-auto">
+                                      {visibleColumnIds.map((cid) => {
+                                        const inThisGroup = grp.columnIds.includes(cid);
+                                        return (
+                                          <label
+                                            key={cid}
+                                            className="hover:bg-accent flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 text-xs"
+                                          >
+                                            <Checkbox
+                                              checked={inThisGroup}
+                                              onCheckedChange={(checked) => {
+                                                project.stageTable.setColumnInGroup?.(cid, checked ? grp.id : null);
+                                              }}
+                                            />
+                                            <ColumnIcon columnId={cid} customColumn={customColumnMap.get(cid)} />
+                                            <span className="truncate">{getColumnLabel(cid)}</span>
+                                          </label>
+                                        );
+                                      })}
+                                    </div>
+                                    <div className="border-border/60 mt-2 border-t pt-1.5">
+                                      <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => project.stageTable.dissolveColumnGroup?.(grp.id)}
+                                        className="text-destructive hover:text-destructive h-7 w-full justify-start gap-1.5 px-2 text-xs"
+                                      >
+                                        <Trash2 className="size-3.5" />
+                                        <span>{t("columnGroups.dissolveGroup")}</span>
+                                      </Button>
+                                    </div>
+                                  </PopoverContent>
+                                </Popover>
+                              </div>
+                            )
+                          ) : (
+                            <div className="group/ungrp flex h-full w-full items-center justify-center">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const createdGrp = project.stageTable.createColumnGroup?.(
+                                    t("columnGroups.defaultName"),
+                                    seg.colIds,
+                                  );
+                                  if (createdGrp) {
+                                    setRenamingGroupId(createdGrp.id);
+                                    setRenamingGroupDraft(createdGrp.name);
+                                  }
+                                }}
+                                className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-[11px] opacity-0 transition-opacity group-hover/ungrp:opacity-100"
+                              >
+                                <Plus className="size-3" />
+                                <span>{t("columnGroups.createGroup")}</span>
+                              </button>
+                            </div>
+                          )}
+                        </th>
                       );
                     })}
-
-                    {/* + 列对应的右侧占位单元格 */}
-                    <td className="p-0" />
+                    <th className="bg-muted h-7 p-0" />
                   </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </TableScrollContainer>
+                )}
+
+                <tr ref={headerRowRef} className="border-border/60 border-b">
+                  {/* 行计数表头（点击全选/取消全选） */}
+                  <th
+                    data-stage-table-select-all
+                    title={t("selection.selectAllAria")}
+                    onClick={handleToggleSelectAll}
+                    style={frozenEndIndex >= 0 ? { left: "0px" } : undefined}
+                    className={cn(
+                      "border-border/50 bg-muted hover:bg-accent/70 h-9 cursor-pointer border-r px-1 text-center text-[11px] font-medium transition-colors select-none",
+                      selection.mode === "all"
+                        ? "text-primary after:bg-primary/18 font-semibold after:pointer-events-none after:absolute after:inset-0"
+                        : "text-muted-foreground/70",
+                      frozenEndIndex >= 0 ? "sticky z-30" : "relative",
+                    )}
+                  >
+                    #
+                  </th>
+
+                  {/* 数据列表头 */}
+                  {visibleColumnIds.map((colId, colIdx) => {
+                    const width = getColumnWidth(colId);
+                    const customCol = customColumnMap.get(colId);
+                    const isNameCol = colId === "name";
+                    const isDraggingThis = draggingColId === colId;
+                    const showDropBefore = dropHint?.targetColId === colId && dropHint.position === "before";
+                    const showDropAfter = dropHint?.targetColId === colId && dropHint.position === "after";
+                    const isFrozen = colIdx <= frozenEndIndex;
+                    const isFreezeBoundary = colIdx === frozenEndIndex;
+                    const isFrozenTarget = frozenColumnId === colId;
+                    const isHeaderEditing = editingFieldState?.colId === colId && editingFieldState.anchor === "header";
+                    const isCreatingThis = creatingColState?.colId === colId;
+                    const currentGroup = groupByColId.get(colId);
+                    const isColSelected =
+                      selection.mode === "all" || (selection.mode === "columns" && selection.colIds.has(colId));
+                    const colSortDir: TableSortDirection | null =
+                      activeSort?.columnId === colId ? activeSort.direction : null;
+                    const colFilter = activeFilterByColId.get(colId) ?? null;
+                    const isColFiltered = colFilter !== null;
+                    const isFilterMenuOpen = filterPopoverColId === colId;
+
+                    return (
+                      <th
+                        key={colId}
+                        data-table-col-id={colId}
+                        data-col-selected={isColSelected ? "true" : undefined}
+                        data-col-sort={colSortDir ?? undefined}
+                        data-col-filtered={isColFiltered ? "true" : undefined}
+                        style={isFrozen ? { left: `${columnLeftOffsets[colIdx]}px` } : undefined}
+                        onPointerDown={(e) => startColumnDragReorder(colId, e)}
+                        className={cn(
+                          "group/th border-border/50 bg-muted text-muted-foreground h-9 border-r p-0 font-medium select-none",
+                          !isNameCol && !isCreatingThis ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
+                          isDraggingThis && "bg-accent/60 opacity-60",
+                          isFrozen ? "sticky z-30" : "relative",
+                          isFreezeBoundary && "border-r-primary/45 border-r-2",
+                          (colSortDir || isColFiltered) && "text-foreground",
+                          isColSelected &&
+                            "text-foreground after:bg-primary/15 after:border-b-primary after:pointer-events-none after:absolute after:inset-0 after:border-b-2",
+                          !isColSelected &&
+                            (colSortDir || isColFiltered || isFilterMenuOpen) &&
+                            "after:bg-primary/10 after:pointer-events-none after:absolute after:inset-0",
+                        )}
+                      >
+                        {/* 锚定在当前列表头下方的图 1「修改字段」或图 4「新建/插入字段」浮层 */}
+                        <Popover
+                          open={isHeaderEditing || isCreatingThis}
+                          onOpenChange={(open) => {
+                            if (!open) {
+                              if (isHeaderEditing) {
+                                setEditTypeDropdownOpen(false);
+                                setEditingFieldState(null);
+                              }
+                              if (isCreatingThis) {
+                                commitCreatingColumn();
+                              }
+                            }
+                          }}
+                        >
+                          <PopoverAnchor asChild>
+                            <div data-col-popover-anchor={colId} className="size-full">
+                              {isCreatingThis ? (
+                                /* 图 4：创建/插入字段后的表头内联标题输入框（蓝底线高亮） */
+                                <div className="border-b-primary bg-background/90 flex h-full w-full items-center border-b-2 px-2">
+                                  <input
+                                    ref={creatingTitleInputRef}
+                                    data-creating-col-title-input
+                                    value={creatingColState.draftTitle}
+                                    onChange={(e) =>
+                                      setCreatingColState({ ...creatingColState, draftTitle: e.target.value })
+                                    }
+                                    onKeyDown={handleCreateTitleKeyDown}
+                                    placeholder={t("insertFieldPopover.titlePlaceholder")}
+                                    className="text-foreground placeholder:text-muted-foreground h-full w-full bg-transparent text-center text-xs outline-none"
+                                  />
+                                </div>
+                              ) : (
+                                <ContextMenu>
+                                  <ContextMenuTrigger asChild>
+                                    <div
+                                      onDoubleClick={(e) => {
+                                        const targetEl = e.target as HTMLElement | null;
+                                        if (targetEl?.closest("[data-col-filter-trigger], [data-col-sort-indicator]")) {
+                                          return;
+                                        }
+                                        e.stopPropagation();
+                                        project.stageTable.toggleColumnSort?.(colId);
+                                      }}
+                                      className="hover:bg-accent/40 relative flex h-full w-full items-stretch"
+                                    >
+                                      {/* Windows 文件管理器风格顶部居中排序小箭头（向上升序 / 向下排序） */}
+                                      {colSortDir && (
+                                        <button
+                                          type="button"
+                                          data-col-sort-indicator={colId}
+                                          data-sort-direction={colSortDir}
+                                          aria-label={t("sortFilter.toggleSortAria")}
+                                          title={
+                                            colSortDir === "asc" ? t("sortFilter.sortAsc") : t("sortFilter.sortDesc")
+                                          }
+                                          onPointerDown={(e) => e.stopPropagation()}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            project.stageTable.toggleColumnSort?.(
+                                              colId,
+                                              colSortDir === "asc" ? "desc" : "asc",
+                                            );
+                                          }}
+                                          className="text-primary hover:bg-primary/15 absolute top-0 left-1/2 z-10 flex h-3.5 w-6 -translate-x-1/2 cursor-pointer items-center justify-center rounded-b transition-colors"
+                                        >
+                                          {colSortDir === "asc" ? (
+                                            <ChevronUp className="size-3 stroke-[2.25]" />
+                                          ) : (
+                                            <ChevronDown className="size-3 stroke-[2.25]" />
+                                          )}
+                                        </button>
+                                      )}
+
+                                      {/* 列标题主体 */}
+                                      <div
+                                        className={cn(
+                                          "flex min-w-0 flex-1 items-center gap-1.5 truncate pr-1 pl-2.5",
+                                          colSortDir && "pt-1.5",
+                                        )}
+                                      >
+                                        <ColumnIcon columnId={colId} customColumn={customCol} />
+                                        <span className="truncate">{getColumnLabel(colId)}</span>
+                                      </div>
+
+                                      {/* 右侧分隔下拉按钮（类 Windows 文件管理器列筛选/排序下拉） */}
+                                      <Popover
+                                        open={isFilterMenuOpen}
+                                        onOpenChange={(open) => setFilterPopoverColId(open ? colId : null)}
+                                      >
+                                        <PopoverTrigger asChild>
+                                          <button
+                                            type="button"
+                                            data-col-filter-trigger={colId}
+                                            aria-label={t("sortFilter.columnFilterAria")}
+                                            onPointerDown={(e) => e.stopPropagation()}
+                                            onClick={(e) => e.stopPropagation()}
+                                            className={cn(
+                                              "relative mr-1 flex w-6 shrink-0 cursor-pointer items-center justify-center border-l transition-all",
+                                              isColFiltered || colSortDir || isFilterMenuOpen
+                                                ? "border-border/70 bg-primary/10 text-primary opacity-100"
+                                                : "text-muted-foreground/80 group-hover/th:border-border/60 hover:bg-accent hover:text-foreground border-transparent opacity-45 group-hover/th:opacity-100",
+                                            )}
+                                          >
+                                            <ChevronDown className="size-3" />
+                                            {isColFiltered && (
+                                              <span className="bg-primary absolute top-1 right-1 size-1.5 rounded-full" />
+                                            )}
+                                          </button>
+                                        </PopoverTrigger>
+                                        <PopoverContent
+                                          align="end"
+                                          sideOffset={4}
+                                          className="w-auto p-0"
+                                          onWheel={(e) => e.stopPropagation()}
+                                          onMouseDown={(e) => e.stopPropagation()}
+                                          onPointerDown={(e) => e.stopPropagation()}
+                                        >
+                                          <ColumnFilterSortPopoverContent
+                                            columnId={colId}
+                                            customCol={customCol}
+                                            allRows={allRows}
+                                            activeSort={activeSort}
+                                            activeFilter={colFilter}
+                                            onSetSort={(nextSort) => project.stageTable.setSort?.(nextSort)}
+                                            onSetFilter={(nextFlt) =>
+                                              project.stageTable.setColumnFilter?.(colId, nextFlt)
+                                            }
+                                            t={t}
+                                          />
+                                        </PopoverContent>
+                                      </Popover>
+                                    </div>
+                                  </ContextMenuTrigger>
+
+                                  {/* 表头右键菜单（整合图 1 修改字段 + 图 3 左右插入子菜单 + 图 6 字段编组 + 图 5 底部五图标栏） */}
+                                  <ContextMenuContent
+                                    className="w-52"
+                                    onWheel={(e) => e.stopPropagation()}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                  >
+                                    <ContextMenuItem
+                                      onSelect={() =>
+                                        scheduleAfterContextMenu(() => openEditFieldPanel(colId, "header"))
+                                      }
+                                      className="text-xs"
+                                    >
+                                      <SquarePen className="size-3.5" />
+                                      <span>{t("headerMenu.editField")}</span>
+                                      <span className="text-muted-foreground ml-auto pl-4 text-[11px]">
+                                        {getColumnTypeName(colId)}
+                                      </span>
+                                    </ContextMenuItem>
+
+                                    {customCol?.type === "formula" && (
+                                      <ContextMenuItem
+                                        onSelect={() =>
+                                          scheduleAfterContextMenu(() => openFormulaEditorForColumn(colId))
+                                        }
+                                        className="text-xs"
+                                      >
+                                        <FunctionSquare className="size-3.5" />
+                                        <span>{t("formulaEditor.editFormula")}</span>
+                                      </ContextMenuItem>
+                                    )}
+
+                                    {/* 图 3：插入字段 -> 向左插入 / 向右插入 */}
+                                    <ContextMenuSub>
+                                      <ContextMenuSubTrigger inset className="text-xs">
+                                        <span>{t("headerMenu.insertField")}</span>
+                                      </ContextMenuSubTrigger>
+                                      <ContextMenuSubContent
+                                        className="w-36"
+                                        onWheel={(e) => e.stopPropagation()}
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                      >
+                                        <ContextMenuItem
+                                          disabled={isNameCol}
+                                          onSelect={() =>
+                                            scheduleAfterContextMenu(() => triggerInsertNewColumn(colId, "left"))
+                                          }
+                                          className="text-xs"
+                                        >
+                                          <ArrowLeft className="size-3.5" />
+                                          <span>{t("headerMenu.insertLeft")}</span>
+                                        </ContextMenuItem>
+                                        <ContextMenuItem
+                                          onSelect={() =>
+                                            scheduleAfterContextMenu(() => triggerInsertNewColumn(colId, "right"))
+                                          }
+                                          className="text-xs"
+                                        >
+                                          <ArrowRight className="size-3.5" />
+                                          <span>{t("headerMenu.insertRight")}</span>
+                                        </ContextMenuItem>
+                                      </ContextMenuSubContent>
+                                    </ContextMenuSub>
+
+                                    {/* 图 6：跨列分组表头（字段编组）管理入口 */}
+                                    <ContextMenuSub>
+                                      <ContextMenuSubTrigger className="text-xs">
+                                        <FolderPlus className="size-3.5" />
+                                        <span>{t("columnGroups.menuLabel")}</span>
+                                      </ContextMenuSubTrigger>
+                                      <ContextMenuSubContent
+                                        className="w-44"
+                                        onWheel={(e) => e.stopPropagation()}
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                      >
+                                        <ContextMenuItem
+                                          onSelect={() =>
+                                            scheduleAfterContextMenu(() => {
+                                              const grp = project.stageTable.createColumnGroup?.(
+                                                t("columnGroups.defaultName"),
+                                                [colId],
+                                              );
+                                              if (grp) {
+                                                setRenamingGroupId(grp.id);
+                                                setRenamingGroupDraft(grp.name);
+                                              }
+                                            })
+                                          }
+                                          className="text-xs"
+                                        >
+                                          <Plus className="size-3.5" />
+                                          <span>{t("columnGroups.createGroup")}</span>
+                                        </ContextMenuItem>
+
+                                        {columnGroups.length > 0 && <ContextMenuSeparator />}
+
+                                        {columnGroups.map((grp) => {
+                                          const active = currentGroup?.id === grp.id;
+                                          return (
+                                            <ContextMenuItem
+                                              key={grp.id}
+                                              onSelect={() =>
+                                                project.stageTable.setColumnInGroup?.(colId, active ? null : grp.id)
+                                              }
+                                              className="text-xs"
+                                            >
+                                              <span className="flex size-3.5 shrink-0 items-center justify-center">
+                                                {active && <Check className="text-primary size-3.5" />}
+                                              </span>
+                                              <span className="truncate">{grp.name}</span>
+                                            </ContextMenuItem>
+                                          );
+                                        })}
+
+                                        {currentGroup && (
+                                          <>
+                                            <ContextMenuSeparator />
+                                            <ContextMenuItem
+                                              onSelect={() => project.stageTable.setColumnInGroup?.(colId, null)}
+                                              className="text-xs"
+                                            >
+                                              <X className="size-3.5" />
+                                              <span>{t("columnGroups.removeFromGroup")}</span>
+                                            </ContextMenuItem>
+                                            <ContextMenuItem
+                                              variant="destructive"
+                                              onSelect={() => project.stageTable.dissolveColumnGroup?.(currentGroup.id)}
+                                              className="text-xs"
+                                            >
+                                              <Trash2 className="size-3.5" />
+                                              <span>{t("columnGroups.dissolveGroup")}</span>
+                                            </ContextMenuItem>
+                                          </>
+                                        )}
+                                      </ContextMenuSubContent>
+                                    </ContextMenuSub>
+
+                                    <ContextMenuSeparator />
+
+                                    <ContextMenuItem
+                                      onSelect={() => scheduleAfterContextMenu(() => setFilterPopoverColId(colId))}
+                                      className="text-xs"
+                                    >
+                                      <Filter className="size-3.5" />
+                                      <span>{t("toolbar.filter")}</span>
+                                    </ContextMenuItem>
+
+                                    <ContextMenuItem className="text-xs">
+                                      <ListTree className="size-3.5" />
+                                      <span>{t("toolbar.group")}</span>
+                                    </ContextMenuItem>
+
+                                    <ContextMenuSub>
+                                      <ContextMenuSubTrigger className="text-xs">
+                                        <ArrowUpDown className="size-3.5" />
+                                        <span>{t("toolbar.sort")}</span>
+                                      </ContextMenuSubTrigger>
+                                      <ContextMenuSubContent
+                                        className="w-36"
+                                        onWheel={(e) => e.stopPropagation()}
+                                        onMouseDown={(e) => e.stopPropagation()}
+                                      >
+                                        <ContextMenuItem
+                                          onSelect={() =>
+                                            project.stageTable.setSort?.({ columnId: colId, direction: "asc" })
+                                          }
+                                          className="text-xs"
+                                        >
+                                          <ArrowUp className="size-3.5" />
+                                          <span>{t("sortFilter.sortAsc")}</span>
+                                          {colSortDir === "asc" && <Check className="text-primary ml-auto size-3.5" />}
+                                        </ContextMenuItem>
+                                        <ContextMenuItem
+                                          onSelect={() =>
+                                            project.stageTable.setSort?.({ columnId: colId, direction: "desc" })
+                                          }
+                                          className="text-xs"
+                                        >
+                                          <ArrowDown className="size-3.5" />
+                                          <span>{t("sortFilter.sortDesc")}</span>
+                                          {colSortDir === "desc" && <Check className="text-primary ml-auto size-3.5" />}
+                                        </ContextMenuItem>
+                                        {colSortDir && (
+                                          <>
+                                            <ContextMenuSeparator />
+                                            <ContextMenuItem
+                                              onSelect={() => project.stageTable.setSort?.(null)}
+                                              className="text-xs"
+                                            >
+                                              <X className="size-3.5" />
+                                              <span>{t("sortFilter.clearSort")}</span>
+                                            </ContextMenuItem>
+                                          </>
+                                        )}
+                                      </ContextMenuSubContent>
+                                    </ContextMenuSub>
+
+                                    <ContextMenuSeparator />
+
+                                    {/* 图 5：底部五图标栏（复制 | 自适应列宽 | 冻结 | 隐藏 | 分隔竖线 | 删除） */}
+                                    <div
+                                      data-header-menu-bottom-actions
+                                      className="flex items-center justify-between gap-0.5 px-1 py-0.5"
+                                    >
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <ContextMenuPrimitive.Item
+                                            disabled={!customCol}
+                                            aria-label={t("headerMenu.duplicate")}
+                                            onSelect={() =>
+                                              project.stageTable.duplicateCustomColumn?.(
+                                                colId,
+                                                t("headerMenu.copySuffix"),
+                                              )
+                                            }
+                                            className="text-muted-foreground hover:bg-accent hover:text-foreground focus:bg-accent focus:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-35"
+                                          >
+                                            <CopyPlus className="size-3.5" />
+                                          </ContextMenuPrimitive.Item>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="bottom">{t("headerMenu.duplicate")}</TooltipContent>
+                                      </Tooltip>
+
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <ContextMenuPrimitive.Item
+                                            aria-label={t("headerMenu.autoFitWidth")}
+                                            onSelect={() =>
+                                              project.stageTable.autoFitColumnWidth?.(colId, getColumnLabel(colId))
+                                            }
+                                            className="text-muted-foreground hover:bg-accent hover:text-foreground focus:bg-accent focus:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md outline-none"
+                                          >
+                                            <UnfoldHorizontal className="size-3.5" />
+                                          </ContextMenuPrimitive.Item>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="bottom">{t("headerMenu.autoFitWidth")}</TooltipContent>
+                                      </Tooltip>
+
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <ContextMenuPrimitive.Item
+                                            aria-label={
+                                              isFrozenTarget ? t("headerMenu.unfreeze") : t("headerMenu.freeze")
+                                            }
+                                            onSelect={() => project.stageTable.toggleFreezeUpToColumn?.(colId)}
+                                            className={cn(
+                                              "hover:bg-accent hover:text-foreground focus:bg-accent focus:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md outline-none",
+                                              isFrozenTarget ? "bg-accent text-primary" : "text-muted-foreground",
+                                            )}
+                                          >
+                                            <FreezeColumnIcon />
+                                          </ContextMenuPrimitive.Item>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="bottom">
+                                          {isFrozenTarget ? t("headerMenu.unfreeze") : t("headerMenu.freeze")}
+                                        </TooltipContent>
+                                      </Tooltip>
+
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <ContextMenuPrimitive.Item
+                                            disabled={isNameCol}
+                                            aria-label={t("headerMenu.hide")}
+                                            onSelect={() => project.stageTable.setColumnVisible(colId, false)}
+                                            className="text-muted-foreground hover:bg-accent hover:text-foreground focus:bg-accent focus:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-35"
+                                          >
+                                            <EyeOff className="size-3.5" />
+                                          </ContextMenuPrimitive.Item>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="bottom">{t("headerMenu.hide")}</TooltipContent>
+                                      </Tooltip>
+
+                                      <div className="bg-border mx-0.5 h-4 w-px shrink-0" />
+
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <ContextMenuPrimitive.Item
+                                            disabled={!customCol}
+                                            aria-label={t("headerMenu.delete")}
+                                            onSelect={() => project.stageTable.deleteCustomColumn?.(colId)}
+                                            className="text-muted-foreground hover:bg-destructive/15 hover:text-destructive focus:bg-destructive/15 focus:text-destructive flex size-7 cursor-pointer items-center justify-center rounded-md outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-35"
+                                          >
+                                            <Trash2 className="size-3.5" />
+                                          </ContextMenuPrimitive.Item>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="bottom">{t("headerMenu.delete")}</TooltipContent>
+                                      </Tooltip>
+                                    </div>
+                                  </ContextMenuContent>
+                                </ContextMenu>
+                              )}
+                            </div>
+                          </PopoverAnchor>
+
+                          <PopoverContent
+                            align="start"
+                            sideOffset={2}
+                            className="w-auto p-0"
+                            onOpenAutoFocus={(e) => e.preventDefault()}
+                            onFocusOutside={(e) => {
+                              const target = e.target as Element | null;
+                              if (target?.closest?.(`[data-col-popover-anchor="${colId}"]`)) {
+                                e.preventDefault();
+                              }
+                            }}
+                            onPointerDownOutside={(e) => {
+                              const target = e.target as Element | null;
+                              if (
+                                target?.closest?.(`[data-col-popover-anchor="${colId}"]`) ||
+                                target?.closest?.("[data-stage-table-add-col]")
+                              ) {
+                                e.preventDefault();
+                              }
+                            }}
+                            onWheel={(e) => e.stopPropagation()}
+                            onMouseDown={(e) => e.stopPropagation()}
+                          >
+                            {isHeaderEditing && renderEditFieldFormContent(colId)}
+                            {isCreatingThis && creatingColState && (
+                              <FieldTypeGridPicker
+                                selectedType={creatingColState.selectedType}
+                                onSelectType={(chosenType) => commitCreatingColumn(chosenType)}
+                                showTabNextHint
+                                t={t}
+                              />
+                            )}
+                          </PopoverContent>
+                        </Popover>
+
+                        {/* 拖拽落点高亮指示线 */}
+                        {showDropBefore && (
+                          <div className="bg-primary pointer-events-none absolute top-0 bottom-0 left-0 z-30 w-0.5" />
+                        )}
+                        {showDropAfter && (
+                          <div className="bg-primary pointer-events-none absolute top-0 right-0 bottom-0 z-30 w-0.5" />
+                        )}
+
+                        {/* 列宽拖拽手柄 */}
+                        <div
+                          role="separator"
+                          data-col-resizer={colId}
+                          aria-orientation="vertical"
+                          onPointerDown={(e) => startColumnResize(colId, width, e)}
+                          className="hover:bg-primary/60 absolute top-0 -right-0.5 bottom-0 z-20 w-1.5 cursor-col-resize"
+                        />
+                      </th>
+                    );
+                  })}
+
+                  {/* 列最右侧 + 号：点击新建自定义列并直接进入图 4 内联标题 + 双列类型选择 */}
+                  <th className="border-border/50 bg-muted h-9 p-0 text-center select-none">
+                    <button
+                      type="button"
+                      data-stage-table-add-col
+                      aria-label={t("addColumnPopover.triggerAria")}
+                      onClick={() => triggerInsertNewColumn()}
+                      className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-full items-center justify-center transition-colors"
+                    >
+                      <Plus className="size-3.5" />
+                    </button>
+                  </th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {rows.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={visibleColumnIds.length + 2}
+                      className="text-muted-foreground py-12 text-center text-xs"
+                    >
+                      {allRows.length > 0 && activeFilters.length > 0 ? (
+                        <div className="flex flex-col items-center gap-2">
+                          <span>{t("sortFilter.noFilterMatch")}</span>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => project.stageTable.clearAllFilters?.()}
+                            className="h-7 px-3 text-xs"
+                          >
+                            {t("sortFilter.clearAllFilters")}
+                          </Button>
+                        </div>
+                      ) : (
+                        t("emptyCanvas")
+                      )}
+                    </td>
+                  </tr>
+                ) : (
+                  rows.map((row, rowIndex) => {
+                    const isRowSelected =
+                      selection.mode === "all" || (selection.mode === "rows" && selection.rowIds.has(row.uuid));
+                    return (
+                      <tr
+                        key={row.uuid}
+                        data-stage-table-row-id={row.uuid}
+                        data-row-selected={isRowSelected ? "true" : undefined}
+                        className={cn(
+                          "group/row border-border/40 border-b transition-colors",
+                          tableRowHeightClass,
+                          !isRowSelected && "hover:bg-muted/30",
+                        )}
+                      >
+                        {/* 从上到下 1, 2, 3... 行计数（点击/Shift/Ctrl/拖动选中单行或多行并同步画布） */}
+                        <td
+                          data-stage-table-row-index
+                          data-row-id={row.uuid}
+                          onPointerDown={(e) => handleRowIndexPointerDown(row.uuid, e)}
+                          style={frozenEndIndex >= 0 ? { left: "0px" } : undefined}
+                          className={cn(
+                            "border-border/40 hover:bg-accent/60 cursor-pointer border-r px-1 py-1 text-center text-[11px] tabular-nums transition-colors select-none",
+                            frozenEndIndex >= 0 ? "bg-background sticky z-10" : "relative",
+                            frozenEndIndex >= 0 && !isRowSelected && "group-hover/row:bg-muted",
+                            isRowSelected
+                              ? "text-primary after:bg-primary/18 font-semibold shadow-[inset_3px_0_0_var(--primary)] after:pointer-events-none after:absolute after:inset-0"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          {rowIndex + 1}
+                        </td>
+
+                        {visibleColumnIds.map((colId, colIdx) => {
+                          const customCol = customColumnMap.get(colId);
+                          const isFrozen = colIdx <= frozenEndIndex;
+                          const isFreezeBoundary = colIdx === frozenEndIndex;
+                          const isColSelected =
+                            selection.mode === "all" || (selection.mode === "columns" && selection.colIds.has(colId));
+                          const isCellSelected =
+                            selection.mode === "cells" && selection.cells.has(makeCellKey(row.uuid, colId));
+                          const isActiveCell =
+                            selection.mode === "cells" &&
+                            selection.activeCell?.rowId === row.uuid &&
+                            selection.activeCell?.colId === colId;
+                          const isSelectedAny = isRowSelected || isColSelected || isCellSelected;
+
+                          return (
+                            <td
+                              key={colId}
+                              data-stage-table-cell
+                              data-row-id={row.uuid}
+                              data-col-id={colId}
+                              data-cell-selected={isSelectedAny ? "true" : undefined}
+                              data-cell-active={isActiveCell ? "true" : undefined}
+                              onPointerDown={(e) => handleCellPointerDown(row.uuid, colId, e)}
+                              onClickCapture={(e) => {
+                                if (suppressCellClickRef.current || e.shiftKey || e.ctrlKey || e.metaKey) {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                }
+                              }}
+                              style={isFrozen ? { left: `${columnLeftOffsets[colIdx]}px` } : undefined}
+                              className={cn(
+                                "border-border/40 overflow-hidden border-r p-0 align-middle",
+                                isFrozen ? "bg-background sticky z-10" : "relative",
+                                isFrozen && !isSelectedAny && "group-hover/row:bg-muted",
+                                isFreezeBoundary && "border-r-primary/45 border-r-2",
+                                isSelectedAny &&
+                                  "after:bg-primary/12 after:pointer-events-none after:absolute after:inset-0",
+                                isActiveCell && "after:ring-primary after:ring-2 after:ring-inset",
+                              )}
+                            >
+                              {colId === "name" && (
+                                <PrimaryTextCell
+                                  row={row}
+                                  t={t}
+                                  canEditOnClick={() => wasSoleActiveOnDownRef.current}
+                                  onCommit={(nextText) => project.stageTable.updateRowPrimaryText(row.uuid, nextText)}
+                                  onJump={() => project.stageTable.focusRowOnCanvas(row.uuid)}
+                                />
+                              )}
+
+                              {colId === "images" && (
+                                <ImagesCell
+                                  project={project}
+                                  images={row.images ?? []}
+                                  disabled={row.canEditImages === false}
+                                  onAddImages={(blobs) => {
+                                    void project.stageTable.addRowImages?.(row.uuid, blobs);
+                                  }}
+                                  onRemoveImage={(imgUuid) => {
+                                    project.stageTable.removeRowImage?.(row.uuid, imgUuid);
+                                  }}
+                                  onPreviewImage={(attachmentId) => openImagePreview(attachmentId, row.uuid)}
+                                  t={t}
+                                />
+                              )}
+
+                              {colId === "createdAt" && (
+                                <div className="text-muted-foreground truncate px-2.5 py-1.5 text-[11px] tabular-nums select-none">
+                                  {formatTimestamp(row.createdAt)}
+                                </div>
+                              )}
+
+                              {colId === "updatedAt" && (
+                                <div className="text-muted-foreground truncate px-2.5 py-1.5 text-[11px] tabular-nums select-none">
+                                  {formatTimestamp(row.updatedAt)}
+                                </div>
+                              )}
+
+                              {colId === "parents" && (
+                                <MultiRelationCell
+                                  selectedItems={row.parents}
+                                  candidates={allRows.filter((c) => c.uuid !== row.uuid)}
+                                  placeholder={t("relationPlaceholder")}
+                                  searchPlaceholder={t("searchNodePlaceholder")}
+                                  emptyText={t("noMatchingNodes")}
+                                  onChange={(nextIds) => project.stageTable.setRowParents(row.uuid, nextIds)}
+                                  t={t}
+                                />
+                              )}
+
+                              {colId === "children" && (
+                                <MultiRelationCell
+                                  selectedItems={row.children}
+                                  candidates={allRows.filter((c) => c.uuid !== row.uuid)}
+                                  placeholder={t("relationPlaceholder")}
+                                  searchPlaceholder={t("searchNodePlaceholder")}
+                                  emptyText={t("noMatchingNodes")}
+                                  onChange={(nextIds) => project.stageTable.setRowChildren(row.uuid, nextIds)}
+                                  t={t}
+                                />
+                              )}
+
+                              {colId === "outer" && (
+                                <SingleRelationCell
+                                  selectedItem={row.outer}
+                                  candidates={getOuterCandidatesForRow(row)}
+                                  placeholder={t("relationPlaceholder")}
+                                  searchPlaceholder={t("searchNodePlaceholder")}
+                                  emptyText={t("noMatchingNodes")}
+                                  onChange={(nextId) => project.stageTable.setRowOuter(row.uuid, nextId)}
+                                  t={t}
+                                />
+                              )}
+
+                              {colId === "inner" && (
+                                <MultiRelationCell
+                                  selectedItems={row.inner}
+                                  candidates={getInnerCandidatesForRow(row)}
+                                  disabled={!row.canEditInner}
+                                  placeholder={t("relationPlaceholder")}
+                                  searchPlaceholder={t("searchNodePlaceholder")}
+                                  emptyText={t("noMatchingNodes")}
+                                  onChange={(nextIds) => project.stageTable.setRowInner(row.uuid, nextIds)}
+                                  t={t}
+                                />
+                              )}
+
+                              {customCol && customCol.type === "text" && (
+                                <TextCustomCell
+                                  value={row.tableFields?.[customCol.id]}
+                                  canEditOnClick={() => wasSoleActiveOnDownRef.current}
+                                  onCommit={(nextVal) =>
+                                    project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
+                                  }
+                                />
+                              )}
+
+                              {customCol && customCol.type === "number" && (
+                                <NumberCustomCell
+                                  value={row.tableFields?.[customCol.id]}
+                                  canEditOnClick={() => wasSoleActiveOnDownRef.current}
+                                  onCommit={(nextVal) =>
+                                    project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
+                                  }
+                                />
+                              )}
+
+                              {customCol && customCol.type === "date" && (
+                                <DateCustomCell
+                                  value={row.tableFields?.[customCol.id]}
+                                  onCommit={(nextVal) =>
+                                    project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
+                                  }
+                                  t={t}
+                                />
+                              )}
+
+                              {customCol && (customCol.type === "select" || customCol.type === "multi_select") && (
+                                <SelectCustomCell
+                                  column={customCol}
+                                  value={row.tableFields?.[customCol.id]}
+                                  onCommit={(nextVal) =>
+                                    project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
+                                  }
+                                  onCreateOrGetOption={(optName) =>
+                                    project.stageTable.createOrGetSelectOption?.(customCol.id, optName) ?? null
+                                  }
+                                  t={t}
+                                />
+                              )}
+
+                              {customCol &&
+                                customCol.type === "formula" &&
+                                (() => {
+                                  const evaluated = row.formulaValues?.[customCol.id];
+                                  const hasFormulaExpr = Boolean(customCol.formula?.trim());
+                                  return (
+                                    <div
+                                      data-formula-cell={customCol.id}
+                                      onDoubleClick={(e) => {
+                                        e.stopPropagation();
+                                        openFormulaEditorForColumn(customCol.id, row.uuid);
+                                      }}
+                                      title={
+                                        evaluated?.kind === "error"
+                                          ? `${evaluated.errorCode}: ${evaluated.errorMessage ?? ""}`
+                                          : evaluated?.displayText ||
+                                            (hasFormulaExpr ? "" : t("formulaEditor.doubleClickHint"))
+                                      }
+                                      className="flex h-full min-h-8 w-full cursor-default items-center px-2.5 py-1 text-xs select-none"
+                                    >
+                                      {evaluated?.kind === "error" ? (
+                                        <Tooltip>
+                                          <TooltipTrigger asChild>
+                                            <span className="bg-destructive/15 text-destructive inline-flex max-w-full items-center truncate rounded px-1.5 py-0.5 font-mono text-[11px] font-medium">
+                                              {evaluated.errorCode ?? "#ERROR!"}
+                                            </span>
+                                          </TooltipTrigger>
+                                          <TooltipContent side="top" className="max-w-72 text-xs">
+                                            {evaluated.errorMessage || evaluated.errorCode}
+                                          </TooltipContent>
+                                        </Tooltip>
+                                      ) : evaluated?.kind === "boolean" ? (
+                                        <span
+                                          className={cn(
+                                            "inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[11px] font-medium",
+                                            evaluated.booleanValue
+                                              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                                              : "bg-muted text-muted-foreground",
+                                          )}
+                                        >
+                                          {evaluated.displayText}
+                                        </span>
+                                      ) : evaluated?.kind === "list" &&
+                                        evaluated.listItems &&
+                                        evaluated.listItems.length > 0 ? (
+                                        <div className="flex max-w-full items-center gap-1 overflow-hidden">
+                                          {evaluated.listItems.map((item, idx) => (
+                                            <span
+                                              key={`${idx}-${item}`}
+                                              className="bg-muted/80 text-foreground inline-flex max-w-28 shrink-0 truncate rounded px-1.5 py-0.5 text-[11px]"
+                                            >
+                                              {item}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      ) : evaluated && evaluated.kind !== "empty" ? (
+                                        <span
+                                          className={cn(
+                                            "truncate",
+                                            (evaluated.kind === "number" || evaluated.kind === "date") &&
+                                              "tabular-nums",
+                                          )}
+                                        >
+                                          {evaluated.displayText}
+                                        </span>
+                                      ) : !hasFormulaExpr ? (
+                                        <span className="text-muted-foreground/45 truncate text-[11px] italic">
+                                          {t("formulaEditor.unsetFormula")}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  );
+                                })()}
+                            </td>
+                          );
+                        })}
+
+                        {/* + 列对应的右侧占位单元格 */}
+                        <td className="p-0" />
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </TableScrollContainer>
+        </>
+      )}
+
+      {/* 记录详情编辑弹窗（供看板 / 甘特 / 画册 / 日历视图快捷编辑全部字段） */}
+      <StageTableRecordDialog
+        project={project}
+        row={recordDialogRow}
+        customColumns={customColumns}
+        getColumnLabel={getColumnLabel}
+        onClose={() => setRecordDialogRowUuid(null)}
+        onPreviewImage={(attId, rowUuid) => openImagePreview(attId, rowUuid)}
+        onOpenFormulaEditor={(colId, rowUuid) => {
+          setRecordDialogRowUuid(null);
+          openFormulaEditorForColumn(colId, rowUuid);
+        }}
+        t={t}
+      />
 
       {/* 当从顶部「属性」面板编辑一个当前隐藏列时的悬浮图 1 面板兜底 */}
       <DialogPrimitive.Root
@@ -4653,34 +5245,16 @@ export default function StageTablePanel({ project }: { project: Project }) {
         );
       })()}
 
-      {/* 图片大图预览弹窗 */}
-      <DialogPrimitive.Root
-        open={previewAttachmentId !== null}
-        onOpenChange={(open) => {
-          if (!open) setPreviewAttachmentId(null);
-        }}
-      >
-        <DialogPrimitive.Portal>
-          <DialogPrimitive.Overlay
-            className="fixed inset-0 z-50 bg-black/70"
-            onClick={() => setPreviewAttachmentId(null)}
-          />
-          <DialogPrimitive.Content
-            onWheel={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-            className="fixed top-1/2 left-1/2 z-50 max-h-[85vh] max-w-[85vw] -translate-x-1/2 -translate-y-1/2 outline-none"
-          >
-            <DialogPrimitive.Title className="sr-only">{t("columns.images")}</DialogPrimitive.Title>
-            {previewAttachmentId && (
-              <AttachmentThumb
-                project={project}
-                attachmentId={previewAttachmentId}
-                className="size-auto max-h-[82vh] max-w-[82vw] rounded-lg object-contain shadow-2xl"
-              />
-            )}
-          </DialogPrimitive.Content>
-        </DialogPrimitive.Portal>
-      </DialogPrimitive.Root>
+      {/* 升级版图片大图灯箱（左右箭头切换 + 底部缩略图预览跳转） */}
+      <ImageLightbox
+        project={project}
+        open={previewLightboxState !== null}
+        items={previewLightboxState?.items ?? []}
+        initialIndex={previewLightboxState?.initialIndex ?? 0}
+        allItems={previewLightboxState?.allItems}
+        allInitialIndex={previewLightboxState?.allInitialIndex}
+        onClose={() => setPreviewLightboxState(null)}
+      />
     </div>
   );
 }

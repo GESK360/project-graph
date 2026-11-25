@@ -40,6 +40,7 @@ export class ControllerContextMenuClass extends ControllerClass {
     }
 
     if (distance < 5) {
+      this.project.copyEngine?.captureContextMenuTargetAtWorldLocation?.(worldLocation);
       this.project.emit("contextmenu", this.project.canvas.viewToClient(mouseUpLocation));
     }
   };

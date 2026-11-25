@@ -29,18 +29,26 @@ import {
   createColumnGroupId,
   createCustomColumnId,
   createSelectOptionId,
+  createTableViewId,
   pickNextSelectOptionColor,
   type CustomColumnType,
   type FormulaEvaluatedCell,
   type SystemColumnId,
+  type TableCalendarViewConfig,
   type TableCellValue,
   type TableColumnFilter,
   type TableColumnGroup,
   type TableColumnSchema,
+  type TableFields,
+  type TableGalleryViewConfig,
+  type TableGanttViewConfig,
+  type TableKanbanViewConfig,
+  type TableRowHeight,
   type TableSelectOption,
   type TableSortConfig,
   type TableSortDirection,
   type TableViewSchema,
+  type TableViewType,
 } from "@/types/table";
 import { Color, ProgressNumber, Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
@@ -217,9 +225,311 @@ export class StageTableService implements Service {
     }
   }
 
+  public getViews(): TableViewSchema[] {
+    return this.project.table.views;
+  }
+
   public getActiveView(): TableViewSchema {
     const { views, activeViewId } = this.project.table;
     return views.find((view) => view.id === activeViewId) ?? views[0];
+  }
+
+  private buildUniqueViewName(baseName: string, excludeViewId?: string): string {
+    const trimmed = baseName.trim() || "视图";
+    const existing = new Set(this.project.table.views.filter((v) => v.id !== excludeViewId).map((v) => v.name));
+    if (!existing.has(trimmed)) return trimmed;
+    let suffix = 2;
+    while (existing.has(`${trimmed} ${suffix}`)) {
+      suffix++;
+    }
+    return `${trimmed} ${suffix}`;
+  }
+
+  public setActiveView(viewId: string): boolean {
+    if (!this.project.table.views.some((v) => v.id === viewId)) {
+      return false;
+    }
+    if (this.project.table.activeViewId === viewId) {
+      return true;
+    }
+    this.project.table = {
+      ...this.project.table,
+      activeViewId: viewId,
+    };
+    this.project.projectState = ProjectState.Unsaved;
+    this.notifyChange();
+    return true;
+  }
+
+  public createView(input: { type: TableViewType; name?: string }): TableViewSchema {
+    const defaultLabels: Record<TableViewType, string> = {
+      table: "表格",
+      kanban: "看板",
+      gantt: "甘特",
+      gallery: "画册",
+      calendar: "日历",
+    };
+    const baseName = input.name?.trim() || defaultLabels[input.type];
+    const uniqueName = this.buildUniqueViewName(baseName);
+    const activeView = this.getActiveView();
+    const columns = this.project.table.columns;
+    const selectCols = columns.filter((c) => c.type === "select");
+    const dateCols = columns.filter((c) => c.type === "date");
+
+    const baseVisible = activeView ? [...activeView.visibleColumnIds] : ["name"];
+    const baseWidths = activeView?.columnWidths ? { ...activeView.columnWidths } : {};
+
+    let nextView: TableViewSchema = {
+      id: createTableViewId(),
+      name: uniqueName,
+      type: input.type,
+      deletable: true,
+      visibleColumnIds: baseVisible,
+      columnWidths: baseWidths,
+    };
+
+    if (input.type === "kanban") {
+      nextView = {
+        ...nextView,
+        kanban: {
+          groupByColumnId: selectCols[0]?.id ?? null,
+          showCover: false,
+          coverFit: "cover",
+          showFieldNames: true,
+          hideEmptyGroups: false,
+        },
+      };
+    } else if (input.type === "gantt") {
+      nextView = {
+        ...nextView,
+        gantt: {
+          startDateColumnId: dateCols[0]?.id ?? "createdAt",
+          endDateColumnId: dateCols[1]?.id ?? null,
+          colorColumnId: selectCols[0]?.id ?? null,
+          timeScale: "month",
+          groupByColumnId: null,
+          showLeftTable: true,
+          leftPaneWidth: 280,
+          showBarLabel: true,
+          showDuration: true,
+          highlightWeekends: true,
+        },
+      };
+    } else if (input.type === "gallery") {
+      nextView = {
+        ...nextView,
+        gallery: {
+          coverMode: "images",
+          coverFit: "cover",
+          cardSize: "medium",
+          showFieldNames: false,
+        },
+      };
+    } else if (input.type === "calendar") {
+      nextView = {
+        ...nextView,
+        calendar: {
+          dateColumnId: dateCols[0]?.id ?? "createdAt",
+          endDateColumnId: dateCols[1]?.id ?? null,
+          colorColumnId: selectCols[0]?.id ?? null,
+          displayMode: "month",
+          cellHeight: "medium",
+          weekStartsOn: 1,
+          showFieldNames: false,
+        },
+      };
+    }
+
+    this.project.table = {
+      ...this.project.table,
+      views: [...this.project.table.views, nextView],
+      activeViewId: nextView.id,
+    };
+    this.project.projectState = ProjectState.Unsaved;
+    this.notifyChange();
+    return nextView;
+  }
+
+  public renameView(viewId: string, nextName: string): boolean {
+    const trimmed = nextName.trim();
+    if (!trimmed) return false;
+    const target = this.project.table.views.find((v) => v.id === viewId);
+    if (!target || target.name === trimmed) return false;
+    this.project.table = {
+      ...this.project.table,
+      views: this.project.table.views.map((v) => (v.id === viewId ? { ...v, name: trimmed } : v)),
+    };
+    this.project.projectState = ProjectState.Unsaved;
+    this.notifyChange();
+    return true;
+  }
+
+  public duplicateView(viewId: string, copySuffix: string = "副本"): TableViewSchema | null {
+    const sourceIdx = this.project.table.views.findIndex((v) => v.id === viewId);
+    if (sourceIdx === -1) return null;
+    const source = this.project.table.views[sourceIdx];
+    const clonedName = this.buildUniqueViewName(`${source.name} ${copySuffix}`);
+    const duplicated: TableViewSchema = {
+      ...source,
+      id: createTableViewId(),
+      name: clonedName,
+      deletable: true,
+      visibleColumnIds: [...source.visibleColumnIds],
+      columnWidths: source.columnWidths ? { ...source.columnWidths } : {},
+      columnGroups: source.columnGroups
+        ? source.columnGroups.map((g) => ({ id: createColumnGroupId(), name: g.name, columnIds: [...g.columnIds] }))
+        : undefined,
+      sort: source.sort ? { ...source.sort } : undefined,
+      filters: source.filters ? source.filters.map((f) => ({ ...f, values: [...f.values] })) : undefined,
+      kanban: source.kanban ? { ...source.kanban } : undefined,
+      gantt: source.gantt ? { ...source.gantt } : undefined,
+      gallery: source.gallery ? { ...source.gallery } : undefined,
+      calendar: source.calendar ? { ...source.calendar } : undefined,
+    };
+
+    const nextViews = [...this.project.table.views];
+    nextViews.splice(sourceIdx + 1, 0, duplicated);
+    this.project.table = {
+      ...this.project.table,
+      views: nextViews,
+      activeViewId: duplicated.id,
+    };
+    this.project.projectState = ProjectState.Unsaved;
+    this.notifyChange();
+    return duplicated;
+  }
+
+  public deleteView(viewId: string): boolean {
+    const views = this.project.table.views;
+    const idx = views.findIndex((v) => v.id === viewId);
+    if (idx === -1) return false;
+    const target = views[idx];
+    if (!target.deletable || views.length <= 1) return false;
+
+    const nextViews = views.filter((v) => v.id !== viewId);
+    const nextActiveId =
+      this.project.table.activeViewId === viewId ? nextViews[Math.max(0, idx - 1)].id : this.project.table.activeViewId;
+    this.project.table = {
+      ...this.project.table,
+      views: nextViews,
+      activeViewId: nextActiveId,
+    };
+    this.project.projectState = ProjectState.Unsaved;
+    this.notifyChange();
+    return true;
+  }
+
+  public reorderViews(draggedViewId: string, targetViewId: string, position: "before" | "after"): boolean {
+    if (draggedViewId === targetViewId) return false;
+    const views = this.project.table.views;
+    const dragged = views.find((v) => v.id === draggedViewId);
+    if (!dragged || !views.some((v) => v.id === targetViewId)) return false;
+
+    const withoutDragged = views.filter((v) => v.id !== draggedViewId);
+    const targetIdx = withoutDragged.findIndex((v) => v.id === targetViewId);
+    if (targetIdx === -1) return false;
+    const insertIdx = position === "before" ? targetIdx : targetIdx + 1;
+    const nextViews = [...withoutDragged];
+    nextViews.splice(insertIdx, 0, dragged);
+
+    if (nextViews.every((v, i) => v.id === views[i].id)) return false;
+    this.project.table = {
+      ...this.project.table,
+      views: nextViews,
+    };
+    this.project.projectState = ProjectState.Unsaved;
+    this.notifyChange();
+    return true;
+  }
+
+  public updateActiveViewConfig(patch: {
+    rowHeight?: TableRowHeight;
+    kanban?: Partial<TableKanbanViewConfig>;
+    gantt?: Partial<TableGanttViewConfig>;
+    gallery?: Partial<TableGalleryViewConfig>;
+    calendar?: Partial<TableCalendarViewConfig>;
+  }): void {
+    const activeView = this.getActiveView();
+    this.project.table = {
+      ...this.project.table,
+      views: this.project.table.views.map((view) => {
+        if (view.id !== activeView.id) return view;
+        return {
+          ...view,
+          ...(patch.rowHeight !== undefined ? { rowHeight: patch.rowHeight } : {}),
+          ...(patch.kanban ? { kanban: { ...(view.kanban ?? {}), ...patch.kanban } } : {}),
+          ...(patch.gantt ? { gantt: { ...(view.gantt ?? {}), ...patch.gantt } } : {}),
+          ...(patch.gallery ? { gallery: { ...(view.gallery ?? {}), ...patch.gallery } } : {}),
+          ...(patch.calendar ? { calendar: { ...(view.calendar ?? {}), ...patch.calendar } } : {}),
+        };
+      }),
+    };
+    this.project.projectState = ProjectState.Unsaved;
+    this.notifyChange();
+  }
+
+  private pruneColumnReferencesInView(
+    view: TableViewSchema,
+    columnId: string,
+    nextType?: CustomColumnType,
+  ): TableViewSchema {
+    const removed = nextType === undefined;
+    const canColor = nextType === "select" || nextType === "multi_select";
+    const canDate = nextType === "date" || nextType === "formula";
+
+    let kanban = view.kanban;
+    if (kanban && kanban.groupByColumnId === columnId && removed) {
+      kanban = { ...kanban, groupByColumnId: null };
+    }
+
+    let gantt = view.gantt;
+    if (gantt) {
+      let changed = false;
+      const nextGantt = { ...gantt };
+      if (nextGantt.startDateColumnId === columnId && (removed || !canDate)) {
+        nextGantt.startDateColumnId = "createdAt";
+        changed = true;
+      }
+      if (nextGantt.endDateColumnId === columnId && (removed || !canDate)) {
+        nextGantt.endDateColumnId = null;
+        changed = true;
+      }
+      if (nextGantt.colorColumnId === columnId && (removed || !canColor)) {
+        nextGantt.colorColumnId = null;
+        changed = true;
+      }
+      if (nextGantt.groupByColumnId === columnId && removed) {
+        nextGantt.groupByColumnId = null;
+        changed = true;
+      }
+      if (changed) gantt = nextGantt;
+    }
+
+    let calendar = view.calendar;
+    if (calendar) {
+      let changed = false;
+      const nextCal = { ...calendar };
+      if (nextCal.dateColumnId === columnId && (removed || !canDate)) {
+        nextCal.dateColumnId = "createdAt";
+        changed = true;
+      }
+      if (nextCal.endDateColumnId === columnId && (removed || !canDate)) {
+        nextCal.endDateColumnId = null;
+        changed = true;
+      }
+      if (nextCal.colorColumnId === columnId && (removed || !canColor)) {
+        nextCal.colorColumnId = null;
+        changed = true;
+      }
+      if (changed) calendar = nextCal;
+    }
+
+    return {
+      ...view,
+      ...(kanban ? { kanban } : {}),
+      ...(gantt ? { gantt } : {}),
+      ...(calendar ? { calendar } : {}),
+    };
   }
 
   public getColumns(): TableColumnSchema[] {
@@ -664,10 +974,14 @@ export class StageTableService implements Service {
       views: typeChanged
         ? this.project.table.views.map((view) => {
             const nextFilters = (view.filters ?? []).filter((f) => f.columnId !== columnId);
-            return {
-              ...view,
-              filters: nextFilters.length > 0 ? nextFilters : undefined,
-            };
+            return this.pruneColumnReferencesInView(
+              {
+                ...view,
+                filters: nextFilters.length > 0 ? nextFilters : undefined,
+              },
+              columnId,
+              nextType,
+            );
           })
         : this.project.table.views,
     };
@@ -713,15 +1027,18 @@ export class StageTableService implements Service {
           .filter((grp) => grp.columnIds.length > 0);
         const nextSort = view.sort?.columnId === columnId ? undefined : view.sort;
         const nextFilters = (view.filters ?? []).filter((flt) => flt.columnId !== columnId);
-        return {
-          ...view,
-          visibleColumnIds: prevVisible.filter((id) => id !== columnId),
-          columnWidths: nextWidths,
-          frozenColumnId: nextFrozen,
-          columnGroups: nextGroups.length > 0 ? nextGroups : undefined,
-          sort: nextSort,
-          filters: nextFilters.length > 0 ? nextFilters : undefined,
-        };
+        return this.pruneColumnReferencesInView(
+          {
+            ...view,
+            visibleColumnIds: prevVisible.filter((id) => id !== columnId),
+            columnWidths: nextWidths,
+            frozenColumnId: nextFrozen,
+            columnGroups: nextGroups.length > 0 ? nextGroups : undefined,
+            sort: nextSort,
+            filters: nextFilters.length > 0 ? nextFilters : undefined,
+          },
+          columnId,
+        );
       }),
     };
 
@@ -1411,24 +1728,106 @@ export class StageTableService implements Service {
   }
 
   public updateRowCustomField(uuid: string, columnId: string, value: TableCellValue): boolean {
-    const colSchema = this.getColumnSchema(columnId);
-    if (colSchema?.type === "formula") {
-      return false;
-    }
+    return this.updateRowCustomFields(uuid, { [columnId]: value });
+  }
+
+  public updateRowCustomFields(uuid: string, patch: Record<string, TableCellValue>): boolean {
     const entity = this.project.stageManager.get(uuid);
     if (!entity || !isTableRowEntity(entity)) {
       return false;
     }
     const nextFields = cloneTableFields(entity.tableFields);
-    if (value === null || value === "" || (Array.isArray(value) && value.length === 0)) {
-      delete nextFields[columnId];
-    } else {
-      nextFields[columnId] = Array.isArray(value) ? [...value] : value;
+    let mutated = false;
+    for (const [columnId, value] of Object.entries(patch)) {
+      const colSchema = this.getColumnSchema(columnId);
+      if (colSchema?.type === "formula") {
+        continue;
+      }
+      if (value === null || value === "" || (Array.isArray(value) && value.length === 0)) {
+        if (columnId in nextFields) {
+          delete nextFields[columnId];
+          mutated = true;
+        }
+      } else {
+        nextFields[columnId] = Array.isArray(value) ? [...value] : value;
+        mutated = true;
+      }
+    }
+    if (!mutated) {
+      return false;
     }
     entity.tableFields = nextFields;
     this.project.historyManager.recordStep();
     this.notifyChange();
     return true;
+  }
+
+  public createRow(options?: {
+    text?: string;
+    tableFields?: TableFields;
+    outerSectionUuid?: string | null;
+  }): StageTableRow | null {
+    const now = Date.now();
+    const baseCenter = this.project.camera?.location?.clone?.() ?? new Vector(0, 0);
+    const existingRects = this.getRowEntities().map((entity) => entity.collisionBox.getRectangle());
+    let spawnLocation = new Vector(baseCenter.x - 50, baseCenter.y - 25);
+
+    // 避免与现有节点完全重叠，最多向下错位尝试 24 次
+    for (let step = 0; step < 24; step++) {
+      const candidateRect = new Rectangle(spawnLocation, new Vector(140, 64));
+      const collides = existingRects.some((r) => r.isCollideWith(candidateRect));
+      if (!collides) break;
+      spawnLocation = new Vector(spawnLocation.x + (step % 4 === 3 ? 180 : 0), spawnLocation.y + 84);
+    }
+
+    const sanitizedFields = cloneTableFields(options?.tableFields);
+    for (const colId of Object.keys(sanitizedFields)) {
+      const schema = this.getColumnSchema(colId);
+      if (!schema || schema.type === "formula") {
+        delete sanitizedFields[colId];
+      }
+    }
+
+    const node = new TextNode(this.project, {
+      text: options?.text ?? "",
+      collisionBox: new CollisionBox([new Rectangle(spawnLocation, new Vector(100, 50))]),
+      color: Color.Transparent,
+      borderStyle: Settings.textNodeInitBorderStyle ?? "solid",
+      createdAt: now,
+      updatedAt: now,
+      tableFields: sanitizedFields,
+    });
+
+    if (typeof this.project.stageManager?.add === "function") {
+      this.project.stageManager.add(node);
+    } else {
+      this.project.stage.push(node);
+    }
+
+    if (options?.outerSectionUuid) {
+      const targetOuter = this.project.stageManager.get(options.outerSectionUuid);
+      if (targetOuter && isTableRowEntity(targetOuter)) {
+        let targetSection: Section | null = null;
+        if (targetOuter instanceof Section) {
+          targetSection = targetOuter;
+        } else if (targetOuter instanceof TextNode) {
+          targetSection = this.promoteTextNodeToSection(targetOuter);
+        }
+        if (targetSection) {
+          this.placeEntityInsideSection(node, targetSection);
+          if (!targetSection.children.includes(node)) {
+            targetSection.children.push(node);
+          }
+          node.parentSection = targetSection;
+          targetSection.adjustLocationAndSize();
+        }
+      }
+    }
+
+    this.project.stageManager.updateReferences?.();
+    this.project.historyManager.recordStep();
+    this.notifyChange();
+    return this.getRows().find((r) => r.uuid === node.uuid) ?? null;
   }
 
   public async addRowImages(uuid: string, blobs: Blob[]): Promise<boolean> {
@@ -1470,7 +1869,31 @@ export class StageTableService implements Service {
       return false;
     }
 
+    const wasSelected = latestEntity.isSelected;
+    const prevCenters = new Map<string, Vector>();
+    const ancestorsBefore: Section[] = [];
+    prevCenters.set(latestEntity.uuid, latestEntity.collisionBox.getRectangle().center);
+    for (let parent = latestEntity.parentSection; parent; parent = parent.parentSection) {
+      prevCenters.set(parent.uuid, parent.collisionBox.getRectangle().center);
+      ancestorsBefore.push(parent);
+    }
+
     const targetSection = latestEntity instanceof Section ? latestEntity : this.promoteTextNodeToSection(latestEntity);
+    if (wasSelected) {
+      targetSection.isSelected = true;
+    }
+
+    const syncAncestorsAndReflow = (centers: Map<string, Vector>) => {
+      targetSection.adjustLocationAndSize();
+      const ancestors: Section[] = [];
+      for (let parent = targetSection.parentSection; parent; parent = parent.parentSection) {
+        parent.adjustLocationAndSize();
+        ancestors.push(parent);
+      }
+      if (isPersistentMindMapDragEnabled()) {
+        reflowMindMapTreesForEntities(this.project, [targetSection, ...ancestors], centers);
+      }
+    };
 
     for (const item of preparedItems) {
       const attachmentId = this.project.addAttachment(item.blob);
@@ -1484,6 +1907,29 @@ export class StageTableService implements Service {
         },
         false,
         () => {
+          const liveSection = this.project.stageManager.get(targetSection.uuid);
+          if (liveSection instanceof Section) {
+            const beforeSize = liveSection.collisionBox.getRectangle().size.clone();
+            const readyCenters = new Map<string, Vector>([
+              [liveSection.uuid, liveSection.collisionBox.getRectangle().center],
+            ]);
+            const readyAncestors: Section[] = [];
+            for (let parent = liveSection.parentSection; parent; parent = parent.parentSection) {
+              readyCenters.set(parent.uuid, parent.collisionBox.getRectangle().center);
+              readyAncestors.push(parent);
+            }
+            liveSection.adjustLocationAndSize();
+            for (const ancestor of readyAncestors) {
+              ancestor.adjustLocationAndSize();
+            }
+            const afterSize = liveSection.collisionBox.getRectangle().size;
+            if (
+              isPersistentMindMapDragEnabled() &&
+              (Math.abs(afterSize.x - beforeSize.x) > 0.5 || Math.abs(afterSize.y - beforeSize.y) > 0.5)
+            ) {
+              reflowMindMapTreesForEntities(this.project, [liveSection, ...readyAncestors], readyCenters);
+            }
+          }
           this.notifyChange();
         },
       );
@@ -1494,9 +1940,9 @@ export class StageTableService implements Service {
     }
 
     this.project.stageManager.updateReferences();
-    targetSection.adjustLocationAndSize();
-    if (isPersistentMindMapDragEnabled()) {
-      reflowMindMapTreesForEntities(this.project, [targetSection]);
+    syncAncestorsAndReflow(prevCenters);
+    if (ancestorsBefore.length > 0) {
+      this.project.stageManager.updateReferences();
     }
     this.project.historyManager.recordStep();
     this.notifyChange();

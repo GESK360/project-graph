@@ -593,6 +593,7 @@ export const shortcutKeysGroups: ShortcutKeysGroup[] = [
       "searchText",
       "copy",
       "paste",
+      "pasteImageIntoNode",
       "pasteWithOriginLocation",
       "deleteSelectedStageObjects",
       "openCursorChat",

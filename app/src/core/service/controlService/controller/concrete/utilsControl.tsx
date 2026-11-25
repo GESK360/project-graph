@@ -19,7 +19,8 @@ import type { Direction } from "@/types/directions";
 import { colorInvert, Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
 import { toast } from "sonner";
-import { isPersistentMindMapDragEnabled, reflowMindMapTree } from "./MindMapDrag";
+import { prepareImageBlobForImport } from "@/core/service/dataManageService/imageUtils";
+import { isPersistentMindMapDragEnabled, reflowMindMapTreesForEntities } from "./MindMapDrag";
 import {
   autoChangeTextNodeToLatexNode,
   autoChangeTextNodeToReferenceBlock,
@@ -57,7 +58,12 @@ export class ControllerUtils {
     // 停止实体移动漂移
     this.project.entityMoveManager.stopImmediately();
     const rectWorld = clickedNode.collisionBox.getRectangle();
-    const centerBeforeEdit = rectWorld.center;
+    const sizeBeforeEdit = rectWorld.size.clone();
+    const prevCenters = new Map<string, Vector>([[clickedNode.uuid, rectWorld.center]]);
+    const fatherSectionsBefore = this.project.sectionMethods.getFatherSectionsList(clickedNode);
+    for (const sec of fatherSectionsBefore) {
+      prevCenters.set(sec.uuid, sec.collisionBox.getRectangle().center);
+    }
     const rectView = this.project.renderer.transformWorld2View(rectWorld);
     const rectClient = this.viewRectangleToClient(rectView);
     const clientScale = this.project.canvas.viewToClientScale();
@@ -183,6 +189,9 @@ export class ControllerUtils {
         Settings.textNodeExitEditModeOnWheel,
         // fixedWidth：manual 模式宽度固定为节点当前视图宽度，auto 模式不传（自动扩展）
         clickedNode.sizeAdjust === "manual" ? rectClient.width : undefined,
+        (event, finish) => {
+          this.handleEditingNodePasteImage(event, clickedNode.uuid, finish);
+        },
       )
       .then(async () => {
         void TabWorkspace.close(lastAutoCompleteTabId);
@@ -191,17 +200,86 @@ export class ControllerUtils {
         clickedNode.isEditing = false;
         this.project.controller.isCameraLocked = false;
         if (this.project.stageManager.getTextNodeByUUID(clickedNode.uuid) !== clickedNode) return;
-        if (clickedNode.text !== textBeforeEdit) {
+        const fatherSections = this.project.sectionMethods.getFatherSectionsList(clickedNode);
+        for (const section of fatherSections) {
+          section.adjustLocationAndSize();
+        }
+        const sizeAfterEdit = clickedNode.collisionBox.getRectangle().size;
+        const sizeChanged =
+          Math.abs(sizeAfterEdit.x - sizeBeforeEdit.x) > 0.5 || Math.abs(sizeAfterEdit.y - sizeBeforeEdit.y) > 0.5;
+        if (clickedNode.text !== textBeforeEdit || sizeChanged) {
           if (isPersistentMindMapDragEnabled()) {
-            reflowMindMapTree(this.project, clickedNode, centerBeforeEdit);
+            reflowMindMapTreesForEntities(this.project, [clickedNode, ...fatherSections], prevCenters);
           }
-          this.project.historyManager.recordStep();
+          if (clickedNode.text !== textBeforeEdit) {
+            this.project.historyManager.recordStep();
+          }
         }
 
         await autoChangeTextNodeToReferenceBlock(this.project, clickedNode);
         // 完整公式在退出编辑时转换，编辑期间保留源码。
         await autoChangeTextNodeToLatexNode(this.project, clickedNode);
+        const liveAfterConvert = this.project.stageManager.get(clickedNode.uuid);
+        if (liveAfterConvert && liveAfterConvert !== clickedNode && isPersistentMindMapDragEnabled()) {
+          reflowMindMapTreesForEntities(this.project, [liveAfterConvert as Entity, ...fatherSections], prevCenters);
+        }
       });
+  }
+
+  private handleEditingNodePasteImage(
+    event: ClipboardEvent,
+    targetUuid: string,
+    finish: (value?: string) => void,
+  ): void {
+    if (!this.project.getService?.("stageTable")) return;
+    const plainText = event.clipboardData?.getData("text/plain") ?? "";
+    const imageFiles: File[] = [];
+    if (event.clipboardData) {
+      for (const file of Array.from(event.clipboardData.files ?? [])) {
+        if (file.type.startsWith("image/")) {
+          imageFiles.push(file);
+        }
+      }
+      if (imageFiles.length === 0) {
+        for (const item of Array.from(event.clipboardData.items ?? [])) {
+          if (item.type.startsWith("image/")) {
+            const f = item.getAsFile();
+            if (f) imageFiles.push(f);
+          }
+        }
+      }
+    }
+
+    if (imageFiles.length > 0 && plainText.length === 0) {
+      event.preventDefault();
+      finish();
+      void (async () => {
+        const preparedBlobs: Blob[] = [];
+        for (const file of imageFiles) {
+          const prepared = await prepareImageBlobForImport(file);
+          preparedBlobs.push(prepared.blob);
+        }
+        if (preparedBlobs.length > 0) {
+          const ok = await this.project.stageTable.addRowImages(targetUuid, preparedBlobs);
+          if (ok) {
+            toast.success("已将图片粘贴到节点");
+          }
+        }
+      })();
+      return;
+    }
+
+    // Windows WebView2 中截图剪贴板可能不暴露给 clipboardData，当无纯文本时回退检查 Tauri 图片剪贴板
+    if (plainText.length === 0 && imageFiles.length === 0) {
+      void this.project.copyEngine?.readClipboardImageBlobs?.().then(async (blobs) => {
+        if (blobs.length === 0) return;
+        finish();
+        const ok = await this.project.stageTable.addRowImages(targetUuid, blobs);
+        if (ok) {
+          toast.success("已将图片粘贴到节点");
+        }
+      });
+    }
   }
 
   editEdgeText(edge: Edge | MultiTargetUndirectedEdge, selectAll = true): Promise<void> {
@@ -397,7 +475,12 @@ export class ControllerUtils {
     this.project.controller.isCameraLocked = true;
     this.project.camera.stopImmediately();
     const textBeforeEdit = section.text;
-    const centerBeforeEdit = section.rectangle.center;
+    const prevCenters = new Map<string, Vector>([[section.uuid, section.rectangle.center]]);
+    const ancestorsBefore: Section[] = [];
+    for (let parent = section.parentSection; parent; parent = parent.parentSection) {
+      prevCenters.set(parent.uuid, parent.rectangle.center);
+      ancestorsBefore.push(parent);
+    }
     section.isEditingTitle = true;
     const inputViewLocation = this.project.renderer
       .transformWorld2View(section.rectangle.location.subtract(new Vector(0, section.text === "" ? 50 : 0)))
@@ -425,6 +508,9 @@ export class ControllerUtils {
           outline: `solid ${2 * this.project.camera.currentScale * clientScale.x}px ${this.project.stageStyleManager.currentStyle.effects.successShadow.toNewAlpha(0.25).toString()}`,
           marginTop: `${-8 * this.project.camera.currentScale * clientScale.y}px`,
         },
+        (event, finish) => {
+          this.handleEditingNodePasteImage(event, section.uuid, finish);
+        },
       )
       .then(() => {
         section.isEditingTitle = false;
@@ -436,7 +522,7 @@ export class ControllerUtils {
           }
         }
         if (isPersistentMindMapDragEnabled()) {
-          reflowMindMapTree(this.project, section, centerBeforeEdit);
+          reflowMindMapTreesForEntities(this.project, [section, ...ancestorsBefore], prevCenters);
         }
         this.project.historyManager.recordStep();
       });

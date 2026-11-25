@@ -25,6 +25,7 @@ vi.mock("@/core/service/Settings", () => ({
     showDebug: false,
     isEnableEntityCollision: false,
     sectionInitBorderStyle: "solid",
+    textNodeInitBorderStyle: "solid",
     defaultEdgeLineType: "solid",
     defaultEdgeArrowType: "default",
     enableAutoEdgeWidth: false,
@@ -914,5 +915,104 @@ describe("StageTableService & .prg v2.8.0", () => {
     expect(project.stageTable.getRows().find((r) => r.uuid === "q1")?.formulaValues[colInterval.id]?.numericValue).toBe(
       42,
     );
+  });
+
+  it("supports creating, switching, renaming, duplicating, reordering, and deleting multiple views with isolated state", () => {
+    const project = createTestHarness();
+    const statusCol = project.stageTable.addCustomColumn({ name: "出处", type: "select" })!;
+    const optBook = project.stageTable.createOrGetSelectOption(statusCol.id, "课本")!;
+    const startCol = project.stageTable.addCustomColumn({ name: "开始日期", type: "date" })!;
+    const endCol = project.stageTable.addCustomColumn({ name: "结束日期", type: "date" })!;
+
+    const defaultView = project.stageTable.getActiveView();
+    expect(defaultView.deletable).toBe(false);
+    expect(project.stageTable.deleteView(defaultView.id)).toBe(false);
+
+    // Create Kanban, Gantt, Gallery, Calendar, and a second Kanban view
+    const kanban1 = project.stageTable.createView({ type: "kanban", name: "看板" });
+    expect(kanban1.type).toBe("kanban");
+    expect(kanban1.name).toBe("看板");
+    expect(kanban1.kanban?.groupByColumnId).toBe(statusCol.id);
+    expect(project.stageTable.getActiveView().id).toBe(kanban1.id);
+
+    const kanban2 = project.stageTable.createView({ type: "kanban", name: "看板" });
+    expect(kanban2.name).toBe("看板 2");
+
+    const gantt = project.stageTable.createView({ type: "gantt", name: "甘特" });
+    expect(gantt.gantt?.startDateColumnId).toBe(startCol.id);
+    expect(gantt.gantt?.endDateColumnId).toBe(endCol.id);
+    expect(gantt.gantt?.timeScale).toBe("month");
+
+    const gallery = project.stageTable.createView({ type: "gallery", name: "画册" });
+    expect(gallery.gallery?.coverMode).toBe("images");
+
+    const calendar = project.stageTable.createView({ type: "calendar", name: "日历" });
+    expect(calendar.calendar?.dateColumnId).toBe(startCol.id);
+    expect(calendar.calendar?.endDateColumnId).toBe(endCol.id);
+    expect(calendar.calendar?.displayMode).toBe("month");
+
+    expect(project.stageTable.getViews().length).toBe(6);
+
+    // Per-view filter/sort isolation
+    project.stageTable.setColumnFilter(statusCol.id, { values: [optBook.id], includeEmpty: false });
+    project.stageTable.setSort({ columnId: "name", direction: "desc" });
+    expect(project.stageTable.getFilters().length).toBe(1);
+    expect(project.stageTable.getSort()?.direction).toBe("desc");
+
+    project.stageTable.setActiveView(defaultView.id);
+    expect(project.stageTable.getFilters().length).toBe(0);
+    expect(project.stageTable.getSort()).toBeNull();
+
+    // Rename & Duplicate & Reorder & Delete
+    expect(project.stageTable.renameView(kanban2.id, "复习看板")).toBe(true);
+    expect(project.stageTable.getViews().find((v) => v.id === kanban2.id)?.name).toBe("复习看板");
+
+    const dup = project.stageTable.duplicateView(calendar.id, "副本")!;
+    expect(dup.type).toBe("calendar");
+    expect(dup.filters?.length).toBe(1);
+    expect(dup.sort?.direction).toBe("desc");
+    expect(project.stageTable.getActiveView().id).toBe(dup.id);
+
+    expect(project.stageTable.reorderViews(dup.id, defaultView.id, "after")).toBe(true);
+    expect(project.stageTable.getViews()[1].id).toBe(dup.id);
+
+    expect(project.stageTable.deleteView(dup.id)).toBe(true);
+    expect(project.stageTable.getViews().some((v) => v.id === dup.id)).toBe(false);
+
+    // Deleting a referenced column cleans up view configs across all views
+    project.stageTable.deleteCustomColumn(startCol.id);
+    const updatedGantt = project.stageTable.getViews().find((v) => v.id === gantt.id)!;
+    const updatedCal = project.stageTable.getViews().find((v) => v.id === calendar.id)!;
+    expect(updatedGantt.gantt?.startDateColumnId).toBe("createdAt");
+    expect(updatedCal.calendar?.dateColumnId).toBe("createdAt");
+
+    // Round-trip normalizeTableData preserves multi-view schemas cleanly
+    const normalized = normalizeTableData(JSON.parse(JSON.stringify(project.table)));
+    expect(normalized.views.length).toBe(project.table.views.length);
+    expect(normalized.views.map((v) => v.type)).toEqual(["table", "kanban", "kanban", "gantt", "gallery", "calendar"]);
+  });
+
+  it("creates rows on canvas with prefilled fields and atomically updates multiple fields", () => {
+    const project = createTestHarness();
+    const startCol = project.stageTable.addCustomColumn({ name: "开始", type: "date" })!;
+    const endCol = project.stageTable.addCustomColumn({ name: "结束", type: "date" })!;
+
+    const created = project.stageTable.createRow({
+      text: "细胞器图像",
+      tableFields: { [startCol.id]: "2026-11-25" },
+    });
+    expect(created).toBeTruthy();
+    expect(created!.primaryText).toBe("细胞器图像");
+    expect(created!.tableFields[startCol.id]).toBe("2026-11-25");
+
+    const prevRef = created!.entity.tableFields;
+    const ok = project.stageTable.updateRowCustomFields(created!.uuid, {
+      [startCol.id]: "2026-11-26",
+      [endCol.id]: "2026-11-28",
+    });
+    expect(ok).toBe(true);
+    expect(created!.entity.tableFields).not.toBe(prevRef);
+    expect(created!.entity.tableFields[startCol.id]).toBe("2026-11-26");
+    expect(created!.entity.tableFields[endCol.id]).toBe("2026-11-28");
   });
 });

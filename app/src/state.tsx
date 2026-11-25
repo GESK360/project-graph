@@ -69,3 +69,23 @@ export const currentUserAtom = atom<AuthUser | null>(null);
 export const isAuthLoadingAtom = atom(true);
 
 export const commandPaletteVisibleAtom = atom(false);
+
+export interface GlobalImageLightboxState {
+  project: unknown;
+  items: Array<{
+    attachmentId: string;
+    label?: string;
+    rowUuid?: string;
+    imageNodeUuid?: string;
+  }>;
+  initialIndex: number;
+  allItems?: Array<{
+    attachmentId: string;
+    label?: string;
+    rowUuid?: string;
+    imageNodeUuid?: string;
+  }>;
+  allInitialIndex?: number;
+}
+
+export const imageLightboxAtom = atom<GlobalImageLightboxState | null>(null);

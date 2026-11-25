@@ -69,13 +69,125 @@ const MockProjectClass = vi.hoisted(() => {
         selectRowsOnCanvas: vi.fn((uuids: string[]) => {
           this.selectedCanvasRowIds = [...uuids];
         }),
-        getSort: () => this.table.views[0].sort ?? null,
+        getViews: () => this.table.views,
+        getActiveView: () => this.table.views.find((v: any) => v.id === this.table.activeViewId) ?? this.table.views[0],
+        setActiveView: (viewId: string) => {
+          if (!this.table.views.some((v: any) => v.id === viewId)) return false;
+          this.table.activeViewId = viewId;
+          this.listeners.forEach((fn) => fn());
+          return true;
+        },
+        createView: ({ type, name }: { type: any; name?: string }) => {
+          const base = name || type;
+          const names = new Set(this.table.views.map((v: any) => v.name));
+          let finalName = base;
+          let idx = 2;
+          while (names.has(finalName)) {
+            finalName = `${base} ${idx++}`;
+          }
+          const selectCol = this.table.columns.find((c: any) => c.type === "select");
+          const dateCols = this.table.columns.filter((c: any) => c.type === "date");
+          const cur = this.stageTable.getActiveView();
+          const nextView: any = {
+            id: `view_${this.table.views.length + 1}`,
+            name: finalName,
+            type,
+            deletable: true,
+            visibleColumnIds: [...cur.visibleColumnIds],
+            columnWidths: { ...(cur.columnWidths ?? {}) },
+            ...(type === "kanban" ? { kanban: { groupByColumnId: selectCol?.id ?? null, showFieldNames: true } } : {}),
+            ...(type === "gantt"
+              ? {
+                  gantt: {
+                    startDateColumnId: dateCols[0]?.id ?? "createdAt",
+                    endDateColumnId: dateCols[1]?.id ?? null,
+                    timeScale: "month",
+                    showLeftTable: true,
+                  },
+                }
+              : {}),
+            ...(type === "gallery" ? { gallery: { coverMode: "images", cardSize: "medium" } } : {}),
+            ...(type === "calendar"
+              ? {
+                  calendar: {
+                    dateColumnId: dateCols[0]?.id ?? "createdAt",
+                    displayMode: "month",
+                    cellHeight: "medium",
+                    weekStartsOn: 1,
+                  },
+                }
+              : {}),
+          };
+          this.table.views = [...this.table.views, nextView];
+          this.table.activeViewId = nextView.id;
+          this.listeners.forEach((fn) => fn());
+          return nextView;
+        },
+        renameView: (viewId: string, nextName: string) => {
+          this.table.views = this.table.views.map((v: any) => (v.id === viewId ? { ...v, name: nextName.trim() } : v));
+          this.listeners.forEach((fn) => fn());
+          return true;
+        },
+        duplicateView: (viewId: string, suffix = "副本") => {
+          const src = this.table.views.find((v: any) => v.id === viewId);
+          if (!src) return null;
+          const dup = {
+            ...src,
+            id: `view_dup_${this.table.views.length + 1}`,
+            name: `${src.name} ${suffix}`,
+            deletable: true,
+            visibleColumnIds: [...src.visibleColumnIds],
+          };
+          this.table.views = [...this.table.views, dup];
+          this.table.activeViewId = dup.id;
+          this.listeners.forEach((fn) => fn());
+          return dup;
+        },
+        deleteView: (viewId: string) => {
+          const target = this.table.views.find((v: any) => v.id === viewId);
+          if (!target || !target.deletable || this.table.views.length <= 1) return false;
+          this.table.views = this.table.views.filter((v: any) => v.id !== viewId);
+          if (this.table.activeViewId === viewId) {
+            this.table.activeViewId = this.table.views[0].id;
+          }
+          this.listeners.forEach((fn) => fn());
+          return true;
+        },
+        reorderViews: vi.fn((draggedId: string, targetId: string, position: "before" | "after") => {
+          const dragged = this.table.views.find((v: any) => v.id === draggedId);
+          if (!dragged || draggedId === targetId) return false;
+          const rest = this.table.views.filter((v: any) => v.id !== draggedId);
+          const idx = rest.findIndex((v: any) => v.id === targetId);
+          if (idx === -1) return false;
+          rest.splice(position === "before" ? idx : idx + 1, 0, dragged);
+          this.table.views = rest;
+          this.listeners.forEach((fn) => fn());
+          return true;
+        }),
+        updateActiveViewConfig: (patch: any) => {
+          const active = this.stageTable.getActiveView();
+          this.table.views = this.table.views.map((v: any) =>
+            v.id === active.id
+              ? {
+                  ...v,
+                  ...(patch.rowHeight ? { rowHeight: patch.rowHeight } : {}),
+                  ...(patch.kanban ? { kanban: { ...(v.kanban ?? {}), ...patch.kanban } } : {}),
+                  ...(patch.gantt ? { gantt: { ...(v.gantt ?? {}), ...patch.gantt } } : {}),
+                  ...(patch.gallery ? { gallery: { ...(v.gallery ?? {}), ...patch.gallery } } : {}),
+                  ...(patch.calendar ? { calendar: { ...(v.calendar ?? {}), ...patch.calendar } } : {}),
+                }
+              : v,
+          );
+          this.listeners.forEach((fn) => fn());
+        },
+        getSort: () => this.stageTable.getActiveView().sort ?? null,
         setSort: (sort: any) => {
-          this.table.views[0].sort = sort ?? undefined;
+          this.stageTable.getActiveView().sort = sort ?? undefined;
           this.listeners.forEach((fn) => fn());
         },
         toggleColumnSort: (colId: string, preferred?: "asc" | "desc") => {
-          const cur = this.table.views[0].sort;
+          const active = this.stageTable.getActiveView();
+          const cur = active.sort;
           const next = preferred
             ? cur && cur.columnId === colId && cur.direction === preferred
               ? null
@@ -85,39 +197,41 @@ const MockProjectClass = vi.hoisted(() => {
               : cur.direction === "asc"
                 ? { columnId: colId, direction: "desc" as const }
                 : null;
-          this.table.views[0].sort = next ?? undefined;
+          active.sort = next ?? undefined;
           this.listeners.forEach((fn) => fn());
           return next;
         },
-        getFilters: () => this.table.views[0].filters ?? [],
+        getFilters: () => this.stageTable.getActiveView().filters ?? [],
         getColumnFilter: (colId: string) =>
-          (this.table.views[0].filters ?? []).find((f: any) => f.columnId === colId) ?? null,
+          (this.stageTable.getActiveView().filters ?? []).find((f: any) => f.columnId === colId) ?? null,
         setColumnFilter: (colId: string, flt: any) => {
-          const rest = (this.table.views[0].filters ?? []).filter((f: any) => f.columnId !== colId);
-          this.table.views[0].filters = flt
-            ? [...rest, { columnId: colId, ...flt }]
-            : rest.length > 0
-              ? rest
-              : undefined;
+          const active = this.stageTable.getActiveView();
+          const rest = (active.filters ?? []).filter((f: any) => f.columnId !== colId);
+          active.filters = flt ? [...rest, { columnId: colId, ...flt }] : rest.length > 0 ? rest : undefined;
           this.listeners.forEach((fn) => fn());
         },
         clearAllFilters: () => {
-          this.table.views[0].filters = undefined;
+          this.stageTable.getActiveView().filters = undefined;
           this.listeners.forEach((fn) => fn());
         },
-        getActiveView: () => this.table.views[0],
         getColumns: () => this.table.columns,
-        getVisibleColumnIds: () => ["name", ...this.table.views[0].visibleColumnIds.filter((x) => x !== "name")],
-        isColumnVisible: (colId: string) => colId === "name" || this.table.views[0].visibleColumnIds.includes(colId),
+        getVisibleColumnIds: () => [
+          "name",
+          ...this.stageTable.getActiveView().visibleColumnIds.filter((x: string) => x !== "name"),
+        ],
+        isColumnVisible: (colId: string) =>
+          colId === "name" || this.stageTable.getActiveView().visibleColumnIds.includes(colId),
         setColumnVisible: (colId: string, visible: boolean) => {
-          const cur = this.table.views[0].visibleColumnIds;
-          this.table.views[0].visibleColumnIds = visible
-            ? ["name", ...cur.filter((x) => x !== "name" && x !== colId), colId]
-            : ["name", ...cur.filter((x) => x !== "name" && x !== colId)];
+          const active = this.stageTable.getActiveView();
+          const cur = active.visibleColumnIds;
+          active.visibleColumnIds = visible
+            ? ["name", ...cur.filter((x: string) => x !== "name" && x !== colId), colId]
+            : ["name", ...cur.filter((x: string) => x !== "name" && x !== colId)];
           this.listeners.forEach((fn) => fn());
         },
         setColumnWidth: (colId: string, width: number) => {
-          this.table.views[0].columnWidths = { ...(this.table.views[0].columnWidths ?? {}), [colId]: width };
+          const active = this.stageTable.getActiveView();
+          active.columnWidths = { ...(active.columnWidths ?? {}), [colId]: width };
           this.listeners.forEach((fn) => fn());
         },
         reorderColumn: (draggedId: string, targetId: string, position: "before" | "after") => {
@@ -207,6 +321,37 @@ const MockProjectClass = vi.hoisted(() => {
             this.listeners.forEach((fn) => fn());
           }
           return true;
+        },
+        updateRowCustomFields: (uuid: string, patch: Record<string, any>) => {
+          const r = this.rows.find((item) => item.uuid === uuid);
+          if (r) {
+            r.tableFields = { ...r.tableFields, ...patch };
+            this.listeners.forEach((fn) => fn());
+          }
+          return true;
+        },
+        createRow: (options?: { text?: string; tableFields?: Record<string, any> }) => {
+          const row = {
+            uuid: `${this.id}-row-${this.rows.length}`,
+            entity: {},
+            kind: "text",
+            primaryText: options?.text ?? "",
+            editableText: true,
+            images: [],
+            canEditImages: true,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            parents: [],
+            children: [],
+            outer: null,
+            inner: [],
+            canEditInner: true,
+            tableFields: { ...(options?.tableFields ?? {}) },
+            formulaValues: {},
+          };
+          this.rows = [...this.rows, row];
+          this.listeners.forEach((fn) => fn());
+          return row;
         },
         addRowImages: vi.fn(),
         removeRowImage: vi.fn(),
@@ -789,5 +934,259 @@ describe("Docked StageTablePanel split & sliders", () => {
     )!;
     expect(cell0.textContent?.trim()).toBe("6");
     expect(cell1.textContent?.trim()).toBe("2");
+  });
+
+  it("creates and switches multiple views (Table, Kanban, Gantt, Gallery, Calendar) inside the same table", async () => {
+    const projectA = new MockProjectClass("proj-views", ["细胞器图像", "光合作用"]);
+    const sourceCol = projectA.stageTable.addCustomColumn({ name: "出处", type: "select" });
+    const optBook = projectA.stageTable.createOrGetSelectOption(sourceCol.id, "课本")!;
+    projectA.stageTable.createOrGetSelectOption(sourceCol.id, "真题分类");
+    projectA.rows[0].tableFields = { [sourceCol.id]: optBook.id };
+
+    const group = createTabGroup([projectA as never], projectA as never);
+    store.set(tabsAtom, [projectA as never]);
+    store.set(tabGroupRootAtom, group);
+    store.set(activeTabAtom, projectA as never);
+    store.set(stageTableOpenAtom, true);
+
+    await React.act(async () => {
+      root.render(
+        <Provider store={store}>
+          <DockedArea onTabClick={vi.fn()} onTabClose={vi.fn()} onTitleBarMouseDown={vi.fn()} isClassroomMode={false} />
+          <div data-pg-titlebar-tab-space />
+        </Provider>,
+      );
+    });
+
+    // Open "+" New View menu and verify all 5 view types appear
+    const addViewBtn = container.querySelector<HTMLButtonElement>("[data-stage-table-add-view-btn]")!;
+    expect(addViewBtn).toBeTruthy();
+    await React.act(async () => {
+      addViewBtn.click();
+    });
+
+    const addViewMenu = document.body.querySelector<HTMLElement>("[data-stage-table-add-view-menu]");
+    expect(addViewMenu).toBeTruthy();
+    for (const vType of ["table", "kanban", "gantt", "gallery", "calendar"]) {
+      expect(addViewMenu!.querySelector(`[data-create-view-option="${vType}"]`)).toBeTruthy();
+    }
+
+    // Create Kanban view
+    await React.act(async () => {
+      addViewMenu!.querySelector<HTMLButtonElement>('[data-create-view-option="kanban"]')!.click();
+    });
+    expect(container.querySelector("[data-stage-table-kanban-view]")).toBeTruthy();
+    expect(container.querySelector(`[data-kanban-group="${optBook.id}"]`)).toBeTruthy();
+    expect(container.querySelector('[data-kanban-group="__ungrouped__"]')).toBeTruthy();
+
+    // Create a second Kanban view + Gantt + Gallery + Calendar
+    for (const vType of ["kanban", "gantt", "gallery", "calendar"] as const) {
+      await React.act(async () => {
+        container.querySelector<HTMLButtonElement>("[data-stage-table-add-view-btn]")!.click();
+      });
+      await React.act(async () => {
+        document.body.querySelector<HTMLButtonElement>(`[data-create-view-option="${vType}"]`)!.click();
+      });
+    }
+
+    expect(projectA.table.views.length).toBe(6);
+    expect(container.querySelector("[data-stage-table-calendar-view]")).toBeTruthy();
+
+    // Switch Calendar display modes (week / day / month) and toggle Undated drawer
+    await React.act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-calendar-mode="week"]')!.click();
+    });
+    expect(projectA.stageTable.getActiveView().calendar?.displayMode).toBe("week");
+    await React.act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-calendar-undated-trigger]")!.click();
+    });
+    expect(container.querySelector("[data-calendar-undated-drawer]")).toBeTruthy();
+
+    // Switch to Gallery view
+    const galleryTab = container.querySelector<HTMLElement>('[data-view-type="gallery"]')!;
+    await React.act(async () => {
+      galleryTab.click();
+    });
+    expect(container.querySelector("[data-stage-table-gallery-view]")).toBeTruthy();
+    expect(container.querySelectorAll("[data-gallery-card]").length).toBe(2);
+
+    // Switch to Gantt view and test scale switch + left table collapse
+    const ganttTab = container.querySelector<HTMLElement>('[data-view-type="gantt"]')!;
+    await React.act(async () => {
+      ganttTab.click();
+    });
+    expect(container.querySelector("[data-stage-table-gantt-view]")).toBeTruthy();
+    expect(container.querySelector("[data-gantt-left-pane]")).toBeTruthy();
+
+    await React.act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-gantt-scale="week"]')!.click();
+    });
+    expect(projectA.stageTable.getActiveView().gantt?.timeScale).toBe("week");
+
+    await React.act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-gantt-toggle-left]")!.click();
+    });
+    expect(container.querySelector("[data-gantt-left-pane]")).toBeNull();
+
+    // Duplicate & delete view from active view menu
+    const activeViewId = projectA.stageTable.getActiveView().id;
+    await React.act(async () => {
+      container.querySelector<HTMLButtonElement>(`[data-view-tab-menu-trigger="${activeViewId}"]`)!.click();
+    });
+    await React.act(async () => {
+      document.body.querySelector<HTMLButtonElement>("[data-view-action-duplicate]")!.click();
+    });
+    expect(projectA.table.views.length).toBe(7);
+
+    const dupViewId = projectA.stageTable.getActiveView().id;
+    await React.act(async () => {
+      container.querySelector<HTMLButtonElement>(`[data-view-tab-menu-trigger="${dupViewId}"]`)!.click();
+    });
+    await React.act(async () => {
+      document.body.querySelector<HTMLButtonElement>("[data-view-action-delete]")!.click();
+    });
+    expect(projectA.table.views.length).toBe(6);
+  });
+
+  it("supports image lightbox navigation (arrows & bottom thumbnails), non-squashed Kanban cards, and pointer view-tab drag reorder", async () => {
+    const projectA = new MockProjectClass(
+      "proj-img-kanban",
+      Array.from({ length: 65 }, (_, i) => `节点 ${i + 1}`),
+    );
+    (projectA as any).attachments = new Map([
+      ["att-1", new Blob(["a"], { type: "image/png" })],
+      ["att-2", new Blob(["b"], { type: "image/png" })],
+      ["att-3", new Blob(["c"], { type: "image/png" })],
+    ]);
+    projectA.rows[0].images = [
+      { uuid: "img-1", attachmentId: "att-1" },
+      { uuid: "img-2", attachmentId: "att-2" },
+    ];
+    projectA.rows[1].images = [{ uuid: "img-3", attachmentId: "att-3" }];
+
+    // Mock URL.createObjectURL for jsdom lightbox previews
+    const origCreateObjectURL = URL.createObjectURL;
+    const origRevokeObjectURL = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn(() => "blob:mock-image");
+    URL.revokeObjectURL = vi.fn();
+
+    try {
+      const group = createTabGroup([projectA as never], projectA as never);
+      store.set(tabsAtom, [projectA as never]);
+      store.set(tabGroupRootAtom, group);
+      store.set(activeTabAtom, projectA as never);
+      store.set(stageTableOpenAtom, true);
+
+      await React.act(async () => {
+        root.render(
+          <Provider store={store}>
+            <DockedArea
+              onTabClick={vi.fn()}
+              onTabClose={vi.fn()}
+              onTitleBarMouseDown={vi.fn()}
+              isClassroomMode={false}
+            />
+            <div data-pg-titlebar-tab-space />
+          </Provider>,
+        );
+      });
+
+      // 1. Create Gallery view and open Lightbox by clicking first card's image
+      await React.act(async () => {
+        container.querySelector<HTMLButtonElement>("[data-stage-table-add-view-btn]")!.click();
+      });
+      await React.act(async () => {
+        document.body.querySelector<HTMLButtonElement>('[data-create-view-option="gallery"]')!.click();
+      });
+
+      const firstCardImg = container.querySelector<HTMLImageElement>(
+        '[data-gallery-card="proj-img-kanban-row-0"] img',
+      )!;
+      expect(firstCardImg).toBeTruthy();
+      await React.act(async () => {
+        firstCardImg.click();
+      });
+
+      const lightbox = document.body.querySelector<HTMLElement>("[data-image-lightbox]")!;
+      expect(lightbox).toBeTruthy();
+      expect(lightbox.querySelector("[data-lightbox-counter]")?.textContent?.trim()).toBe("1 / 2");
+      expect(lightbox.querySelectorAll("[data-lightbox-thumb]").length).toBe(2);
+
+      // Click right arrow -> switches to 2nd image
+      await React.act(async () => {
+        lightbox.querySelector<HTMLButtonElement>("[data-lightbox-next]")!.click();
+      });
+      expect(lightbox.querySelector("[data-lightbox-counter]")?.textContent?.trim()).toBe("2 / 2");
+
+      // Switch scope to "all" -> sees all 3 images across rows, click thumbnail #2 (3rd image)
+      await React.act(async () => {
+        lightbox.querySelector<HTMLButtonElement>('[data-lightbox-scope="all"]')!.click();
+      });
+      expect(lightbox.querySelectorAll("[data-lightbox-thumb]").length).toBe(3);
+      await React.act(async () => {
+        lightbox.querySelector<HTMLButtonElement>('[data-lightbox-thumb="2"]')!.click();
+      });
+      expect(lightbox.querySelector("[data-lightbox-counter]")?.textContent?.trim()).toBe("3 / 3");
+      expect(lightbox.querySelector("[data-lightbox-main-img]")?.getAttribute("data-lightbox-main-img")).toBe("att-3");
+
+      // Click left arrow -> jumps back to 2 / 3
+      await React.act(async () => {
+        lightbox.querySelector<HTMLButtonElement>("[data-lightbox-prev]")!.click();
+      });
+      expect(lightbox.querySelector("[data-lightbox-counter]")?.textContent?.trim()).toBe("2 / 3");
+
+      // Close lightbox
+      await React.act(async () => {
+        lightbox.querySelector<HTMLButtonElement>("[data-lightbox-close]")!.click();
+      });
+      expect(document.body.querySelector("[data-image-lightbox]")).toBeNull();
+
+      // 2. Create Kanban view with 65 ungrouped items and verify cards carry shrink-0 (preventing thin-line squashing)
+      await React.act(async () => {
+        container.querySelector<HTMLButtonElement>("[data-stage-table-add-view-btn]")!.click();
+      });
+      await React.act(async () => {
+        document.body.querySelector<HTMLButtonElement>('[data-create-view-option="kanban"]')!.click();
+      });
+      const kanbanCards = container.querySelectorAll<HTMLElement>("[data-kanban-card]");
+      expect(kanbanCards.length).toBe(65);
+      expect(kanbanCards[0].className).toContain("shrink-0");
+
+      // 3. Pointer-drag reorder view tabs left/right
+      const tabs = Array.from(container.querySelectorAll<HTMLElement>("[data-stage-table-view-tab]"));
+      expect(tabs.length).toBe(3);
+      tabs.forEach((tabEl, idx) => {
+        tabEl.getBoundingClientRect = () =>
+          ({
+            left: idx * 100,
+            right: (idx + 1) * 100,
+            width: 100,
+            top: 0,
+            bottom: 32,
+            height: 32,
+            x: idx * 100,
+            y: 0,
+            toJSON: () => {},
+          }) as DOMRect;
+      });
+
+      const draggedTab = tabs[2]; // Kanban (rightmost)
+      const firstViewId = tabs[0].dataset.stageTableViewTab!;
+      const draggedViewId = draggedTab.dataset.stageTableViewTab!;
+
+      await React.act(async () => {
+        draggedTab.dispatchEvent(
+          new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 250, clientY: 16 }),
+        );
+        window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 20, clientY: 16 }));
+        window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 20, clientY: 16 }));
+      });
+
+      expect(projectA.stageTable.reorderViews).toHaveBeenCalledWith(draggedViewId, firstViewId, "before");
+      expect(projectA.table.views[0].id).toBe(draggedViewId);
+    } finally {
+      URL.createObjectURL = origCreateObjectURL;
+      URL.revokeObjectURL = origRevokeObjectURL;
+    }
   });
 });

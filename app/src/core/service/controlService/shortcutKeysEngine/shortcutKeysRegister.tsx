@@ -167,6 +167,7 @@ import {
   GraduationCap,
   Grip,
   History,
+  ImagePlus,
   Images,
   Keyboard,
   Layers,
@@ -1901,6 +1902,15 @@ export const allKeyBinds: KeyBindItem[] = [
     onPress: (project) => {
       if (!project!.keyboardOnlyEngine.isOpenning()) return;
       project!.copyEngine.paste();
+    },
+  },
+  {
+    id: "pasteImageIntoNode",
+    defaultKey: "C-A-v",
+    icon: ImagePlus,
+    when: (project) => Boolean(project?.copyEngine.getPasteImageTargetNode(true)),
+    onPress: (project) => {
+      void project!.copyEngine.pasteImageIntoNode();
     },
   },
   {

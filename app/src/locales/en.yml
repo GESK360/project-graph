@@ -219,6 +219,129 @@ stageTable:
     url: "[URL]"
     latex: "[LaTeX]"
     reference: "[Reference]"
+  views:
+    createViewTitle: New View
+    createViewHint: Create multiple views on the same table. All views share canvas records while keeping independent layout, filters, sorting, and settings.
+    type_table: Table View
+    type_kanban: Kanban View
+    type_gantt: Gantt View
+    type_gallery: Gallery View
+    type_calendar: Calendar View
+    defaultName_table: Table
+    defaultName_kanban: Kanban
+    defaultName_gantt: Gantt
+    defaultName_gallery: Gallery
+    defaultName_calendar: Calendar
+    manageView: Manage view
+    renameView: Rename
+    duplicateView: Duplicate view
+    deleteView: Delete view
+    unnamedRecord: Unnamed record
+    editRecord: Edit record
+    pickDate: Pick a date...
+    showFieldNames: Show field names
+    cardFields: Card fields
+    colorBy: Color by
+    defaultColor: Default color
+  kanban:
+    settings: Kanban Settings
+    displayOptions: Display options
+    showCover: Show cover image
+    hideEmptyGroups: Hide empty groups
+    groupBy: Group by
+    selectGroupField: Group by field
+    noGrouping: No grouping
+    createSelectGroupField: Create select field for grouping
+    defaultGroupColumnName: Status
+    sampleOptionTodo: To Do
+    sampleOptionDoing: In Progress
+    sampleOptionDone: Done
+    ungrouped: Ungrouped
+    itemCount: "{{count}} items"
+    addCard: Add card
+    addCardConfirm: Add
+    cardTitlePlaceholder: Card title, press Enter...
+    addGroup: New group
+    groupNamePlaceholder: Group name, press Enter...
+  gantt:
+    tableSettings: Table Settings
+    leftTableFields: Left table fields
+    settings: Gantt Settings
+    startDateField: Start date field
+    endDateField: End date field
+    singleDayMode: None (single day)
+    createDateColumns: Create Start/End Date fields
+    defaultStartColName: Start Date
+    defaultEndColName: End Date
+    showBarLabel: Show title on bar
+    showDuration: Show duration
+    highlightWeekends: Highlight weekends
+    basicInfo: Basic Info
+    collapseTable: Collapse table
+    expandTable: Expand table
+    monthHeader: "{{year}}-{{month}}"
+    scale_week: Week
+    scale_month: Month
+    scale_quarter: Quarter
+    scale_year: Year
+    durationDays: "{{count}}d"
+    clickToSchedule: Click timeline to schedule
+  gallery:
+    addRecord: Add record
+    settings: Gallery Settings
+    coverSettings: Cover & Cards
+    coverSource: Cover source
+    coverMode_images: Images
+    coverMode_none: None
+    coverFit: Cover fit
+    fit_cover: Crop
+    fit_contain: Fit
+    cardSize: Card size
+    size_small: Small
+    size_medium: Medium
+    size_large: Large
+  calendar:
+    settings: Calendar Settings
+    dateField: Date field
+    createDateColumn: Create date field
+    weekStartsOn: Week starts on
+    calendarHeight: Row Height
+    height_compact: Compact
+    height_medium: Default
+    height_tall: Tall
+    prevPeriod: Previous
+    nextPeriod: Next
+    today: Today
+    mode_day: Day
+    mode_week: Week
+    mode_month: Month
+    undatedCount: "Undated: {{count}}"
+    noUndated: No undated records
+    setToday: Set today
+    noRecordsForDay: No records for this day
+    firstOfMonth: "M{{month}}"
+    wdShort_0: Su
+    wdShort_1: Mo
+    wdShort_2: Tu
+    wdShort_3: We
+    wdShort_4: Th
+    wdShort_5: Fr
+    wdShort_6: Sa
+    wdFull_0: Sun
+    wdFull_1: Mon
+    wdFull_2: Tue
+    wdFull_3: Wed
+    wdFull_4: Thu
+    wdFull_5: Fri
+    wdFull_6: Sat
+  lightbox:
+    prevImage: Previous image
+    nextImage: Next image
+    zoomIn: Zoom in
+    zoomOut: Zoom out
+    resetZoom: Reset zoom
+    currentNodeScope: "Current node ({{count}})"
+    allImagesScope: "All images ({{count}})"
 
 projectStatus:
   emptyCanvas: No nodes on the canvas
@@ -2158,6 +2281,9 @@ keyBinds:
   changeTagBySelected:
     title: Add or Remove Tag
     description: Add or remove tag for all selected entities when pressed
+  pasteImageIntoNode:
+    title: Paste image into node
+    description: Paste clipboard image directly into the selected or right-clicked node/section
   pasteWithOriginLocation:
     title: Paste at Original Location
     description: When pressed, the pasted content will overlap with the original

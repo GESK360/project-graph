@@ -2,9 +2,11 @@ import { Dialog } from "@/components/ui/dialog";
 import { Project } from "@/core/Project";
 
 import { ControllerClass } from "@/core/service/controlService/controller/ControllerClass";
+import { ImageNode } from "@/core/stage/stageObject/entity/ImageNode";
 import { Section } from "@/core/stage/stageObject/entity/Section";
 import { Vector } from "@graphif/data-structures";
 import { toast } from "sonner";
+import { isPersistentMindMapDragEnabled, reflowMindMapTreesForEntities } from "./MindMapDrag";
 
 /**
  * 包含编辑节点文字，编辑详细信息等功能的控制器
@@ -25,6 +27,10 @@ export class ControllerSectionEditClass extends ControllerClass {
     }
     const worldLocation = this.project.renderer.transformView2World(new Vector(event.clientX, event.clientY));
     const clickedEntity = this.project.stageManager.findEntityByLocation(worldLocation);
+    // 双击分组框内的图片用于打开大图灯箱，不触发分组框重命名
+    if (clickedEntity instanceof ImageNode && !clickedEntity.isBackground) {
+      return;
+    }
     if (clickedEntity instanceof Section && this.project.sectionMethods.isSectionBigTitleActive(clickedEntity)) {
       this.editSectionTitle(clickedEntity);
       return;
@@ -60,9 +66,28 @@ export class ControllerSectionEditClass extends ControllerClass {
       }
       Dialog.input("重命名 Section").then((value) => {
         if (value) {
+          const prevCenters = new Map<string, Vector>();
+          const affected: Section[] = [];
           for (const section of selectedSections) {
+            prevCenters.set(section.uuid, section.rectangle.center);
+            affected.push(section);
+            for (let p = section.parentSection; p; p = p.parentSection) {
+              if (!prevCenters.has(p.uuid)) {
+                prevCenters.set(p.uuid, p.rectangle.center);
+                affected.push(p);
+              }
+            }
             section.rename(value);
           }
+          for (const section of selectedSections) {
+            for (let p = section.parentSection; p; p = p.parentSection) {
+              p.adjustLocationAndSize();
+            }
+          }
+          if (isPersistentMindMapDragEnabled()) {
+            reflowMindMapTreesForEntities(this.project, affected, prevCenters);
+          }
+          this.project.historyManager.recordStep();
         }
       });
     }

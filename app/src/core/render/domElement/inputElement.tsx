@@ -27,6 +27,7 @@ export class InputElement {
     defaultValue: string,
     onChange: (value: string, element: HTMLInputElement) => void = () => {},
     style: Partial<CSSStyleDeclaration> = {},
+    onPaste?: (event: ClipboardEvent, finish: (value?: string) => void) => void,
   ): Promise<string> {
     return new Promise((resolve) => {
       const inputElement = document.createElement("input");
@@ -58,23 +59,30 @@ export class InputElement {
         // inputElement.style.width = `${inputElement.scrollWidth + 2}px`;
       };
 
+      let isFinished = false;
+      const finish = (value = inputElement.value) => {
+        if (isFinished) return;
+        isFinished = true;
+        resolve(value);
+        onChange(value, inputElement);
+        document.body.removeEventListener("mousedown", onOutsideClick);
+        document.body.removeEventListener("touchstart", onOutsideClick);
+        document.body.removeEventListener("wheel", onOutsideWheel);
+        removeElement();
+      };
+
       const onOutsideClick = (event: Event) => {
         if (!inputElement.contains(event.target as Node)) {
-          resolve(inputElement.value);
-          onChange(inputElement.value, inputElement);
-          document.body.removeEventListener("mousedown", onOutsideClick);
-          removeElement();
+          finish();
         }
       };
       const onOutsideWheel = () => {
-        resolve(inputElement.value);
-        onChange(inputElement.value, inputElement);
-        document.body.removeEventListener("mousedown", onOutsideClick);
-        removeElement();
+        finish();
       };
 
       // 初始化
       setTimeout(() => {
+        if (isFinished) return;
         document.body.addEventListener("mousedown", onOutsideClick);
         document.body.addEventListener("touchstart", onOutsideClick);
         document.body.addEventListener("wheel", onOutsideWheel);
@@ -86,6 +94,11 @@ export class InputElement {
         onChange(inputElement.value, inputElement);
         adjustSize();
       });
+      if (onPaste) {
+        inputElement.addEventListener("paste", (event) => {
+          onPaste(event, finish);
+        });
+      }
       inputElement.addEventListener("blur", () => {
         // 如果是因为窗口失焦（切屏）导致的 blur，不退出编辑状态，等窗口重新获焦后恢复焦点
         if (!document.hasFocus()) {
@@ -98,10 +111,7 @@ export class InputElement {
           window.addEventListener("focus", onWindowFocus);
           return;
         }
-        resolve(inputElement.value);
-        onChange(inputElement.value, inputElement);
-        document.body.removeEventListener("mousedown", onOutsideClick);
-        removeElement();
+        finish();
       });
       let isComposing = false;
       inputElement.addEventListener("compositionstart", () => {
@@ -118,10 +128,7 @@ export class InputElement {
 
         if (event.key === "Enter") {
           if (!(event.isComposing || isComposing)) {
-            resolve(inputElement.value);
-            onChange(inputElement.value, inputElement);
-            document.body.removeEventListener("mousedown", onOutsideClick);
-            removeElement();
+            finish();
           }
         }
         if (event.key === "Tab") {
@@ -152,6 +159,7 @@ export class InputElement {
      * 不传（undefined）则为自动宽度模式（auto 节点使用）。
      */
     fixedWidth?: number,
+    onPaste?: (event: ClipboardEvent, finish: (value?: string) => void) => void,
   ): Promise<string> {
     return new Promise((resolve) => {
       const textareaElement = document.createElement("textarea");
@@ -287,6 +295,11 @@ export class InputElement {
         onChange(textareaElement.value, textareaElement);
         adjustSize();
       });
+      if (onPaste) {
+        textareaElement.addEventListener("paste", (event) => {
+          onPaste(event, finish);
+        });
+      }
       // compositionupdate：拼音输入过程中实时调整宽度，防止拼音字母撑破布局
       textareaElement.addEventListener("compositionupdate", (event: CompositionEvent) => {
         adjustSize(event.data);

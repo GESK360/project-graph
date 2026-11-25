@@ -215,6 +215,129 @@ stageTable:
     url: "[連結]"
     latex: "[公式]"
     reference: "[引用區塊]"
+  views:
+    createViewTitle: 新增檢視
+    createViewHint: 同一個多維表格可建立多個檢視，共用畫布節點資料並獨立儲存版面、篩選、排序與顯示設定
+    type_table: 表格檢視
+    type_kanban: 看板檢視
+    type_gantt: 甘特檢視
+    type_gallery: 畫冊檢視
+    type_calendar: 行事曆檢視
+    defaultName_table: 表格
+    defaultName_kanban: 看板
+    defaultName_gantt: 甘特
+    defaultName_gallery: 畫冊
+    defaultName_calendar: 行事曆
+    manageView: 管理檢視
+    renameView: 重新命名
+    duplicateView: 複製檢視
+    deleteView: 刪除檢視
+    unnamedRecord: 未命名記錄
+    editRecord: 編輯記錄
+    pickDate: 選擇日期...
+    showFieldNames: 顯示欄位名稱
+    cardFields: 卡片顯示欄位
+    colorBy: 顏色依據
+    defaultColor: 預設顏色
+  kanban:
+    settings: 看板設定
+    displayOptions: 顯示設定
+    showCover: 顯示封面圖片
+    hideEmptyGroups: 隱藏空群組
+    groupBy: 群組依據
+    selectGroupField: 選擇群組依據欄位
+    noGrouping: 不分組
+    createSelectGroupField: 新增單選群組欄位
+    defaultGroupColumnName: 狀態
+    sampleOptionTodo: 待辦
+    sampleOptionDoing: 進行中
+    sampleOptionDone: 已完成
+    ungrouped: 未分組
+    itemCount: "{{count}}項"
+    addCard: 新增卡片
+    addCardConfirm: 新增
+    cardTitlePlaceholder: 輸入卡片名稱，按 Enter 建立...
+    addGroup: 新增群組
+    groupNamePlaceholder: 輸入群組名稱，按 Enter 建立...
+  gantt:
+    tableSettings: 表格設定
+    leftTableFields: 左側表格顯示欄位
+    settings: 甘特設定
+    startDateField: 開始時間欄位
+    endDateField: 結束時間欄位
+    singleDayMode: 無（僅單日）
+    createDateColumns: 新增開始/結束日期欄位
+    defaultStartColName: 開始日期
+    defaultEndColName: 結束日期
+    showBarLabel: 顯示任務名稱
+    showDuration: 顯示持續天數
+    highlightWeekends: 標示週末
+    basicInfo: 基礎資訊
+    collapseTable: 收合左側表格
+    expandTable: 展開左側表格
+    monthHeader: "{{year}}年{{month}}月"
+    scale_week: 週
+    scale_month: 月
+    scale_quarter: 季
+    scale_year: 年
+    durationDays: "{{count}}天"
+    clickToSchedule: 點擊時間軸排程
+  gallery:
+    addRecord: 新增記錄
+    settings: 畫冊設定
+    coverSettings: 封面與卡片
+    coverSource: 封面圖片
+    coverMode_images: 圖片欄
+    coverMode_none: 不顯示
+    coverFit: 圖片適應
+    fit_cover: 裁切填滿
+    fit_contain: 完整顯示
+    cardSize: 卡片尺寸
+    size_small: 小
+    size_medium: 中
+    size_large: 大
+  calendar:
+    settings: 行事曆設定
+    dateField: 日期欄位
+    createDateColumn: 新增日期欄位
+    weekStartsOn: 每週起始日
+    calendarHeight: 行事曆高度
+    height_compact: 緊湊
+    height_medium: 預設
+    height_tall: 寬鬆
+    prevPeriod: 上一時段
+    nextPeriod: 下一時段
+    today: 今天
+    mode_day: 日
+    mode_week: 週
+    mode_month: 月
+    undatedCount: "無日期記錄: {{count}}"
+    noUndated: 暫無無日期記錄
+    setToday: 設為今天
+    noRecordsForDay: 當日暫無記錄
+    firstOfMonth: "{{month}}月"
+    wdShort_0: 日
+    wdShort_1: 一
+    wdShort_2: 二
+    wdShort_3: 三
+    wdShort_4: 四
+    wdShort_5: 五
+    wdShort_6: 六
+    wdFull_0: 週日
+    wdFull_1: 週一
+    wdFull_2: 週二
+    wdFull_3: 週三
+    wdFull_4: 週四
+    wdFull_5: 週五
+    wdFull_6: 週六
+  lightbox:
+    prevImage: 上一張圖片
+    nextImage: 下一張圖片
+    zoomIn: 放大
+    zoomOut: 縮小
+    resetZoom: 重設縮放
+    currentNodeScope: "目前節點 ({{count}})"
+    allImagesScope: "全部圖片 ({{count}})"
 
 projectStatus:
   nodes: "{{count}} 節點"
@@ -2531,6 +2654,9 @@ keyBinds:
   changeTagBySelected:
     title: 添加或删除标签
     description: 按下后，为所有选中的实体添加或移除标签
+  pasteImageIntoNode:
+    title: 貼上圖片到節點
+    description: 將剪貼簿中的圖片直接貼進選取或右鍵命中的節點/群組框中
   pasteWithOriginLocation:
     title: 原位粘贴
     description: 按下后，粘贴的内容会与原位置重叠

@@ -9,6 +9,7 @@ import { MultiTargetUndirectedEdge } from "@/core/stage/stageObject/association/
 import { CollisionBox } from "@/core/stage/stageObject/collisionBox/collisionBox";
 import { ImageNode } from "@/core/stage/stageObject/entity/ImageNode";
 import { MediaNode } from "@/core/stage/stageObject/entity/MediaNode";
+import { Section } from "@/core/stage/stageObject/entity/Section";
 import { SvgNode } from "@/core/stage/stageObject/entity/SvgNode";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import { Serialized } from "@/types/node";
@@ -34,6 +35,7 @@ import { CopyEngineUtils } from "./copyEngineUtils";
 export class CopyEngine {
   private copyEngineImage: CopyEngineImage;
   private copyEngineText: CopyEngineText;
+  private lastContextMenuTargetUuid: string | null = null;
 
   constructor(private readonly project: Project) {
     this.copyEngineImage = new CopyEngineImage(project);
@@ -94,11 +96,108 @@ export class CopyEngine {
   }
 
   /**
+   * 记录右键菜单打开瞬间命中的目标节点，避免鼠标移到菜单项上点击时位置偏移丢失目标
+   */
+  captureContextMenuTargetAtWorldLocation(worldLocation: Vector): void {
+    const hovered = this.project.stageManager.findEntityByLocation(worldLocation);
+    if (hovered instanceof TextNode || hovered instanceof Section) {
+      this.lastContextMenuTargetUuid = hovered.uuid;
+      return;
+    }
+    if (hovered instanceof ImageNode && hovered.parentSection) {
+      this.lastContextMenuTargetUuid = hovered.parentSection.uuid;
+      return;
+    }
+    const containingSections = this.project.sectionMethods.getSectionsByInnerLocation(worldLocation);
+    this.lastContextMenuTargetUuid = containingSections.length > 0 ? containingSections[0].uuid : null;
+  }
+
+  /**
+   * 获取当前适合接收「粘贴图片到节点」的目标节点（TextNode 或 Section）
+   */
+  getPasteImageTargetNode(preferContextTarget = false): TextNode | Section | null {
+    const selectedTarget = this.copyEngineImage.resolveTargetNodeForImagePaste(false);
+    if (selectedTarget) return selectedTarget;
+    if (preferContextTarget && this.lastContextMenuTargetUuid) {
+      const captured = this.project.stageManager.get(this.lastContextMenuTargetUuid);
+      if (captured instanceof TextNode || captured instanceof Section) {
+        return captured;
+      }
+    }
+    if (preferContextTarget) {
+      return this.copyEngineImage.resolveTargetNodeForImagePaste(true);
+    }
+    return null;
+  }
+
+  /**
+   * 从虚拟剪贴板（单张 ImageNode）或系统剪贴板读取图片 Blob 列表
+   */
+  async readClipboardImageBlobs(): Promise<Blob[]> {
+    const virtualBlob = this.extractSingleImageBlobFromVirtualClipboard();
+    if (virtualBlob) {
+      return [virtualBlob];
+    }
+    return await this.copyEngineImage.readImageBlobsFromSystemClipboard();
+  }
+
+  private extractSingleImageBlobFromVirtualClipboard(): Blob | null {
+    if (!VirtualClipboard.hasData()) return null;
+    const clipboardData = VirtualClipboard.paste();
+    if (!clipboardData || typeof clipboardData !== "object" || !("stageObjects" in clipboardData)) {
+      return null;
+    }
+    const attachments = clipboardData.attachments as Record<string, { data: ArrayBuffer; type: string }> | undefined;
+    if (!attachments) return null;
+    const objects: StageObject[] = deserialize(clipboardData.stageObjects, this.project);
+    if (objects.length !== 1 || !(objects[0] instanceof ImageNode)) {
+      return null;
+    }
+    const info = attachments[objects[0].attachmentId];
+    if (!info) return null;
+    return new Blob([info.data], { type: info.type });
+  }
+
+  /**
+   * 右键菜单或快捷键调用：直接把剪贴板图片粘贴进目标节点（TextNode 自动无损升级为 Section）
+   */
+  async pasteImageIntoNode(explicitTarget?: TextNode | Section | null): Promise<boolean> {
+    const target = explicitTarget ?? this.getPasteImageTargetNode(true);
+    this.lastContextMenuTargetUuid = null;
+    if (!target) {
+      toast.warning("请先选中或右键点击一个节点或分组框");
+      return false;
+    }
+    const virtualBlob = this.extractSingleImageBlobFromVirtualClipboard();
+    if (virtualBlob) {
+      const ok = await this.copyEngineImage.pasteImageBlobsIntoNode(target, [virtualBlob]);
+      if (ok) {
+        VirtualClipboard.clear();
+      }
+      return ok;
+    }
+    const blobs = await this.copyEngineImage.readImageBlobsFromSystemClipboard();
+    if (blobs.length === 0) {
+      toast.warning("剪贴板中没有可粘贴的图片");
+      return false;
+    }
+    return await this.copyEngineImage.pasteImageBlobsIntoNode(target, blobs);
+  }
+
+  /**
    * 用户按下了ctrl+v，将粘贴板数据粘贴到画布上
    */
   paste() {
-    // 如果有虚拟粘贴板数据，则优先粘贴虚拟粘贴板上的东西
+    // 如果虚拟剪贴板中是单张图片且画布上选中了单个节点/分组框，直接贴入该节点
     if (VirtualClipboard.hasData()) {
+      const target = this.copyEngineImage.resolveTargetNodeForImagePaste(false);
+      const virtualImageBlob = target ? this.extractSingleImageBlobFromVirtualClipboard() : null;
+      if (target && virtualImageBlob) {
+        void this.copyEngineImage.pasteImageBlobsIntoNode(target, [virtualImageBlob]).then((ok) => {
+          if (ok) VirtualClipboard.clear();
+        });
+        return;
+      }
       this.virtualClipboardPaste();
     } else {
       void this.readSystemClipboardAndPaste();

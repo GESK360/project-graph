@@ -54,6 +54,10 @@ export function createColumnGroupId(): string {
   return `grp_${crypto.randomUUID()}`;
 }
 
+export function createTableViewId(): string {
+  return `view_${crypto.randomUUID()}`;
+}
+
 export function pickNextSelectOptionColor(existingOptions: readonly TableSelectOption[] = []): SelectOptionColor {
   const usedCounts = new Map<string, number>();
   for (const color of SELECT_OPTION_COLORS) {
@@ -88,7 +92,56 @@ export type TableCellValue = string | number | string[] | null;
 
 export type TableFields = Record<string, TableCellValue>;
 
-export type TableViewType = "table";
+export type TableViewType = "table" | "kanban" | "gantt" | "gallery" | "calendar";
+
+export const TABLE_VIEW_TYPES: readonly TableViewType[] = ["table", "kanban", "gantt", "gallery", "calendar"];
+
+export type TableRowHeight = "compact" | "medium" | "tall";
+
+export interface TableKanbanViewConfig {
+  groupByColumnId?: string | null;
+  showCover?: boolean;
+  coverFit?: "cover" | "contain";
+  showFieldNames?: boolean;
+  hideEmptyGroups?: boolean;
+}
+
+export type GanttTimeScale = "week" | "month" | "quarter" | "year";
+
+export interface TableGanttViewConfig {
+  startDateColumnId?: string | null;
+  endDateColumnId?: string | null;
+  colorColumnId?: string | null;
+  timeScale?: GanttTimeScale;
+  groupByColumnId?: string | null;
+  showLeftTable?: boolean;
+  leftPaneWidth?: number;
+  showBarLabel?: boolean;
+  showDuration?: boolean;
+  highlightWeekends?: boolean;
+}
+
+export type GalleryCardSize = "small" | "medium" | "large";
+
+export interface TableGalleryViewConfig {
+  coverMode?: "images" | "none";
+  coverFit?: "cover" | "contain";
+  cardSize?: GalleryCardSize;
+  showFieldNames?: boolean;
+}
+
+export type CalendarDisplayMode = "day" | "week" | "month";
+export type CalendarCellHeight = "compact" | "medium" | "tall";
+
+export interface TableCalendarViewConfig {
+  dateColumnId?: string | null;
+  endDateColumnId?: string | null;
+  colorColumnId?: string | null;
+  displayMode?: CalendarDisplayMode;
+  cellHeight?: CalendarCellHeight;
+  weekStartsOn?: 0 | 1;
+  showFieldNames?: boolean;
+}
 
 export interface TableColumnGroup {
   id: string;
@@ -120,6 +173,11 @@ export interface TableViewSchema {
   columnGroups?: TableColumnGroup[];
   sort?: TableSortConfig | null;
   filters?: TableColumnFilter[];
+  rowHeight?: TableRowHeight;
+  kanban?: TableKanbanViewConfig;
+  gantt?: TableGanttViewConfig;
+  gallery?: TableGalleryViewConfig;
+  calendar?: TableCalendarViewConfig;
 }
 
 export interface PrgTableData {
@@ -228,9 +286,14 @@ export function normalizeTableData(raw: unknown): PrgTableData {
     for (const item of obj.views) {
       if (!item || typeof item !== "object" || Array.isArray(item)) continue;
       const view = item as Record<string, unknown>;
-      if (typeof view.id !== "string" || !view.id || seenViewIds.has(view.id)) continue;
+      if (typeof view.id !== "string" || !isSafeColumnKey(view.id) || seenViewIds.has(view.id)) continue;
       if (typeof view.name !== "string" || !view.name) continue;
       seenViewIds.add(view.id);
+
+      const viewType: TableViewType =
+        typeof view.type === "string" && TABLE_VIEW_TYPES.includes(view.type as TableViewType)
+          ? (view.type as TableViewType)
+          : "table";
 
       const rawVisible = Array.isArray(view.visibleColumnIds)
         ? view.visibleColumnIds.filter((id): id is string => typeof id === "string" && validColumnIds.has(id))
@@ -313,10 +376,93 @@ export function normalizeTableData(raw: unknown): PrgTableData {
         }
       }
 
+      const rowHeight: TableRowHeight | undefined =
+        view.rowHeight === "compact" || view.rowHeight === "medium" || view.rowHeight === "tall"
+          ? view.rowHeight
+          : undefined;
+
+      const normalizeValidColRef = (val: unknown): string | null | undefined => {
+        if (val === null) return null;
+        if (typeof val === "string" && validColumnIds.has(val)) return val;
+        return undefined;
+      };
+
+      let kanban: TableKanbanViewConfig | undefined;
+      if (view.kanban && typeof view.kanban === "object" && !Array.isArray(view.kanban)) {
+        const k = view.kanban as Record<string, unknown>;
+        const groupByColumnId = normalizeValidColRef(k.groupByColumnId);
+        kanban = {
+          ...(groupByColumnId !== undefined ? { groupByColumnId } : {}),
+          ...(typeof k.showCover === "boolean" ? { showCover: k.showCover } : {}),
+          ...(k.coverFit === "cover" || k.coverFit === "contain" ? { coverFit: k.coverFit } : {}),
+          ...(typeof k.showFieldNames === "boolean" ? { showFieldNames: k.showFieldNames } : {}),
+          ...(typeof k.hideEmptyGroups === "boolean" ? { hideEmptyGroups: k.hideEmptyGroups } : {}),
+        };
+      }
+
+      let gantt: TableGanttViewConfig | undefined;
+      if (view.gantt && typeof view.gantt === "object" && !Array.isArray(view.gantt)) {
+        const g = view.gantt as Record<string, unknown>;
+        const startDateColumnId = normalizeValidColRef(g.startDateColumnId);
+        const endDateColumnId = normalizeValidColRef(g.endDateColumnId);
+        const colorColumnId = normalizeValidColRef(g.colorColumnId);
+        const groupByColumnId = normalizeValidColRef(g.groupByColumnId);
+        gantt = {
+          ...(startDateColumnId !== undefined ? { startDateColumnId } : {}),
+          ...(endDateColumnId !== undefined ? { endDateColumnId } : {}),
+          ...(colorColumnId !== undefined ? { colorColumnId } : {}),
+          ...(g.timeScale === "week" || g.timeScale === "month" || g.timeScale === "quarter" || g.timeScale === "year"
+            ? { timeScale: g.timeScale }
+            : {}),
+          ...(groupByColumnId !== undefined ? { groupByColumnId } : {}),
+          ...(typeof g.showLeftTable === "boolean" ? { showLeftTable: g.showLeftTable } : {}),
+          ...(typeof g.leftPaneWidth === "number" && Number.isFinite(g.leftPaneWidth)
+            ? { leftPaneWidth: Math.max(160, Math.min(640, g.leftPaneWidth)) }
+            : {}),
+          ...(typeof g.showBarLabel === "boolean" ? { showBarLabel: g.showBarLabel } : {}),
+          ...(typeof g.showDuration === "boolean" ? { showDuration: g.showDuration } : {}),
+          ...(typeof g.highlightWeekends === "boolean" ? { highlightWeekends: g.highlightWeekends } : {}),
+        };
+      }
+
+      let gallery: TableGalleryViewConfig | undefined;
+      if (view.gallery && typeof view.gallery === "object" && !Array.isArray(view.gallery)) {
+        const gl = view.gallery as Record<string, unknown>;
+        gallery = {
+          ...(gl.coverMode === "images" || gl.coverMode === "none" ? { coverMode: gl.coverMode } : {}),
+          ...(gl.coverFit === "cover" || gl.coverFit === "contain" ? { coverFit: gl.coverFit } : {}),
+          ...(gl.cardSize === "small" || gl.cardSize === "medium" || gl.cardSize === "large"
+            ? { cardSize: gl.cardSize }
+            : {}),
+          ...(typeof gl.showFieldNames === "boolean" ? { showFieldNames: gl.showFieldNames } : {}),
+        };
+      }
+
+      let calendar: TableCalendarViewConfig | undefined;
+      if (view.calendar && typeof view.calendar === "object" && !Array.isArray(view.calendar)) {
+        const cal = view.calendar as Record<string, unknown>;
+        const dateColumnId = normalizeValidColRef(cal.dateColumnId);
+        const endDateColumnId = normalizeValidColRef(cal.endDateColumnId);
+        const colorColumnId = normalizeValidColRef(cal.colorColumnId);
+        calendar = {
+          ...(dateColumnId !== undefined ? { dateColumnId } : {}),
+          ...(endDateColumnId !== undefined ? { endDateColumnId } : {}),
+          ...(colorColumnId !== undefined ? { colorColumnId } : {}),
+          ...(cal.displayMode === "day" || cal.displayMode === "week" || cal.displayMode === "month"
+            ? { displayMode: cal.displayMode }
+            : {}),
+          ...(cal.cellHeight === "compact" || cal.cellHeight === "medium" || cal.cellHeight === "tall"
+            ? { cellHeight: cal.cellHeight }
+            : {}),
+          ...(cal.weekStartsOn === 0 || cal.weekStartsOn === 1 ? { weekStartsOn: cal.weekStartsOn } : {}),
+          ...(typeof cal.showFieldNames === "boolean" ? { showFieldNames: cal.showFieldNames } : {}),
+        };
+      }
+
       views.push({
         id: view.id,
         name: view.name,
-        type: "table",
+        type: viewType,
         deletable: view.id === DEFAULT_TABLE_VIEW_ID ? false : Boolean(view.deletable),
         visibleColumnIds: Array.from(new Set(visibleColumnIds)),
         columnWidths,
@@ -324,6 +470,11 @@ export function normalizeTableData(raw: unknown): PrgTableData {
         ...(columnGroups.length > 0 ? { columnGroups } : {}),
         ...(sort ? { sort } : {}),
         ...(filters.length > 0 ? { filters } : {}),
+        ...(rowHeight ? { rowHeight } : {}),
+        ...(kanban && Object.keys(kanban).length > 0 ? { kanban } : {}),
+        ...(gantt && Object.keys(gantt).length > 0 ? { gantt } : {}),
+        ...(gallery && Object.keys(gallery).length > 0 ? { gallery } : {}),
+        ...(calendar && Object.keys(calendar).length > 0 ? { calendar } : {}),
       });
     }
   }
@@ -686,4 +837,111 @@ export function applyTableFiltersAndSort<T extends TableFilterSortRow>(
   }
 
   return result;
+}
+
+export function toLocalDateKey(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+export function parseLocalDateKey(key: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key.trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const dt = new Date(year, month, day);
+  if (dt.getFullYear() !== year || dt.getMonth() !== month || dt.getDate() !== day) {
+    return null;
+  }
+  return dt;
+}
+
+export function addDaysToDateKey(key: string, deltaDays: number): string {
+  const dt = parseLocalDateKey(key);
+  if (!dt) return key;
+  dt.setDate(dt.getDate() + deltaDays);
+  return toLocalDateKey(dt);
+}
+
+export function diffCalendarDays(startKey: string, endKey: string): number {
+  const start = parseLocalDateKey(startKey);
+  const end = parseLocalDateKey(endKey);
+  if (!start || !end) return 0;
+  const utcStart = Date.UTC(start.getFullYear(), start.getMonth(), start.getDate());
+  const utcEnd = Date.UTC(end.getFullYear(), end.getMonth(), end.getDate());
+  return Math.round((utcEnd - utcStart) / 86_400_000);
+}
+
+export function resolveRowDateKey(
+  row: TableFilterSortRow,
+  columnId: string | null | undefined,
+  customCol?: TableColumnSchema,
+): string | null {
+  if (!columnId) return null;
+  if (columnId === "createdAt") {
+    return Number.isFinite(row.createdAt) && row.createdAt > 0 ? formatDateBucket(row.createdAt) : null;
+  }
+  if (columnId === "updatedAt") {
+    return Number.isFinite(row.updatedAt) && row.updatedAt > 0 ? formatDateBucket(row.updatedAt) : null;
+  }
+  if (!customCol) return null;
+  if (customCol.type === "formula") {
+    const cell = row.formulaValues?.[customCol.id];
+    if (!cell || cell.kind === "empty" || cell.kind === "error") return null;
+    if (cell.kind === "date" && cell.dateMs !== undefined) {
+      return formatDateBucket(cell.dateMs) || null;
+    }
+    if (typeof cell.displayText === "string") {
+      const parsed = parseLocalDateKey(cell.displayText.slice(0, 10));
+      if (parsed) return toLocalDateKey(parsed);
+    }
+    return null;
+  }
+  const raw = row.tableFields?.[customCol.id];
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    const parsed = parseLocalDateKey(trimmed.slice(0, 10));
+    if (parsed) return toLocalDateKey(parsed);
+  }
+  return null;
+}
+
+export function resolveRowDateRange(
+  row: TableFilterSortRow,
+  startColId: string | null | undefined,
+  endColId: string | null | undefined,
+  colMap: ReadonlyMap<string, TableColumnSchema>,
+): { startKey: string; endKey: string; durationDays: number } | null {
+  const startKey = resolveRowDateKey(row, startColId, startColId ? colMap.get(startColId) : undefined);
+  const endKey = resolveRowDateKey(row, endColId, endColId ? colMap.get(endColId) : undefined);
+  if (!startKey && !endKey) return null;
+  const effectiveStart = startKey ?? endKey!;
+  const effectiveEnd = endKey ?? startKey!;
+  if (diffCalendarDays(effectiveStart, effectiveEnd) < 0) {
+    return {
+      startKey: effectiveEnd,
+      endKey: effectiveStart,
+      durationDays: diffCalendarDays(effectiveEnd, effectiveStart) + 1,
+    };
+  }
+  return {
+    startKey: effectiveStart,
+    endKey: effectiveEnd,
+    durationDays: diffCalendarDays(effectiveStart, effectiveEnd) + 1,
+  };
+}
+
+export function getRowSelectOptionColor(
+  row: TableFilterSortRow,
+  colorColumnId: string | null | undefined,
+  colMap: ReadonlyMap<string, TableColumnSchema>,
+): string | undefined {
+  if (!colorColumnId) return undefined;
+  const col = colMap.get(colorColumnId);
+  if (!col || (col.type !== "select" && col.type !== "multi_select")) return undefined;
+  const raw = row.tableFields?.[col.id];
+  const optId = typeof raw === "string" ? raw : Array.isArray(raw) && typeof raw[0] === "string" ? raw[0] : undefined;
+  if (!optId) return undefined;
+  return (col.options ?? []).find((o) => o.id === optId)?.color;
 }
