@@ -14,11 +14,10 @@ import { EdgeCollisionBoxGetter } from "@/core/stage/stageObject/association/Edg
 import { type AuthUser, currentUserAtom, isAuthLoadingAtom, store, tabsAtom } from "@/state";
 import { exit, writeStderr } from "@/utils/otherApi";
 import { isDesktop, isMobile, isWeb } from "@/utils/platform";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getMatches } from "@tauri-apps/plugin-cli";
-import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { getCurrent } from "@tauri-apps/plugin-deep-link";
 import { exists } from "@tauri-apps/plugin-fs";
 import "driver.js/dist/driver.css";
 import i18next from "i18next";
@@ -33,7 +32,9 @@ import { URI } from "vscode-uri";
 import App from "./App";
 import { ExtensionManager } from "./core/extension/ExtensionManager";
 import { handleDeepLink, isProjectGraphDeepLink } from "./core/service/dataFileService/DeepLinkHandler";
+import { LocalDocumentSync } from "./core/service/dataFileService/LocalDocumentSync";
 import { onNewDraft, onOpenFile } from "./core/service/GlobalMenu";
+import { installWorkspaceCrossWindowListeners } from "./core/service/workspace/WorkspacePageOps";
 import WelcomeWindow from "./sub/WelcomeWindow";
 import "./css/index.css";
 import Fallback from "./Fallback";
@@ -59,8 +60,10 @@ let appRendered = false;
         state: { phase: "initializing", step: "application" },
       });
     }
-    const matches = !isCliDesktopAcceptance && !isWeb && isDesktop ? await getMatches() : null;
-    const isCliMode = isDesktop && matches?.args.output?.occurrences === 1;
+    const currentWindowLabel = !isWeb && isDesktop && isTauri() ? getCurrentWindow().label : "main";
+    const isMainWindow = currentWindowLabel === "main";
+    const matches = isMainWindow && !isCliDesktopAcceptance && !isWeb && isDesktop ? await getMatches() : null;
+    const isCliMode = isMainWindow && isDesktop && matches?.args.output?.occurrences === 1;
     cliMode = isCliMode || isCliDesktopAcceptance;
     await Promise.all([
       RecentFileManager.init(),
@@ -82,6 +85,9 @@ let appRendered = false;
     // 这些东西依赖上面的东西，所以单独一个Promise.all
     await Promise.all([loadLanguageFiles(), loadSyncModules(), ...(isCliDesktopAcceptance ? [] : [initAuth()])]);
     AutoSaveOnSwitch.install();
+    if (!isWeb && isDesktop && isTauri()) {
+      await Promise.all([LocalDocumentSync.ensureListeners(), installWorkspaceCrossWindowListeners()]);
+    }
     await renderApp(isCliMode, isCliDesktopAcceptance);
     appRendered = true;
     if (isCliDesktopAcceptance) {
@@ -92,9 +98,9 @@ let appRendered = false;
       await runProjectGraphCliDesktopAcceptanceHost();
       return;
     }
-    await loadStartFile();
+    await loadStartFile(isMainWindow);
     if (!isCliMode) {
-      await ensureStartupDraftAndWelcome();
+      await ensureStartupDraftAndWelcome(isMainWindow);
       await reopenWorkspacePanel();
     }
     if (isCliMode) {
@@ -206,8 +212,77 @@ async function renderStartupError(error: unknown) {
   if (!isWeb) await getCurrentWindow().show();
 }
 
-async function loadStartFile() {
+interface WindowInitPayload {
+  filePath?: string | null;
+  deepLinkUrl?: string | null;
+  workspaceRoot?: string | null;
+}
+
+interface PendingWindowEvents {
+  filePaths: string[];
+  deepLinkUrls: string[];
+}
+
+async function consumePendingWindowEvents(events: PendingWindowEvents): Promise<void> {
+  for (const path of events.filePaths) {
+    try {
+      if (await exists(path)) {
+        await onOpenFile(URI.file(path), "系统打开文件");
+      } else {
+        toast.error("文件不存在");
+      }
+    } catch (error) {
+      toast.error("打开文件失败: " + String(error));
+    }
+  }
+  if (events.deepLinkUrls.length > 0) {
+    try {
+      await handleDeepLink(events.deepLinkUrls);
+    } catch (error) {
+      toast.error("处理 Deep Link 失败: " + String(error));
+    }
+  }
+}
+
+async function loadStartFile(isMainWindow: boolean) {
   if (isWeb || !isDesktop) return;
+
+  const currentWindow = getCurrentWindow();
+
+  // 所有窗口只监听定向投递给「本窗口」的文件打开与深链接事件（由 Rust 侧按最后焦点窗口精准路由）
+  await currentWindow.listen<string>("open-file-from-os", async (event) => {
+    const path = event.payload;
+    const isExists = await exists(path);
+    if (isExists) {
+      await onOpenFile(URI.file(path), "系统打开文件");
+    } else {
+      toast.error("文件不存在");
+    }
+  });
+
+  await currentWindow.listen<string[]>("targeted-deep-link", (event) => {
+    if (Array.isArray(event.payload) && event.payload.length > 0) {
+      void handleDeepLink(event.payload);
+    }
+  });
+
+  if (!isMainWindow) {
+    // 副窗口只消费创建时注入的初始化载荷，不重复读取进程级冷启动命令行参数和 getCurrent()
+    const initPayload = await invoke<WindowInitPayload | null>("take_window_init_payload");
+    if (initPayload?.deepLinkUrl) {
+      await handleDeepLink([initPayload.deepLinkUrl]);
+    } else if (initPayload?.filePath) {
+      const isExists = await exists(initPayload.filePath);
+      if (isExists) {
+        await onOpenFile(URI.file(initPayload.filePath), "新窗口打开");
+      } else {
+        toast.error("文件不存在");
+      }
+    }
+    const pendingWindowEvents = await invoke<PendingWindowEvents>("activate_window_routing");
+    await consumePendingWindowEvents(pendingWindowEvents);
+    return;
+  }
 
   const cliMatches = await getMatches();
   const argPath = cliMatches.args.path.value as string | undefined;
@@ -232,38 +307,7 @@ async function loadStartFile() {
     }
   }
 
-  const pending = await invoke<string[]>("take_pending_open_files");
-  for (const path of pending) {
-    if (!path.toLowerCase().endsWith(".prg")) continue;
-    const isExists = await exists(path);
-    if (isExists) {
-      await onOpenFile(URI.file(path), "macOS双击文件(启动)");
-    } else {
-      toast.error("文件不存在");
-    }
-  }
-
-  listen<string>("open-file-from-os", async (event) => {
-    const path = event.payload;
-    const isExists = await exists(path);
-    if (isExists) {
-      await onOpenFile(URI.file(path), "macOS双击文件");
-    } else {
-      toast.error("文件不存在");
-    }
-  });
-
-  // Deep link: 热启动（应用已运行时收到 URL）
-  // 第二个实例的链接由 Rust 端 single-instance 插件转发给已运行实例，
-  // 再经 deep-link 插件派发成 deep-link://new-url 事件。
-  onOpenUrl((urls) => {
-    if (urls.length > 0) {
-      void handleDeepLink(urls);
-    }
-  });
-
-  // Deep link: 冷启动（应用通过 URL 唤起）以及启动期内被转发过的链接。
-  // 监听必须在读取之前注册，否则启动期到达的转发会漏掉。
+  // Deep link: 仅主窗口读取冷启动 URL（热启动已由 Rust 侧单实例回调定向发 targeted-deep-link）
   try {
     const urls = await getCurrent();
     if (urls && urls.length > 0) {
@@ -272,6 +316,9 @@ async function loadStartFile() {
   } catch (e) {
     toast.error("处理 Deep Link 失败: " + String(e));
   }
+
+  const pendingWindowEvents = await invoke<PendingWindowEvents>("activate_window_routing");
+  await consumePendingWindowEvents(pendingWindowEvents);
 }
 
 /** 上次退出时开着工作空间的话，这次启动把文件树面板重新停靠到左侧 */
@@ -281,9 +328,11 @@ async function reopenWorkspacePanel() {
   WorkspaceWindow.open();
 }
 
-/** 无外部文件时创建空草稿并弹出欢迎窗（类 Blender splash） */
-async function ensureStartupDraftAndWelcome() {
+/** 无外部文件时创建空草稿（主窗口弹欢迎窗，新开副窗口保持干净草稿） */
+async function ensureStartupDraftAndWelcome(isMainWindow: boolean) {
   if (store.get(tabsAtom).length > 0) return;
   await onNewDraft();
-  WelcomeWindow.open();
+  if (isMainWindow) {
+    WelcomeWindow.open();
+  }
 }

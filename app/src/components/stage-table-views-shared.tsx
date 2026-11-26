@@ -10,11 +10,9 @@ import type {
 } from "@/core/service/dataManageService/stageTableService/StageTableService";
 import {
   ALL_SYSTEM_COLUMN_IDS,
-  collectColumnFilterBuckets,
   parseLocalDateKey,
   toLocalDateKey,
   type SystemColumnId,
-  type TableColumnFilter,
   type TableColumnSchema,
   type TableSelectOption,
   type TableSortConfig,
@@ -25,7 +23,6 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
   ArrowDown,
   ArrowDownRight,
-  ArrowLeft,
   ArrowUp,
   ArrowUpDown,
   ArrowUpLeft,
@@ -35,13 +32,11 @@ import {
   CalendarDays,
   ChartGantt,
   Check,
-  ChevronRight,
   CircleDot,
   Clock,
   Crosshair,
   FileCode2,
   Film,
-  Filter,
   FolderKanban,
   FunctionSquare,
   Hash,
@@ -59,7 +54,7 @@ import {
   Type,
   X,
 } from "lucide-react";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 export const VIEW_OPTION_BADGE_CLASSES: Record<string, string> = {
   gray: "bg-zinc-500/25 text-zinc-900 dark:bg-zinc-400/30 dark:text-zinc-100",
@@ -503,259 +498,6 @@ export function StageTableFieldVisibilityList({
         })}
       </div>
     </div>
-  );
-}
-
-export function StageTableFilterToolbarPopover({
-  allColumnIds,
-  customColumnMap,
-  allRows,
-  activeFilters,
-  getColumnLabel,
-  onSetColumnFilter,
-  onClearAllFilters,
-  t,
-}: {
-  allColumnIds: readonly string[];
-  customColumnMap: ReadonlyMap<string, TableColumnSchema>;
-  allRows: readonly StageTableRow[];
-  activeFilters: readonly TableColumnFilter[];
-  getColumnLabel: (colId: string) => string;
-  onSetColumnFilter: (columnId: string, filter: { values: string[]; includeEmpty: boolean } | null) => void;
-  onClearAllFilters: () => void;
-  t: (key: string, opts?: Record<string, unknown>) => string;
-}) {
-  const [selectedColId, setSelectedColId] = useState<string | null>(null);
-  const [bucketSearch, setBucketSearch] = useState("");
-  const activeFilterMap = useMemo(() => new Map(activeFilters.map((f) => [f.columnId, f])), [activeFilters]);
-
-  const selectedCol = selectedColId ? customColumnMap.get(selectedColId) : undefined;
-  const bucketData = useMemo(() => {
-    if (!selectedColId) return null;
-    return collectColumnFilterBuckets(allRows, selectedColId, selectedCol);
-  }, [allRows, selectedColId, selectedCol]);
-
-  const activeColFilter = selectedColId ? (activeFilterMap.get(selectedColId) ?? null) : null;
-
-  const commitBucketChange = (nextValues: Set<string>, nextIncludeEmpty: boolean) => {
-    if (!selectedColId || !bucketData) return;
-    const allBucketKeys = bucketData.buckets.map((b) => b.key);
-    const allSelected =
-      allBucketKeys.every((k) => nextValues.has(k)) && (bucketData.emptyCount === 0 || nextIncludeEmpty);
-    if (allSelected) {
-      onSetColumnFilter(selectedColId, null);
-    } else {
-      onSetColumnFilter(selectedColId, {
-        values: Array.from(nextValues),
-        includeEmpty: nextIncludeEmpty,
-      });
-    }
-  };
-
-  return (
-    <Popover
-      onOpenChange={(open) => {
-        if (!open) {
-          setSelectedColId(null);
-          setBucketSearch("");
-        }
-      }}
-    >
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          data-stage-table-filter-toolbar
-          className={cn(
-            "hover:bg-accent inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded px-2 transition-colors",
-            activeFilters.length > 0
-              ? "bg-primary/15 text-primary font-medium"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          <Filter className="size-3.5" />
-          <span>
-            {activeFilters.length > 0 ? `${t("toolbar.filter")} (${activeFilters.length})` : t("toolbar.filter")}
-          </span>
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className="w-64 p-2 text-xs select-none"
-        onWheel={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        {!selectedColId ? (
-          <>
-            <div className="mb-1.5 flex items-center justify-between px-1">
-              <span className="text-muted-foreground text-[11px] font-medium">{t("sortFilter.filterTitle")}</span>
-              {activeFilters.length > 0 && (
-                <button
-                  type="button"
-                  onClick={onClearAllFilters}
-                  className="text-primary cursor-pointer text-[11px] hover:underline"
-                >
-                  {t("sortFilter.clearAllFilters")}
-                </button>
-              )}
-            </div>
-            {activeFilters.length === 0 && (
-              <div className="text-muted-foreground mb-1.5 px-1 text-[11px]">{t("sortFilter.noActiveFilters")}</div>
-            )}
-            <div className="max-h-60 space-y-0.5 overflow-y-auto">
-              {allColumnIds.map((cid) => {
-                const hasFilter = activeFilterMap.has(cid);
-                return (
-                  <div
-                    key={cid}
-                    className="hover:bg-accent flex items-center gap-1.5 rounded-sm px-2 py-1 text-xs transition-colors"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedColId(cid);
-                        setBucketSearch("");
-                      }}
-                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
-                    >
-                      <StageTableColumnIcon columnId={cid} customColumn={customColumnMap.get(cid)} />
-                      <span className={cn("min-w-0 flex-1 truncate", hasFilter && "text-primary font-medium")}>
-                        {getColumnLabel(cid)}
-                      </span>
-                      <ChevronRight className="text-muted-foreground size-3 shrink-0" />
-                    </button>
-                    {hasFilter && (
-                      <button
-                        type="button"
-                        aria-label={t("sortFilter.clearFilter")}
-                        onClick={() => onSetColumnFilter(cid, null)}
-                        className="text-muted-foreground hover:text-foreground cursor-pointer rounded p-0.5"
-                      >
-                        <X className="size-3" />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </>
-        ) : (
-          bucketData && (
-            <div>
-              <div className="mb-1.5 flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setSelectedColId(null)}
-                  className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-5 cursor-pointer items-center justify-center rounded"
-                >
-                  <ArrowLeft className="size-3.5" />
-                </button>
-                <StageTableColumnIcon columnId={selectedColId} customColumn={selectedCol} />
-                <span className="min-w-0 flex-1 truncate font-medium">{getColumnLabel(selectedColId)}</span>
-                {activeColFilter && (
-                  <button
-                    type="button"
-                    onClick={() => onSetColumnFilter(selectedColId, null)}
-                    className="text-primary cursor-pointer text-[11px] hover:underline"
-                  >
-                    {t("sortFilter.clearFilter")}
-                  </button>
-                )}
-              </div>
-              <div className="relative mb-1.5 flex items-center">
-                <Search className="text-muted-foreground pointer-events-none absolute left-2 size-3" />
-                <Input
-                  value={bucketSearch}
-                  onChange={(e) => setBucketSearch(e.target.value)}
-                  onKeyDown={(e) => e.stopPropagation()}
-                  placeholder={t("sortFilter.searchPlaceholder")}
-                  className="h-7 pl-6 text-xs"
-                />
-              </div>
-              <div className="max-h-52 space-y-0.5 overflow-y-auto">
-                {(() => {
-                  const selectedSet = new Set(
-                    activeColFilter ? activeColFilter.values : bucketData.buckets.map((b) => b.key),
-                  );
-                  const includeEmpty = activeColFilter ? activeColFilter.includeEmpty : true;
-                  const allSelected =
-                    bucketData.buckets.every((b) => selectedSet.has(b.key)) &&
-                    (bucketData.emptyCount === 0 || includeEmpty);
-                  const q = bucketSearch.trim().toLowerCase();
-                  const visibleBuckets = bucketData.buckets.filter((b) => !q || b.label.toLowerCase().includes(q));
-                  return (
-                    <>
-                      <label className="hover:bg-accent flex cursor-pointer items-center gap-2 rounded-sm px-1.5 py-1 text-xs">
-                        <Checkbox
-                          checked={allSelected}
-                          onCheckedChange={(checked) => {
-                            if (checked) {
-                              onSetColumnFilter(selectedColId, null);
-                            } else {
-                              onSetColumnFilter(selectedColId, { values: [], includeEmpty: false });
-                            }
-                          }}
-                        />
-                        <span className="font-medium">{t("sortFilter.selectAll")}</span>
-                      </label>
-                      {bucketData.emptyCount > 0 && (!q || t("sortFilter.emptyValue").toLowerCase().includes(q)) && (
-                        <label className="hover:bg-accent flex cursor-pointer items-center gap-2 rounded-sm px-1.5 py-1 text-xs">
-                          <Checkbox
-                            checked={includeEmpty}
-                            onCheckedChange={(checked) => {
-                              commitBucketChange(new Set(selectedSet), Boolean(checked));
-                            }}
-                          />
-                          <span className="text-muted-foreground min-w-0 flex-1 truncate italic">
-                            {t("sortFilter.emptyValue")}
-                          </span>
-                          <span className="text-muted-foreground text-[10px] tabular-nums">
-                            {bucketData.emptyCount}
-                          </span>
-                        </label>
-                      )}
-                      {visibleBuckets.map((bucket) => {
-                        const checked = selectedSet.has(bucket.key);
-                        return (
-                          <label
-                            key={bucket.key}
-                            className="hover:bg-accent flex cursor-pointer items-center gap-2 rounded-sm px-1.5 py-1 text-xs"
-                          >
-                            <Checkbox
-                              checked={checked}
-                              onCheckedChange={(val) => {
-                                const next = new Set(selectedSet);
-                                if (val) next.add(bucket.key);
-                                else next.delete(bucket.key);
-                                commitBucketChange(next, includeEmpty);
-                              }}
-                            />
-                            {bucket.color ? (
-                              <span
-                                className={cn(
-                                  "min-w-0 truncate rounded px-1.5 py-0.5 text-[11px] font-medium",
-                                  getViewOptionBadgeClass(bucket.color),
-                                )}
-                              >
-                                {bucket.label}
-                              </span>
-                            ) : (
-                              <span className="min-w-0 flex-1 truncate">{bucket.label}</span>
-                            )}
-                            <span className="text-muted-foreground ml-auto text-[10px] tabular-nums">
-                              {bucket.count}
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </>
-                  );
-                })()}
-              </div>
-            </div>
-          )
-        )}
-      </PopoverContent>
-    </Popover>
   );
 }
 

@@ -425,9 +425,17 @@ export class HistoryManager extends HistoryManagerAbs {
     }
     this.currentManager.recordStep();
     if (this.project.getService?.("stageTable")) {
-      this.project.stageTable.notifyChange();
+      this.project.stageTable.notifyChange({ emitSync: false });
     }
     this.project.emit("stage-commit");
+  }
+
+  /**
+   * 同步来自同进程其它窗口的舞台状态进历史栈，但不反向触发 stage-commit，也不覆盖 projectState。
+   */
+  public recordExternalStage(preserveState: ProjectState): void {
+    this.currentManager.recordStep();
+    this.project.projectState = preserveState;
   }
 
   /**
@@ -438,6 +446,7 @@ export class HistoryManager extends HistoryManagerAbs {
     if (this.project.getService?.("stageTable")) {
       this.project.stageTable.resetAfterStageRestore();
     }
+    this.project.emit("stage-commit");
   }
 
   /**
@@ -448,6 +457,7 @@ export class HistoryManager extends HistoryManagerAbs {
     if (this.project.getService?.("stageTable")) {
       this.project.stageTable.resetAfterStageRestore();
     }
+    this.project.emit("stage-commit");
   }
 
   /**

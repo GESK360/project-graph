@@ -155,6 +155,37 @@ stageTable:
     noSortActive: Urutan bawaan
     columnFilterAria: Urutkan dan filter
     toggleSortAria: Ubah arah urutan
+    matchPrefix: Cocokkan
+    conjunctionAll: semua kondisi
+    conjunctionAny: kondisi apa pun
+    addCondition: Tambah kondisi
+    selectFieldTitle: Pilih bidang
+    dragConditionAria: Seret untuk mengurutkan kondisi filter
+    removeCondition: Hapus kondisi
+    expandCondition: Bentangkan kondisi
+    collapseCondition: Ciutkan kondisi
+    inputPlaceholder: Masukkan nilai
+    selectPlaceholder: Pilih
+    noOptions: Belum ada opsi
+    columnQuickFilters: Filter cepat kolom
+    opContains: Berisi
+    opNotContains: Tidak berisi
+    opEq: Sama dengan
+    opNeq: Tidak sama dengan
+    opAfter: Setelah
+    opBefore: Sebelum
+    opOnOrAfter: Pada atau setelah
+    opOnOrBefore: Pada atau sebelum
+    opIsEmpty: Kosong
+    opIsNotEmpty: Tidak kosong
+    datePreset_today: Hari ini
+    datePreset_yesterday: Kemarin
+    datePreset_tomorrow: Besok
+    datePreset_past_7_days: 7 hari terakhir
+    datePreset_past_30_days: 30 hari terakhir
+    datePreset_this_week: Minggu ini
+    datePreset_this_month: Bulan ini
+    datePreset_this_year: Tahun ini
   selection:
     selectAllAria: Pilih semua
     rowsCount: "{{count}} baris dipilih"
@@ -500,6 +531,7 @@ tabMenu:
   closeLeft: Tutup tab di sebelah kiri
   closeOthers: Tutup tab lainnya
   closeRight: Tutup tab di sebelah kanan
+  openInNewWindow: Buka di Jendela Baru
 
 settings:
   title: Pengaturan
@@ -2258,6 +2290,10 @@ keyBinds:
     description: |
       Buat file konsep baru, dan beralih ke file tersebut
       Jika file saat ini belum disimpan tidak dapat beralih
+  newWindow:
+    title: Jendela Baru
+    description: |
+      Buka jendela Flux Graph baru untuk melihat dan mengedit beberapa proyek atau proyek yang sama secara bersamaan
   newFileAtCurrentProjectDir:
     title: Buat File Baru di Direktori Proyek Saat Ini
     description: |
@@ -2998,6 +3034,7 @@ workspace:
   copy: Salin
   paste: Tempel
   copyLink: Salin Tautan ke Halaman
+  openInNewWindow: Buka di Jendela Baru
   moveOrCopy: Pindahkan atau Salin…
   demote: Turunkan Subhalaman
   promote: Naikkan Subhalaman

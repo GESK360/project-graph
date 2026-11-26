@@ -159,6 +159,37 @@ stageTable:
     noSortActive: Default order
     columnFilterAria: Sort and filter
     toggleSortAria: Toggle sort order
+    matchPrefix: Match
+    conjunctionAll: all conditions
+    conjunctionAny: any condition
+    addCondition: Add condition
+    selectFieldTitle: Select field
+    dragConditionAria: Drag to reorder filter condition
+    removeCondition: Remove condition
+    expandCondition: Expand condition
+    collapseCondition: Collapse condition
+    inputPlaceholder: Enter value
+    selectPlaceholder: Select
+    noOptions: No options
+    columnQuickFilters: Column quick filters
+    opContains: Contains
+    opNotContains: Does not contain
+    opEq: Equals
+    opNeq: Does not equal
+    opAfter: After
+    opBefore: Before
+    opOnOrAfter: On or after
+    opOnOrBefore: On or before
+    opIsEmpty: Is empty
+    opIsNotEmpty: Is not empty
+    datePreset_today: Today
+    datePreset_yesterday: Yesterday
+    datePreset_tomorrow: Tomorrow
+    datePreset_past_7_days: Past 7 days
+    datePreset_past_30_days: Past 30 days
+    datePreset_this_week: This week
+    datePreset_this_month: This month
+    datePreset_this_year: This year
   selection:
     selectAllAria: Select all
     rowsCount: "{{count}} row(s) selected"
@@ -474,6 +505,7 @@ tabMenu:
   closeLeft: Close tabs to the left
   closeOthers: Close other tabs
   closeRight: Close tabs to the right
+  openInNewWindow: Open in New Window
 
 settings:
   title: Settings
@@ -2410,6 +2442,9 @@ keyBinds:
     title: Create New Draft
     description: "Create a new draft file and switch to this file.\nIf the current
       file is not saved, you cannot switch.\n"
+  newWindow:
+    title: New Window
+    description: "Open a new Flux Graph window to view or edit multiple projects or the same project side by side.\n"
   startCollaboration:
     title: Start Collaboration
     description: "Share the current stage as a real-time collaboration room.
@@ -3044,6 +3079,7 @@ workspace:
   copy: Copy
   paste: Paste
   copyLink: Copy Link to Page
+  openInNewWindow: Open in New Window
   moveOrCopy: Move or Copy…
   demote: Demote Subpage
   promote: Promote Subpage

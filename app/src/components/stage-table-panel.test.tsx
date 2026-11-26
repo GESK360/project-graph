@@ -3,7 +3,12 @@
 import { createTabGroup } from "@/core/TabGroup";
 import { evaluateTableFormulas } from "@/core/service/dataManageService/stageTableService/formulaEngine";
 import { activeTabAtom, stageTableOpenAtom, store, tabGroupRootAtom, tabsAtom } from "@/state";
-import { createDefaultTableData } from "@/types/table";
+import {
+  createDefaultTableData,
+  getColumnFilterKind,
+  getDefaultFilterOperator,
+  getFilterOperatorsForKind,
+} from "@/types/table";
 import { Provider } from "jotai";
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -210,8 +215,99 @@ const MockProjectClass = vi.hoisted(() => {
           active.filters = flt ? [...rest, { columnId: colId, ...flt }] : rest.length > 0 ? rest : undefined;
           this.listeners.forEach((fn) => fn());
         },
+        getFilterGroup: () => this.stageTable.getActiveView().filterGroup ?? { conjunction: "and", conditions: [] },
+        setFilterConjunction: (conjunction: "and" | "or") => {
+          const active = this.stageTable.getActiveView();
+          const cur = active.filterGroup ?? { conjunction: "and", conditions: [] };
+          active.filterGroup = { ...cur, conjunction };
+          this.listeners.forEach((fn) => fn());
+        },
+        addFilterCondition: (columnId?: string) => {
+          const active = this.stageTable.getActiveView();
+          const cur = active.filterGroup ?? { conjunction: "and", conditions: [] };
+          const used = new Set(cur.conditions.map((c: any) => c.columnId));
+          const targetColId =
+            columnId ?? this.stageTable.getVisibleColumnIds().find((cid: string) => !used.has(cid)) ?? "name";
+          const colSchema = this.table.columns.find((c: any) => c.id === targetColId);
+          const kind = getColumnFilterKind(targetColId, colSchema);
+          const cond = {
+            id: `flt_${cur.conditions.length + 1}_${Math.random().toString(36).slice(2, 6)}`,
+            columnId: targetColId,
+            operator: getDefaultFilterOperator(kind),
+          };
+          active.filterGroup = { conjunction: cur.conjunction, conditions: [...cur.conditions, cond] };
+          this.listeners.forEach((fn) => fn());
+          return cond;
+        },
+        updateFilterCondition: (conditionId: string, patch: any) => {
+          const active = this.stageTable.getActiveView();
+          const cur = active.filterGroup ?? { conjunction: "and", conditions: [] };
+          active.filterGroup = {
+            ...cur,
+            conditions: cur.conditions.map((c: any) => {
+              if (c.id !== conditionId) return c;
+              const nextColId = patch.columnId ?? c.columnId;
+              const colChanged = nextColId !== c.columnId;
+              const nextSchema = this.table.columns.find((col: any) => col.id === nextColId);
+              const nextKind = getColumnFilterKind(nextColId, nextSchema);
+              const allowed = getFilterOperatorsForKind(nextKind);
+              const nextOp =
+                patch.operator && allowed.includes(patch.operator)
+                  ? patch.operator
+                  : colChanged
+                    ? getDefaultFilterOperator(nextKind)
+                    : c.operator;
+              return {
+                id: c.id,
+                columnId: nextColId,
+                operator: nextOp,
+                value: "value" in patch ? patch.value : colChanged ? undefined : c.value,
+                values: "values" in patch ? patch.values : colChanged ? undefined : c.values,
+                datePreset: "datePreset" in patch ? patch.datePreset : colChanged ? undefined : c.datePreset,
+                collapsed: "collapsed" in patch ? patch.collapsed : c.collapsed,
+              };
+            }),
+          };
+          this.listeners.forEach((fn) => fn());
+        },
+        removeFilterCondition: (conditionId: string) => {
+          const active = this.stageTable.getActiveView();
+          const cur = active.filterGroup;
+          if (!cur) return;
+          const next = cur.conditions.filter((c: any) => c.id !== conditionId);
+          active.filterGroup = next.length > 0 ? { ...cur, conditions: next } : undefined;
+          this.listeners.forEach((fn) => fn());
+        },
+        toggleFilterConditionCollapsed: (conditionId: string) => {
+          const active = this.stageTable.getActiveView();
+          const cur = active.filterGroup;
+          if (!cur) return;
+          active.filterGroup = {
+            ...cur,
+            conditions: cur.conditions.map((c: any) => (c.id === conditionId ? { ...c, collapsed: !c.collapsed } : c)),
+          };
+          this.listeners.forEach((fn) => fn());
+        },
+        reorderFilterConditions: vi.fn((draggedId: string, targetId: string, position: "before" | "after") => {
+          if (draggedId === targetId) return false;
+          const active = this.stageTable.getActiveView();
+          const cur = active.filterGroup;
+          if (!cur) return false;
+          const dragged = cur.conditions.find((c: any) => c.id === draggedId);
+          if (!dragged) return false;
+          const remaining = cur.conditions.filter((c: any) => c.id !== draggedId);
+          const targetIdx = remaining.findIndex((c: any) => c.id === targetId);
+          if (targetIdx === -1) return false;
+          const insertIdx = position === "before" ? targetIdx : targetIdx + 1;
+          remaining.splice(insertIdx, 0, dragged);
+          active.filterGroup = { ...cur, conditions: remaining };
+          this.listeners.forEach((fn) => fn());
+          return true;
+        }),
         clearAllFilters: () => {
-          this.stageTable.getActiveView().filters = undefined;
+          const active = this.stageTable.getActiveView();
+          active.filters = undefined;
+          active.filterGroup = undefined;
           this.listeners.forEach((fn) => fn());
         },
         getColumns: () => this.table.columns,
@@ -1188,5 +1284,212 @@ describe("Docked StageTablePanel split & sliders", () => {
       URL.createObjectURL = origCreateObjectURL;
       URL.revokeObjectURL = origRevokeObjectURL;
     }
+  });
+
+  it("renders grouped original-table field picker, supports condition drag-reorder, collapse, and live filtering", async () => {
+    const projectA = new MockProjectClass("proj-flt", ["细胞膜", "线粒体", "核糖体"]);
+    const colStatus = projectA.stageTable.addCustomColumn({ name: "归档状态", type: "select" });
+    const colNum = projectA.stageTable.addCustomColumn({ name: "数字", type: "number" });
+    const colHidden = projectA.stageTable.addCustomColumn({ name: "隐藏列", type: "text" });
+    colStatus.options = [
+      { id: "opt_arch", name: "归档", color: "blue" },
+      { id: "opt_open", name: "进行中", color: "green" },
+    ];
+    // 原始表从左到右仅展示：基础信息(name, images) -> 后台数据(colStatus) -> 未分组(colNum)；隐藏列与未展示系统列不应出现在筛选字段列表中
+    projectA.table.views[0].visibleColumnIds = ["name", "images", colStatus.id, colNum.id];
+    projectA.table.views[0].columnGroups = [
+      { id: "grp_basic", name: "基础信息", columnIds: ["name", "images"] },
+      { id: "grp_backend", name: "后台数据", columnIds: [colStatus.id] },
+    ];
+
+    projectA.rows[0].tableFields = { [colNum.id]: 80, [colStatus.id]: "opt_arch" };
+    projectA.rows[1].tableFields = { [colNum.id]: 20, [colStatus.id]: "opt_open" };
+    projectA.rows[2].tableFields = {};
+    projectA.rows[2].images = [{ uuid: "img-2", attachmentId: "att-2" }];
+
+    const group = createTabGroup([projectA as never], projectA as never);
+    store.set(tabsAtom, [projectA as never]);
+    store.set(tabGroupRootAtom, group);
+    store.set(activeTabAtom, projectA as never);
+    store.set(stageTableOpenAtom, true);
+
+    await React.act(async () => {
+      root.render(
+        <Provider store={store}>
+          <DockedArea onTabClick={vi.fn()} onTabClose={vi.fn()} onTitleBarMouseDown={vi.fn()} isClassroomMode={false} />
+          <div data-pg-titlebar-tab-space />
+        </Provider>,
+      );
+    });
+
+    const filterBtn = container.querySelector<HTMLButtonElement>("[data-stage-table-filter-toolbar]")!;
+    expect(filterBtn).toBeTruthy();
+    await React.act(async () => {
+      filterBtn.click();
+    });
+
+    const popover = document.body.querySelector<HTMLElement>("[data-stage-table-filter-popover]")!;
+    expect(popover).toBeTruthy();
+    // Must NOT include Feishu's "仅你可见" toggle
+    expect(popover.textContent).not.toContain("仅你可见");
+
+    // 1. Clicking "+ 添加筛选条件" opens grouped "选择字段" popover ordered left-to-right from 原始表
+    await React.act(async () => {
+      popover.querySelector<HTMLButtonElement>("[data-filter-add-condition]")!.click();
+    });
+    const addFieldPopover = document.body.querySelector<HTMLElement>("[data-filter-add-field-popover]")!;
+    expect(addFieldPopover).toBeTruthy();
+    const pickerGroups = Array.from(addFieldPopover.querySelectorAll<HTMLElement>("[data-filter-field-group]")).map(
+      (el) => el.dataset.filterFieldGroup,
+    );
+    expect(pickerGroups).toEqual(["grp_basic", "grp_backend"]);
+    const pickerOptions = Array.from(addFieldPopover.querySelectorAll<HTMLElement>("[data-filter-field-option]")).map(
+      (el) => el.dataset.filterFieldOption,
+    );
+    expect(pickerOptions).toEqual(["name", "images", colStatus.id, colNum.id]);
+    // Hidden custom column and unshown system columns must NOT appear
+    expect(pickerOptions).not.toContain(colHidden.id);
+    expect(pickerOptions).not.toContain("parents");
+    expect(pickerOptions).not.toContain("createdAt");
+
+    // Toggle group collapse inside "选择字段"
+    await React.act(async () => {
+      addFieldPopover.querySelector<HTMLButtonElement>('[data-filter-field-group-toggle="grp_basic"]')!.click();
+    });
+    expect(addFieldPopover.querySelector('[data-filter-field-option="name"]')).toBeNull();
+    await React.act(async () => {
+      addFieldPopover.querySelector<HTMLButtonElement>('[data-filter-field-group-toggle="grp_basic"]')!.click();
+    });
+    expect(addFieldPopover.querySelector('[data-filter-field-option="name"]')).toBeTruthy();
+
+    // Pick "数字" directly from the grouped picker
+    await React.act(async () => {
+      addFieldPopover.querySelector<HTMLButtonElement>(`[data-filter-field-option="${colNum.id}"]`)!.click();
+    });
+
+    const firstCard = popover.querySelector<HTMLElement>("[data-filter-condition-card]")!;
+    const firstCondId = firstCard.dataset.filterConditionCard!;
+    expect(popover.querySelector(`[data-filter-condition-body="${firstCondId}"]`)).toBeTruthy();
+
+    // Collapse & expand via small arrow
+    await React.act(async () => {
+      popover.querySelector<HTMLButtonElement>(`[data-filter-toggle-collapse="${firstCondId}"]`)!.click();
+    });
+    expect(popover.querySelector(`[data-filter-condition-body="${firstCondId}"]`)).toBeNull();
+    expect(popover.querySelector(`[data-filter-collapsed-summary="${firstCondId}"]`)).toBeTruthy();
+
+    await React.act(async () => {
+      popover.querySelector<HTMLButtonElement>(`[data-filter-toggle-collapse="${firstCondId}"]`)!.click();
+    });
+    expect(popover.querySelector(`[data-filter-condition-body="${firstCondId}"]`)).toBeTruthy();
+
+    // Open operator dropdown -> verify exact 8 number operators
+    await React.act(async () => {
+      popover.querySelector<HTMLButtonElement>(`[data-filter-operator-trigger="${firstCondId}"]`)!.click();
+    });
+    const numOps = Array.from(document.body.querySelectorAll<HTMLElement>("[data-filter-operator-option]")).map(
+      (el) => el.dataset.filterOperatorOption,
+    );
+    expect(numOps).toEqual(["eq", "neq", "gt", "gte", "lt", "lte", "is_empty", "is_not_empty"]);
+
+    // Select ">" and enter 50 -> only row 0 ("细胞膜") matches
+    await React.act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-filter-operator-option="gt"]')!.click();
+    });
+    await React.act(async () => {
+      projectA.stageTable.updateFilterCondition(firstCondId, { value: "50" });
+    });
+    expect(container.querySelectorAll("tbody tr[data-stage-table-row-id]").length).toBe(1);
+    expect(filterBtn.textContent).toContain("1");
+
+    // 2. Add second condition on "images" via "+ 添加筛选条件" picker -> verify only 2 operators & no value input
+    await React.act(async () => {
+      popover.querySelector<HTMLButtonElement>("[data-filter-add-condition]")!.click();
+    });
+    await React.act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-filter-field-option="images"]')!.click();
+    });
+    const cards = Array.from(popover.querySelectorAll<HTMLElement>("[data-filter-condition-card]"));
+    expect(cards.length).toBe(2);
+    const imgCondId = cards[1].dataset.filterConditionCard!;
+    expect(popover.querySelector(`[data-filter-text-input="${imgCondId}"]`)).toBeNull();
+    expect(popover.querySelector(`[data-filter-number-input="${imgCondId}"]`)).toBeNull();
+
+    await React.act(async () => {
+      popover.querySelector<HTMLButtonElement>(`[data-filter-operator-trigger="${imgCondId}"]`)!.click();
+    });
+    const imgOps = Array.from(document.body.querySelectorAll<HTMLElement>("[data-filter-operator-option]")).map(
+      (el) => el.dataset.filterOperatorOption,
+    );
+    expect(imgOps).toEqual(["is_empty", "is_not_empty"]);
+    await React.act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-filter-operator-option="is_not_empty"]')!.click();
+    });
+
+    // Under AND: number > 50 (row 0) AND images not empty (row 2) => 0 rows
+    expect(container.querySelectorAll("tbody tr[data-stage-table-row-id]").length).toBe(0);
+
+    // Switch conjunction to OR -> row 0 and row 2 match (2 rows)
+    await React.act(async () => {
+      popover.querySelector<HTMLButtonElement>("[data-filter-conjunction-trigger]")!.click();
+    });
+    await React.act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-filter-conjunction-option="or"]')!.click();
+    });
+    expect(container.querySelectorAll("tbody tr[data-stage-table-row-id]").length).toBe(2);
+
+    // 3. Drag-and-drop reorder condition cards: drag 2nd card (images) above 1st card (number)
+    const currentCards = Array.from(popover.querySelectorAll<HTMLElement>("[data-filter-condition-card]"));
+    currentCards.forEach((cardEl, idx) => {
+      cardEl.getBoundingClientRect = () =>
+        ({
+          top: idx * 100,
+          bottom: (idx + 1) * 100,
+          height: 100,
+          left: 0,
+          right: 340,
+          width: 340,
+          x: 0,
+          y: idx * 100,
+          toJSON: () => {},
+        }) as DOMRect;
+    });
+    const dragHandle = popover.querySelector<HTMLButtonElement>(`[data-filter-drag-handle="${imgCondId}"]`)!;
+    await React.act(async () => {
+      dragHandle.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 12, clientY: 120 }));
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 12, clientY: 15 }));
+      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 12, clientY: 15 }));
+    });
+    expect(projectA.stageTable.reorderFilterConditions).toHaveBeenCalledWith(imgCondId, firstCondId, "before");
+    const reorderedIds = Array.from(popover.querySelectorAll<HTMLElement>("[data-filter-condition-card]")).map(
+      (el) => el.dataset.filterConditionCard,
+    );
+    expect(reorderedIds).toEqual([imgCondId, firstCondId]);
+
+    // 4. Add third condition on select column -> verify exact 6 operators and option pills
+    await React.act(async () => {
+      projectA.stageTable.addFilterCondition(colStatus.id);
+    });
+    const selectCondId = Array.from(popover.querySelectorAll<HTMLElement>("[data-filter-condition-card]"))[2].dataset
+      .filterConditionCard!;
+    expect(popover.querySelector('[data-filter-select-option="opt_arch"]')).toBeTruthy();
+    await React.act(async () => {
+      popover.querySelector<HTMLButtonElement>(`[data-filter-operator-trigger="${selectCondId}"]`)!.click();
+    });
+    const selectOps = Array.from(document.body.querySelectorAll<HTMLElement>("[data-filter-operator-option]")).map(
+      (el) => el.dataset.filterOperatorOption,
+    );
+    expect(selectOps).toEqual(["contains", "not_contains", "eq", "neq", "is_empty", "is_not_empty"]);
+
+    // Remove condition & clear all
+    await React.act(async () => {
+      popover.querySelector<HTMLButtonElement>(`[data-filter-remove-condition="${selectCondId}"]`)!.click();
+    });
+    expect(popover.querySelectorAll("[data-filter-condition-card]").length).toBe(2);
+
+    await React.act(async () => {
+      popover.querySelector<HTMLButtonElement>("[data-filter-clear-all]")!.click();
+    });
+    expect(container.querySelectorAll("tbody tr[data-stage-table-row-id]").length).toBe(3);
   });
 });

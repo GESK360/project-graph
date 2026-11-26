@@ -173,6 +173,26 @@ describe("desktop Project ownership lifecycle", () => {
     });
   });
 
+  it("allows opening a shared lease in another window with peerWindowLabel", async () => {
+    invokeMock.mockResolvedValueOnce({
+      status: "shared",
+      ownershipId: "desktop-123-1",
+      canonicalPath: "/projects/graph.prg",
+      peerWindowLabel: "main",
+    });
+
+    const result = await loadWithProjectOwnership(
+      "/projects/graph.prg",
+      async (ownership) => ownership,
+      () => false,
+    );
+
+    if (result.status !== "opened" || !result.value) throw new Error("expected a shared opened lease");
+    expect(result.value.ownershipId).toBe("desktop-123-1");
+    expect(result.value.canonicalPath).toBe("/projects/graph.prg");
+    expect(result.value.peerWindowLabel).toBe("main");
+  });
+
   it("keeps the web Project loading path unchanged", async () => {
     isTauriMock.mockReturnValue(false);
     const load = vi.fn(async (ownership) => ownership ?? "web-project");

@@ -629,6 +629,11 @@ export default function WorkspaceWindow() {
       openPage: (node: WorkspacePageNode) => {
         openTreePage(node.path);
       },
+      openInNewWindow: (node: WorkspacePageNode) => {
+        void import("@/core/service/GlobalMenu")
+          .then(({ onNewWindow }) => onNewWindow({ filePath: node.path }))
+          .catch(reportWorkspaceError);
+      },
       toggleDir: (node: Extract<WorkspaceNode, { kind: "dir" }>) => {
         toggleCollapsed(node.path);
       },

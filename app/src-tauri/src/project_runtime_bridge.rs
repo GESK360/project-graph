@@ -1,4 +1,4 @@
-use crate::project_ownership::canonicalize_project_path;
+use crate::project_ownership::{canonicalize_project_path, DesktopProjectOwnershipManager};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -52,10 +52,22 @@ pub(crate) struct ProjectRuntimeBridgeManager {
 }
 
 impl ProjectRuntimeBridgeManager {
-    pub(crate) fn start<R: Runtime>(app: AppHandle<R>) -> std::io::Result<Arc<Self>> {
-        Self::start_with_emitter(move |invocation| {
-            app.emit(PROJECT_RUNTIME_INVOCATION_EVENT, invocation)
-                .map_err(|_| ())
+    pub(crate) fn start<R: Runtime>(
+        app: AppHandle<R>,
+        ownership: Arc<DesktopProjectOwnershipManager>,
+    ) -> std::io::Result<Arc<Self>> {
+        Self::start_with_emitter(move |invocation| match &invocation {
+            ProjectRuntimeEvent::Invoke { project_path, .. } => {
+                if let Some(host_label) = ownership.host_window_for_path(project_path) {
+                    app.emit_to(&host_label, PROJECT_RUNTIME_INVOCATION_EVENT, invocation)
+                        .map_err(|_| ())
+                } else {
+                    Err(())
+                }
+            }
+            ProjectRuntimeEvent::Cancel { .. } => app
+                .emit(PROJECT_RUNTIME_INVOCATION_EVENT, invocation)
+                .map_err(|_| ()),
         })
     }
 

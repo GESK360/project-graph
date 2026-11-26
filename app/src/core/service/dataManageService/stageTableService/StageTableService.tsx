@@ -25,11 +25,16 @@ import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import { UrlNode } from "@/core/stage/stageObject/entity/UrlNode";
 import {
   ALL_SYSTEM_COLUMN_IDS,
+  TABLE_DATE_FILTER_PRESETS,
   cloneTableFields,
   createColumnGroupId,
   createCustomColumnId,
+  createFilterConditionId,
   createSelectOptionId,
   createTableViewId,
+  getColumnFilterKind,
+  getDefaultFilterOperator,
+  getFilterOperatorsForKind,
   pickNextSelectOptionColor,
   type CustomColumnType,
   type FormulaEvaluatedCell,
@@ -39,7 +44,11 @@ import {
   type TableColumnFilter,
   type TableColumnGroup,
   type TableColumnSchema,
+  type TableDateFilterPreset,
   type TableFields,
+  type TableFilterCondition,
+  type TableFilterConjunction,
+  type TableFilterGroup,
   type TableGalleryViewConfig,
   type TableGanttViewConfig,
   type TableKanbanViewConfig,
@@ -219,9 +228,12 @@ export class StageTableService implements Service {
     });
   }
 
-  public notifyChange(): void {
+  public notifyChange(options?: { emitSync?: boolean }): void {
     for (const listener of this.listeners) {
       listener();
+    }
+    if (options?.emitSync !== false) {
+      this.project.emit("document-commit-debounced");
     }
   }
 
@@ -381,6 +393,16 @@ export class StageTableService implements Service {
         : undefined,
       sort: source.sort ? { ...source.sort } : undefined,
       filters: source.filters ? source.filters.map((f) => ({ ...f, values: [...f.values] })) : undefined,
+      filterGroup: source.filterGroup
+        ? {
+            conjunction: source.filterGroup.conjunction,
+            conditions: source.filterGroup.conditions.map((c) => ({
+              ...c,
+              id: createFilterConditionId(),
+              ...(c.values ? { values: [...c.values] } : {}),
+            })),
+          }
+        : undefined,
       kanban: source.kanban ? { ...source.kanban } : undefined,
       gantt: source.gantt ? { ...source.gantt } : undefined,
       gallery: source.gallery ? { ...source.gallery } : undefined,
@@ -974,10 +996,21 @@ export class StageTableService implements Service {
       views: typeChanged
         ? this.project.table.views.map((view) => {
             const nextFilters = (view.filters ?? []).filter((f) => f.columnId !== columnId);
+            const nextFilterGroupConditions = (view.filterGroup?.conditions ?? []).filter(
+              (c) => c.columnId !== columnId,
+            );
+            const nextFilterGroup =
+              nextFilterGroupConditions.length > 0
+                ? {
+                    conjunction: view.filterGroup?.conjunction ?? ("and" as const),
+                    conditions: nextFilterGroupConditions,
+                  }
+                : undefined;
             return this.pruneColumnReferencesInView(
               {
                 ...view,
                 filters: nextFilters.length > 0 ? nextFilters : undefined,
+                filterGroup: nextFilterGroup,
               },
               columnId,
               nextType,
@@ -1027,6 +1060,16 @@ export class StageTableService implements Service {
           .filter((grp) => grp.columnIds.length > 0);
         const nextSort = view.sort?.columnId === columnId ? undefined : view.sort;
         const nextFilters = (view.filters ?? []).filter((flt) => flt.columnId !== columnId);
+        const nextFilterGroupConditions = (view.filterGroup?.conditions ?? []).filter(
+          (cond) => cond.columnId !== columnId,
+        );
+        const nextFilterGroup =
+          nextFilterGroupConditions.length > 0
+            ? {
+                conjunction: view.filterGroup?.conjunction ?? ("and" as const),
+                conditions: nextFilterGroupConditions,
+              }
+            : undefined;
         return this.pruneColumnReferencesInView(
           {
             ...view,
@@ -1036,6 +1079,7 @@ export class StageTableService implements Service {
             columnGroups: nextGroups.length > 0 ? nextGroups : undefined,
             sort: nextSort,
             filters: nextFilters.length > 0 ? nextFilters : undefined,
+            filterGroup: nextFilterGroup,
           },
           columnId,
         );
@@ -1423,9 +1467,219 @@ export class StageTableService implements Service {
     this.notifyChange();
   }
 
+  public getFilterGroup(): TableFilterGroup {
+    const validIds = new Set<string>([...ALL_SYSTEM_COLUMN_IDS, ...this.project.table.columns.map((c) => c.id)]);
+    const colById = new Map<string, TableColumnSchema>(this.project.table.columns.map((c) => [c.id, c]));
+    const raw = this.getActiveView().filterGroup;
+    if (!raw) {
+      return { conjunction: "and", conditions: [] };
+    }
+    const conditions = raw.conditions.filter((cond) => {
+      if (!validIds.has(cond.columnId)) return false;
+      const kind = getColumnFilterKind(cond.columnId, colById.get(cond.columnId));
+      return getFilterOperatorsForKind(kind).includes(cond.operator);
+    });
+    return {
+      conjunction: raw.conjunction === "or" ? "or" : "and",
+      conditions,
+    };
+  }
+
+  public setFilterGroup(filterGroup: TableFilterGroup | null): void {
+    const activeView = this.getActiveView();
+    const validIds = new Set<string>([...ALL_SYSTEM_COLUMN_IDS, ...this.project.table.columns.map((c) => c.id)]);
+    const colById = new Map<string, TableColumnSchema>(this.project.table.columns.map((c) => [c.id, c]));
+    let nextGroup: TableFilterGroup | undefined;
+    if (filterGroup) {
+      const conjunction: TableFilterConjunction = filterGroup.conjunction === "or" ? "or" : "and";
+      const conditions: TableFilterCondition[] = [];
+      const seenIds = new Set<string>();
+      for (const cond of filterGroup.conditions) {
+        if (!cond.id || seenIds.has(cond.id) || !validIds.has(cond.columnId)) continue;
+        const kind = getColumnFilterKind(cond.columnId, colById.get(cond.columnId));
+        if (!getFilterOperatorsForKind(kind).includes(cond.operator)) continue;
+        seenIds.add(cond.id);
+        const dedupedValues = cond.values ? Array.from(new Set(cond.values)) : undefined;
+        const validPreset =
+          cond.datePreset && TABLE_DATE_FILTER_PRESETS.includes(cond.datePreset) ? cond.datePreset : undefined;
+        conditions.push({
+          id: cond.id,
+          columnId: cond.columnId,
+          operator: cond.operator,
+          ...(cond.value !== undefined ? { value: cond.value } : {}),
+          ...(dedupedValues && dedupedValues.length > 0 ? { values: dedupedValues } : {}),
+          ...(validPreset ? { datePreset: validPreset } : {}),
+          ...(cond.collapsed ? { collapsed: true } : {}),
+        });
+      }
+      if (conditions.length > 0 || conjunction === "or") {
+        nextGroup = { conjunction, conditions };
+      }
+    }
+    this.project.table = {
+      ...this.project.table,
+      views: this.project.table.views.map((view) =>
+        view.id === activeView.id
+          ? {
+              ...view,
+              filterGroup: nextGroup,
+            }
+          : view,
+      ),
+    };
+    this.project.projectState = ProjectState.Unsaved;
+    this.notifyChange();
+  }
+
+  public setFilterConjunction(conjunction: TableFilterConjunction): void {
+    const current = this.getFilterGroup();
+    if (current.conjunction === conjunction) return;
+    this.setFilterGroup({
+      conjunction,
+      conditions: current.conditions,
+    });
+  }
+
+  public addFilterCondition(columnId?: string): TableFilterCondition | null {
+    const validIds = new Set<string>([...ALL_SYSTEM_COLUMN_IDS, ...this.project.table.columns.map((c) => c.id)]);
+    const current = this.getFilterGroup();
+    let targetColId: string | undefined = columnId && validIds.has(columnId) ? columnId : undefined;
+    if (!targetColId) {
+      const usedColIds = new Set(current.conditions.map((c) => c.columnId));
+      const candidateCols = [
+        ...this.getVisibleColumnIds(),
+        ...ALL_SYSTEM_COLUMN_IDS,
+        ...this.project.table.columns.map((c) => c.id),
+      ];
+      targetColId = candidateCols.find((cid) => validIds.has(cid) && !usedColIds.has(cid)) ?? "name";
+    }
+    const kind = getColumnFilterKind(targetColId, this.getColumnSchema(targetColId));
+    const newCondition: TableFilterCondition = {
+      id: createFilterConditionId(),
+      columnId: targetColId,
+      operator: getDefaultFilterOperator(kind),
+    };
+    this.setFilterGroup({
+      conjunction: current.conjunction,
+      conditions: [...current.conditions, newCondition],
+    });
+    return newCondition;
+  }
+
+  public updateFilterCondition(conditionId: string, patch: Partial<Omit<TableFilterCondition, "id">>): void {
+    const current = this.getFilterGroup();
+    const idx = current.conditions.findIndex((c) => c.id === conditionId);
+    if (idx === -1) return;
+    const prev = current.conditions[idx];
+    const validIds = new Set<string>([...ALL_SYSTEM_COLUMN_IDS, ...this.project.table.columns.map((c) => c.id)]);
+    const nextColId = patch.columnId && validIds.has(patch.columnId) ? patch.columnId : prev.columnId;
+    const colChanged = nextColId !== prev.columnId;
+    const nextColSchema = this.getColumnSchema(nextColId);
+    const nextKind = getColumnFilterKind(nextColId, nextColSchema);
+    const allowedOps = getFilterOperatorsForKind(nextKind);
+
+    let nextOp = prev.operator;
+    if (patch.operator && allowedOps.includes(patch.operator)) {
+      nextOp = patch.operator;
+    } else if (colChanged || !allowedOps.includes(nextOp)) {
+      nextOp = getDefaultFilterOperator(nextKind);
+    }
+
+    let nextValue = colChanged ? undefined : prev.value;
+    if ("value" in patch) {
+      nextValue = patch.value;
+    }
+
+    let nextValues = colChanged ? undefined : prev.values;
+    if ("values" in patch) {
+      nextValues = patch.values ? Array.from(new Set(patch.values)) : undefined;
+    }
+    if (
+      nextColSchema?.type === "select" &&
+      (nextOp === "eq" || nextOp === "neq") &&
+      nextValues &&
+      nextValues.length > 1
+    ) {
+      nextValues = [nextValues[0]];
+    }
+
+    let nextDatePreset: TableDateFilterPreset | undefined = colChanged ? undefined : prev.datePreset;
+    if ("datePreset" in patch) {
+      nextDatePreset = patch.datePreset;
+    }
+
+    let nextCollapsed = prev.collapsed;
+    if ("collapsed" in patch) {
+      nextCollapsed = patch.collapsed ? true : undefined;
+    }
+
+    const updated: TableFilterCondition = {
+      id: prev.id,
+      columnId: nextColId,
+      operator: nextOp,
+      ...(nextValue !== undefined ? { value: nextValue } : {}),
+      ...(nextValues && nextValues.length > 0 ? { values: nextValues } : {}),
+      ...(nextDatePreset ? { datePreset: nextDatePreset } : {}),
+      ...(nextCollapsed ? { collapsed: true } : {}),
+    };
+
+    const nextConditions = [...current.conditions];
+    nextConditions[idx] = updated;
+    this.setFilterGroup({
+      conjunction: current.conjunction,
+      conditions: nextConditions,
+    });
+  }
+
+  public removeFilterCondition(conditionId: string): void {
+    const current = this.getFilterGroup();
+    const nextConditions = current.conditions.filter((c) => c.id !== conditionId);
+    if (nextConditions.length === current.conditions.length) return;
+    if (nextConditions.length === 0) {
+      this.setFilterGroup(null);
+    } else {
+      this.setFilterGroup({
+        conjunction: current.conjunction,
+        conditions: nextConditions,
+      });
+    }
+  }
+
+  public toggleFilterConditionCollapsed(conditionId: string): void {
+    const current = this.getFilterGroup();
+    const target = current.conditions.find((c) => c.id === conditionId);
+    if (!target) return;
+    this.updateFilterCondition(conditionId, { collapsed: !target.collapsed });
+  }
+
+  public reorderFilterConditions(draggedId: string, targetId: string, position: "before" | "after"): boolean {
+    if (draggedId === targetId) return false;
+    const current = this.getFilterGroup();
+    const dragged = current.conditions.find((c) => c.id === draggedId);
+    if (!dragged) return false;
+    const remaining = current.conditions.filter((c) => c.id !== draggedId);
+    const targetIdx = remaining.findIndex((c) => c.id === targetId);
+    if (targetIdx === -1) return false;
+    const insertIdx = position === "before" ? targetIdx : targetIdx + 1;
+    const nextConditions = [...remaining];
+    nextConditions.splice(insertIdx, 0, dragged);
+    const unchanged = nextConditions.every((c, i) => c.id === current.conditions[i]?.id);
+    if (unchanged) return false;
+    this.setFilterGroup({
+      conjunction: current.conjunction,
+      conditions: nextConditions,
+    });
+    return true;
+  }
+
   public clearAllFilters(): void {
     const activeView = this.getActiveView();
-    if (!activeView.filters || activeView.filters.length === 0) return;
+    const hasColumnFilters = Boolean(activeView.filters && activeView.filters.length > 0);
+    const hasFilterGroup = Boolean(
+      activeView.filterGroup &&
+      (activeView.filterGroup.conditions.length > 0 || activeView.filterGroup.conjunction === "or"),
+    );
+    if (!hasColumnFilters && !hasFilterGroup) return;
     this.project.table = {
       ...this.project.table,
       views: this.project.table.views.map((view) =>
@@ -1433,6 +1687,7 @@ export class StageTableService implements Service {
           ? {
               ...view,
               filters: undefined,
+              filterGroup: undefined,
             }
           : view,
       ),

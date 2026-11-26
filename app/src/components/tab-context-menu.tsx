@@ -6,9 +6,23 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Project } from "@/core/Project";
+import { onNewWindow } from "@/core/service/GlobalMenu";
 import { Tab } from "@/core/Tab";
 import { TabWorkspace } from "@/core/TabWorkspace";
-import { AppWindowMac, Columns2, Dock, PanelLeftClose, PanelRightClose, Pin, PinOff, Rows2, X } from "lucide-react";
+import { isTauri } from "@tauri-apps/api/core";
+import {
+  AppWindow,
+  AppWindowMac,
+  Columns2,
+  Dock,
+  PanelLeftClose,
+  PanelRightClose,
+  Pin,
+  PinOff,
+  Rows2,
+  X,
+} from "lucide-react";
 import React from "react";
 import { useTranslation } from "react-i18next";
 
@@ -74,6 +88,12 @@ export default function TabContextMenu({
               <AppWindowMac />
               浮动
             </ContextMenuItem>
+            {isTauri() && tab instanceof Project && tab.uri.scheme === "file" && (
+              <ContextMenuItem onSelect={() => void onNewWindow({ filePath: tab.uri.fsPath })}>
+                <AppWindow />
+                {t("openInNewWindow")}
+              </ContextMenuItem>
+            )}
           </>
         ) : (
           <ContextMenuItem disabled={!tab.canDock} onSelect={() => TabWorkspace.dock(tab.id)}>
@@ -84,11 +104,7 @@ export default function TabContextMenu({
         {tab.closable && (
           <>
             <ContextMenuSeparator />
-            <ContextMenuItem
-              variant="destructive"
-              disabled={tab.closing}
-              onSelect={() => void close(tab)}
-            >
+            <ContextMenuItem variant="destructive" disabled={tab.closing} onSelect={() => void close(tab)}>
               <X />
               关闭
             </ContextMenuItem>

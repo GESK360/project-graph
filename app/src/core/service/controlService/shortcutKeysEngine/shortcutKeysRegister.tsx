@@ -273,6 +273,7 @@ import {
   onJoinCollaboration,
   onLeaveCollaboration,
   onNewDraft,
+  onNewWindow,
   onStartCollaboration,
   onOpenFile,
   onUpgradeOldJson,
@@ -1727,6 +1728,13 @@ export const allKeyBinds: KeyBindItem[] = [
     icon: FilePlus,
     when: whenAlways,
     onPress: () => onNewDraft(),
+  },
+  {
+    id: "newWindow",
+    defaultKey: "C-A-n",
+    icon: AppWindow,
+    when: whenAlways,
+    onPress: () => void onNewWindow(),
   },
   {
     id: "startCollaboration",

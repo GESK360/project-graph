@@ -20,7 +20,7 @@ use windows::{
         },
         UI::{
             Shell::{DragFinish, DragQueryFileW, HDROP},
-            WindowsAndMessaging::EnumChildWindows,
+            WindowsAndMessaging::{EnumChildWindows, GetWindowThreadProcessId},
         },
     },
 };
@@ -40,6 +40,7 @@ struct PgDragDropPayload {
 #[implement(IDropTarget)]
 struct PgDropTarget {
     app: AppHandle,
+    window_label: String,
     has_valid_data: Cell<bool>,
 }
 
@@ -116,13 +117,17 @@ fn read_text(pdata_obj: &IDataObject) -> Option<String> {
 
 impl PgDropTarget {
     fn emit_event(&self, kind: &str, paths: Vec<String>, text: Option<String>, x: f64, y: f64) {
-        let _ = self.app.emit("pg-drag-drop", PgDragDropPayload {
-            kind: kind.to_string(),
-            paths,
-            text,
-            x,
-            y,
-        });
+        let _ = self.app.emit_to(
+            &self.window_label,
+            "pg-drag-drop",
+            PgDragDropPayload {
+                kind: kind.to_string(),
+                paths,
+                text,
+                x,
+                y,
+            },
+        );
     }
 }
 
@@ -198,12 +203,20 @@ impl IDropTarget_Impl for PgDropTarget_Impl {
 
 struct EnumContext {
     app: AppHandle,
+    window_label: String,
 }
 
 unsafe extern "system" fn enum_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let mut owner_pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut owner_pid));
+    if owner_pid != std::process::id() {
+        // 绝不对跨进程（如 msedgewebview2.exe）的子窗口调用 OLE DragDrop，否则会与渲染进程发生消息队列死锁
+        return BOOL(1);
+    }
     let ctx = &*(lparam.0 as *const EnumContext);
     let target: IDropTarget = PgDropTarget {
         app: ctx.app.clone(),
+        window_label: ctx.window_label.clone(),
         has_valid_data: Cell::new(false),
     }
     .into();
@@ -214,14 +227,7 @@ unsafe extern "system" fn enum_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
     BOOL(1)
 }
 
-pub fn install(app: AppHandle) {
-    let window = match app.get_webview_window("main") {
-        Some(w) => w,
-        None => {
-            println!("[custom_drag_drop] main window not found, skipping");
-            return;
-        }
-    };
+pub fn install_for_window(app: AppHandle, window: &tauri::WebviewWindow) {
     let main_hwnd = match window.hwnd() {
         Ok(h) => h,
         Err(e) => {
@@ -230,7 +236,10 @@ pub fn install(app: AppHandle) {
         }
     };
 
-    let ctx = EnumContext { app: app.clone() };
+    let ctx = EnumContext {
+        app,
+        window_label: window.label().to_string(),
+    };
     let ctx_ptr: *const EnumContext = &ctx;
 
     unsafe {
@@ -240,4 +249,15 @@ pub fn install(app: AppHandle) {
             LPARAM(ctx_ptr as _),
         );
     }
+}
+
+pub fn install(app: AppHandle) {
+    let window = match app.get_webview_window("main") {
+        Some(w) => w,
+        None => {
+            println!("[custom_drag_drop] main window not found, skipping");
+            return;
+        }
+    };
+    install_for_window(app, &window);
 }

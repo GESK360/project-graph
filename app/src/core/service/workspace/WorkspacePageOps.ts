@@ -3,12 +3,108 @@ import { Project, ProjectState } from "@/core/Project";
 import { onOpenFile, waitForOpeningFiles } from "@/core/service/GlobalMenu";
 import { TabWorkspace } from "@/core/TabWorkspace";
 import { activeResourceTabAtom, activeTabAtom, store, tabsAtom } from "@/state";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { URI } from "vscode-uri";
 import { WorkspaceManager, WorkspacePaths } from "./WorkspaceManager";
 
 const OPEN_SOURCE = "工作空间文件树";
 const deletingEntries = new Map<string, Promise<void>>();
+const pendingPeerReopens = new Map<string, string[]>();
 let reopeningProjects = 0;
+let crossWindowListenersInstalled = false;
+
+interface WorkspaceCoordRequest {
+  requestId: string;
+  action: "prepare-path-change" | "prepare-delete";
+  sourcePath: string;
+  targetPath?: string | null;
+  sourceWindow: string;
+}
+
+interface WorkspaceSyncPayload {
+  sourceWindow: string;
+  payload:
+    | { type: "path-changed"; sourcePath: string; targetPath: string }
+    | { type: "path-change-aborted"; sourcePath: string }
+    | { type: "path-deleted"; sourcePath: string }
+    | { type: "reload-page"; path: string };
+}
+
+export async function installWorkspaceCrossWindowListeners(): Promise<void> {
+  if (crossWindowListenersInstalled || !isTauri()) return;
+  crossWindowListenersInstalled = true;
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  const currentWindow = getCurrentWindow();
+
+  await currentWindow.listen<WorkspaceCoordRequest>("pg-workspace-coord-request", async ({ payload }) => {
+    const source = WorkspacePaths.normalize(payload.sourcePath);
+    try {
+      await waitForOpeningFiles((uri) => uri.scheme === "file" && WorkspacePaths.isInside(uri.fsPath, source));
+      const opened = findOpenProjectsUnder(source, true);
+      if (payload.action === "prepare-path-change") {
+        const reopening = opened.filter((project) => !project.closing);
+        const nested = reopening.map((project) => relativePart(source, project.uri.fsPath));
+        if (nested.length > 0) {
+          pendingPeerReopens.set(source, nested);
+          reopeningProjects += 1;
+        }
+        await Promise.all(reopening.map(saveIfNeeded));
+        await Promise.all(opened.map((project) => TabWorkspace.close(project.id, { animate: false })));
+      } else if (payload.action === "prepare-delete") {
+        const reopening = opened.filter((project) => !project.closing);
+        const nested = reopening.map((project) => relativePart(source, project.uri.fsPath));
+        if (nested.length > 0) {
+          pendingPeerReopens.set(source, nested);
+          reopeningProjects += 1;
+        }
+        await Promise.all(opened.map((project) => TabWorkspace.close(project.id)));
+      }
+      await invoke("respond_workspace_action", { requestId: payload.requestId, ok: true });
+    } catch {
+      await invoke("respond_workspace_action", { requestId: payload.requestId, ok: false });
+    }
+  });
+
+  await currentWindow.listen<WorkspaceSyncPayload>("pg-workspace-sync", async ({ payload: event }) => {
+    const msg = event.payload;
+    if (msg.type === "path-changed") {
+      const source = WorkspacePaths.normalize(msg.sourcePath);
+      const target = WorkspacePaths.normalize(msg.targetPath);
+      const nested = pendingPeerReopens.get(source);
+      if (!nested) return;
+      pendingPeerReopens.delete(source);
+      try {
+        for (const part of nested) {
+          await openWorkspacePage(part ? WorkspacePaths.join(target, part) : target);
+        }
+      } finally {
+        reopeningProjects = Math.max(0, reopeningProjects - 1);
+      }
+    } else if (msg.type === "path-change-aborted") {
+      const source = WorkspacePaths.normalize(msg.sourcePath);
+      const nested = pendingPeerReopens.get(source);
+      if (!nested) return;
+      pendingPeerReopens.delete(source);
+      try {
+        for (const part of nested) {
+          await openWorkspacePage(part ? WorkspacePaths.join(source, part) : source);
+        }
+      } finally {
+        reopeningProjects = Math.max(0, reopeningProjects - 1);
+      }
+    } else if (msg.type === "path-deleted") {
+      const source = WorkspacePaths.normalize(msg.sourcePath);
+      if (pendingPeerReopens.delete(source)) {
+        reopeningProjects = Math.max(0, reopeningProjects - 1);
+      }
+    } else if (msg.type === "reload-page") {
+      const opened = findOpenProject(msg.path);
+      if (!opened) return;
+      await TabWorkspace.close(opened.id);
+      await openWorkspacePage(msg.path);
+    }
+  });
+}
 
 export function isReopeningWorkspaceProject(): boolean {
   return reopeningProjects > 0;
@@ -93,18 +189,40 @@ function relativePart(parent: string, path: string): string {
 async function withPathChange(path: string, change: (source: string) => Promise<string>): Promise<string> {
   const source = WorkspacePaths.normalize(path);
   const opened = findOpenProjectsUnder(source, true);
-  if (!opened.length) return await change(source);
   const reopening = opened.filter((project) => !project.closing);
   const nested = reopening.map((project) => relativePart(source, project.uri.fsPath));
   if (reopening.length) reopeningProjects += 1;
+  let peerCoordinationStarted = false;
   try {
-    await Promise.all(reopening.map(saveIfNeeded));
-    await Promise.all(opened.map((project) => TabWorkspace.close(project.id, { animate: false })));
+    if (crossWindowListenersInstalled && isTauri()) {
+      peerCoordinationStarted = true;
+      await invoke("coordinate_workspace_action", {
+        action: "prepare-path-change",
+        sourcePath: source,
+        targetPath: null,
+      });
+    }
+    if (opened.length) {
+      await Promise.all(reopening.map(saveIfNeeded));
+      await Promise.all(opened.map((project) => TabWorkspace.close(project.id, { animate: false })));
+    }
     const newPath = await change(source);
     for (const part of nested) {
       await openWorkspacePage(part ? WorkspacePaths.join(newPath, part) : newPath);
     }
+    if (peerCoordinationStarted) {
+      await invoke("broadcast_workspace_event", {
+        payload: { type: "path-changed", sourcePath: source, targetPath: newPath },
+      });
+    }
     return newPath;
+  } catch (error) {
+    if (peerCoordinationStarted) {
+      await invoke("broadcast_workspace_event", {
+        payload: { type: "path-change-aborted", sourcePath: source },
+      });
+    }
+    throw error;
   } finally {
     if (reopening.length) reopeningProjects -= 1;
   }
@@ -131,9 +249,33 @@ async function deleteWorkspaceEntry(path: string, remove: (target: string) => Pr
     if (WorkspacePaths.isInside(target, entry)) return pending;
   }
   const task = (async () => {
-    await waitForOpeningFiles((uri) => uri.scheme === "file" && WorkspacePaths.isInside(uri.fsPath, target));
-    await Promise.all(findOpenProjectsUnder(target, true).map((project) => TabWorkspace.close(project.id)));
-    await remove(target);
+    const peerCoordinationStarted = crossWindowListenersInstalled && isTauri();
+    let removed = false;
+    try {
+      if (peerCoordinationStarted) {
+        await invoke("coordinate_workspace_action", {
+          action: "prepare-delete",
+          sourcePath: target,
+          targetPath: null,
+        });
+      }
+      await waitForOpeningFiles((uri) => uri.scheme === "file" && WorkspacePaths.isInside(uri.fsPath, target));
+      await Promise.all(findOpenProjectsUnder(target, true).map((project) => TabWorkspace.close(project.id)));
+      await remove(target);
+      removed = true;
+      if (peerCoordinationStarted) {
+        await invoke("broadcast_workspace_event", {
+          payload: { type: "path-deleted", sourcePath: target },
+        });
+      }
+    } catch (error) {
+      if (peerCoordinationStarted && !removed) {
+        await invoke("broadcast_workspace_event", {
+          payload: { type: "path-change-aborted", sourcePath: target },
+        });
+      }
+      throw error;
+    }
   })();
   deletingEntries.set(target, task);
   try {
@@ -171,9 +313,15 @@ export async function copyWorkspaceNode(path: string, targetDir: string): Promis
  */
 export async function reloadWorkspacePage(path: string): Promise<void> {
   const opened = findOpenProject(path);
-  if (!opened) return;
-  await TabWorkspace.close(opened.id);
-  await openWorkspacePage(path);
+  if (opened) {
+    await TabWorkspace.close(opened.id);
+    await openWorkspacePage(path);
+  }
+  if (crossWindowListenersInstalled && isTauri()) {
+    await invoke("broadcast_workspace_event", {
+      payload: { type: "reload-page", path },
+    });
+  }
 }
 
 /** 打开指定快照：作为草稿副本打开（不覆盖原文件） */

@@ -1,3 +1,4 @@
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isRegistered, register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { BringToFront, MousePointerBan } from "lucide-react";
@@ -33,6 +34,8 @@ export class GlobalShortcutManager {
   private registeredKeys = new Set<string>();
   private isClickThroughEnabled = false;
   private isRecording = false;
+  private isPrimaryWindow = true;
+  private unlistenRolePromote?: () => void;
 
   constructor() {
     this.shortcuts = [
@@ -88,7 +91,29 @@ export class GlobalShortcutManager {
       await store.save();
     }
 
+    if (isTauri()) {
+      try {
+        const role = await invoke<{ label: string; isPrimary: boolean }>("get_window_role");
+        this.isPrimaryWindow = role.isPrimary;
+      } catch {
+        this.isPrimaryWindow = true;
+      }
+      if (!this.unlistenRolePromote) {
+        this.unlistenRolePromote = await getCurrentWindow().listen<boolean>("pg-window-role-primary", async () => {
+          this.isPrimaryWindow = true;
+          await this.registerEnabledShortcuts();
+        });
+      }
+    }
+
+    if (this.isPrimaryWindow) {
+      await this.registerEnabledShortcuts();
+    }
+  }
+
+  private async registerEnabledShortcuts() {
     for (const shortcut of this.shortcuts.filter((item) => item.isEnabled)) {
+      if (this.registeredKeys.has(shortcut.key)) continue;
       try {
         await this.registerShortcut(shortcut);
       } catch (error) {
@@ -124,7 +149,7 @@ export class GlobalShortcutManager {
     }
 
     const oldKey = shortcut.key;
-    if (shortcut.isEnabled) {
+    if (shortcut.isEnabled && this.isPrimaryWindow) {
       await this.unregisterShortcut(oldKey);
       try {
         await this.registerShortcut({ ...shortcut, key });
@@ -139,7 +164,7 @@ export class GlobalShortcutManager {
       await this.saveShortcut(shortcut);
     } catch (error) {
       shortcut.key = oldKey;
-      if (shortcut.isEnabled) {
+      if (shortcut.isEnabled && this.isPrimaryWindow) {
         await this.unregisterShortcut(key);
         await this.registerShortcut(shortcut);
       }
@@ -152,10 +177,12 @@ export class GlobalShortcutManager {
     const shortcut = this.getShortcut(id);
     if (shortcut.isEnabled === isEnabled) return;
 
-    if (isEnabled) {
-      await this.registerShortcut(shortcut);
-    } else {
-      await this.unregisterShortcut(shortcut.key);
+    if (this.isPrimaryWindow) {
+      if (isEnabled) {
+        await this.registerShortcut(shortcut);
+      } else {
+        await this.unregisterShortcut(shortcut.key);
+      }
     }
 
     shortcut.isEnabled = isEnabled;
@@ -163,10 +190,12 @@ export class GlobalShortcutManager {
       await this.saveShortcut(shortcut);
     } catch (error) {
       shortcut.isEnabled = !isEnabled;
-      if (isEnabled) {
-        await this.unregisterShortcut(shortcut.key);
-      } else {
-        await this.registerShortcut(shortcut);
+      if (this.isPrimaryWindow) {
+        if (isEnabled) {
+          await this.unregisterShortcut(shortcut.key);
+        } else {
+          await this.registerShortcut(shortcut);
+        }
       }
       throw error;
     }
@@ -234,6 +263,10 @@ export class GlobalShortcutManager {
   }
 
   private async handleShowWindow() {
+    if (isTauri()) {
+      await invoke("focus_last_active_window");
+      return;
+    }
     const window = getCurrentWindow();
     await window.unminimize();
     await window.show();
@@ -242,6 +275,8 @@ export class GlobalShortcutManager {
   }
 
   public async dispose() {
+    this.unlistenRolePromote?.();
+    this.unlistenRolePromote = undefined;
     for (const key of [...this.registeredKeys]) {
       await this.unregisterShortcut(key);
     }

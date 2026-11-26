@@ -14,6 +14,7 @@ import { Vector } from "@graphif/data-structures";
 import { deserialize } from "@graphif/serializer";
 import { Rectangle } from "@graphif/shapes";
 import { Decoder } from "@msgpack/msgpack";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { exists, readFile, writeFile } from "@tauri-apps/plugin-fs";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
@@ -26,6 +27,7 @@ import { ProjectUpgrader } from "../stage/ProjectUpgrader";
 import { CollisionBox } from "../stage/stageObject/collisionBox/collisionBox";
 import { TextNode } from "../stage/stageObject/entity/TextNode";
 import { RecentFileManager } from "./dataFileService/RecentFileManager";
+import { hydrateProjectFromSnapshot, LocalDocumentSync } from "./dataFileService/LocalDocumentSync";
 import { FeatureFlags } from "./FeatureFlags";
 import { Settings } from "./Settings";
 import { Telemetry } from "./Telemetry";
@@ -61,6 +63,22 @@ function getOpeningProject(ownershipId: string) {
 
 export function openCurrentProjectFolder(project: Project) {
   shellOpen(PathString.dirPath(project.uri.fsPath));
+}
+
+export async function onNewWindow(options?: {
+  filePath?: string;
+  deepLinkUrl?: string;
+  workspaceRoot?: string;
+}): Promise<string | undefined> {
+  if (!isTauri()) {
+    toast.error("多窗口功能仅支持桌面端");
+    return undefined;
+  }
+  return await invoke<string>("create_new_window", {
+    filePath: options?.filePath ?? null,
+    deepLinkUrl: options?.deepLinkUrl ?? null,
+    workspaceRoot: options?.workspaceRoot ?? null,
+  });
 }
 
 export async function onNewDraft() {
@@ -275,12 +293,14 @@ async function openFile(uri: URI, source: string): Promise<Project | undefined> 
   };
 
   const findOwnedProject = (ownershipId: string, canonicalPath: string) =>
-    store.get(tabsAtom).find(
-      (candidate): candidate is Project =>
-        candidate instanceof Project &&
-        candidate.projectOwnerIdentity === ownershipId &&
-        candidate.canonicalProjectPath === canonicalPath,
-    );
+    store
+      .get(tabsAtom)
+      .find(
+        (candidate): candidate is Project =>
+          candidate instanceof Project &&
+          candidate.projectOwnerIdentity === ownershipId &&
+          candidate.canonicalProjectPath === canonicalPath,
+      );
   let tab: Project | Extension;
   try {
     const result =
@@ -317,14 +337,41 @@ async function openFile(uri: URI, source: string): Promise<Project | undefined> 
 
   const openToast = Settings.showFileOpenSuccessToast ? toast.loading("正在打开文件...") : undefined;
   try {
-    await tab.init();
-    if (tab instanceof Project) {
-      if (tab.projectState !== ProjectState.Saved) {
+    let hydratedFromPeer = false;
+    if (tab instanceof Project && tab.projectOwnershipPeerWindow && tab.canonicalProjectPath) {
+      const liveSnapshot = await LocalDocumentSync.requestPeerSnapshot(
+        tab.canonicalProjectPath,
+        tab.projectOwnershipPeerWindow,
+      );
+      if (liveSnapshot) {
+        hydrateProjectFromSnapshot(tab, liveSnapshot);
+        hydratedFromPeer = true;
+      }
+    }
+
+    if (!hydratedFromPeer) {
+      await tab.init();
+      if (tab instanceof Project && tab.projectState !== ProjectState.Saved) {
         throw new Error("USER_CANCELLED");
       }
+    }
+
+    if (tab instanceof Project) {
       loadAllServicesAfterInit(tab);
+      if (hydratedFromPeer) {
+        tab.stageManager.updateReferences();
+        if (tab.getService("tagManager")) {
+          tab.tagManager.reset(tab.tags);
+        }
+        if (tab.getService("stageTable")) {
+          tab.stageTable.resetAfterStageRestore();
+        }
+      }
       tab.activateOpenRuntimeHost();
-      if (tab.wasUpgraded) {
+      if (tab.canonicalProjectPath) {
+        LocalDocumentSync.attach(tab, tab.canonicalProjectPath, tab.projectOwnershipPeerWindow ? 1 : 0);
+      }
+      if (!hydratedFromPeer && tab.wasUpgraded) {
         tab.projectState = ProjectState.Unsaved;
       }
     }

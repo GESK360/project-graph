@@ -30,6 +30,7 @@ export class TagManager {
 
   reset(uuids: string[]) {
     this.project.tags = [];
+    this.tagSet.clear();
     for (const uuid of uuids) {
       this.project.tags.push(uuid);
       this.tagSet.add(uuid);
@@ -39,6 +40,7 @@ export class TagManager {
   addTag(uuid: string) {
     this.project.tags.push(uuid);
     this.tagSet.add(uuid);
+    this.project.emit("document-commit");
   }
 
   removeTag(uuid: string) {
@@ -46,6 +48,7 @@ export class TagManager {
     if (index !== -1) {
       this.project.tags.splice(index, 1);
       this.tagSet.delete(uuid);
+      this.project.emit("document-commit");
     }
   }
 
@@ -77,6 +80,7 @@ export class TagManager {
       const temp = this.project.tags[index - 1];
       this.project.tags[index - 1] = uuid;
       this.project.tags[index] = temp;
+      this.project.emit("document-commit");
     }
   }
 
@@ -86,6 +90,7 @@ export class TagManager {
       const temp = this.project.tags[index + 1];
       this.project.tags[index + 1] = uuid;
       this.project.tags[index] = temp;
+      this.project.emit("document-commit");
     }
   }
 

@@ -6,6 +6,7 @@ import {
 } from "@/core/service/ProjectToolSettingsSchema";
 import { DEFAULT_SUB_WINDOW_OPEN_MODES, subWindowOpenModesSchema } from "@/core/subWindowOpenModes";
 import { isMac } from "@/utils/platform";
+import { isTauri } from "@tauri-apps/api/core";
 import { LazyStore } from "@tauri-apps/plugin-store";
 import i18next from "i18next";
 import { useEffect, useState } from "react";
@@ -681,6 +682,7 @@ export const settingsSchema = z.object({
         icon: "File",
         children: [
           { type: "item", id: "newDraft", icon: "FilePlus" },
+          { type: "item", id: "newWindow", icon: "AppWindow" },
           { type: "item", id: "newPrgAtCurrentDir", icon: "FilePlus" },
           { type: "item", id: "openFile", icon: "FolderOpen" },
           { type: "item", id: "upgradeOldJson", icon: "FileInput" },
@@ -1062,11 +1064,22 @@ if (rawSettings.windowBackgroundAlpha === 0.28) {
   await store.save();
 }
 
-// 鼠标左键模式每次启动时恢复为默认“选择和移动”，防止误切到连线/切割或涂鸦模式后持久化导致左键表现像右键
-savedSettings.mouseLeftMode = "selectAndMove";
-if (rawSettings.mouseLeftMode !== "selectAndMove") {
-  await store.set("mouseLeftMode", "selectAndMove");
-  await store.save();
+// 鼠标左键模式仅在主窗口冷启动时恢复为默认“选择和移动”，防止打开第二窗口时把第一窗口正在使用的涂鸦模式重置掉
+let isPrimarySettingsInit = true;
+if (isTauri()) {
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    isPrimarySettingsInit = getCurrentWindow().label === "main";
+  } catch {
+    isPrimarySettingsInit = true;
+  }
+}
+if (isPrimarySettingsInit) {
+  savedSettings.mouseLeftMode = "selectAndMove";
+  if (rawSettings.mouseLeftMode !== "selectAndMove") {
+    await store.set("mouseLeftMode", "selectAndMove");
+    await store.save();
+  }
 }
 
 // 检查菜单配置中是否存在指定 id 的节点（用于版本升级时的配置重置判断）
@@ -1140,76 +1153,94 @@ export async function flushSettingsLoadErrors() {
   pendingSettingsLoadErrorValues.clear();
 }
 
+const settingsTarget: Settings & {
+  watch: (key: keyof Settings, callback: (value: any) => void) => () => void;
+  use: <T extends keyof Settings>(key: T) => [Settings[T], (newValue: Settings[T]) => void];
+} = {
+  ...savedSettings,
+  watch: () => () => {},
+  use: () => [undefined as any, () => {}],
+};
+
+// 同进程多窗口共享同一个 Rust Store 实例：监听跨窗口变更事件，同步本窗口内存缓存并通知订阅者
+const EPHEMERAL_WINDOW_LOCAL_KEYS = new Set<string>(["windowBackgroundAlpha"]);
+if (isTauri() && typeof store.onChange === "function") {
+  void store.onChange((rawKey, rawValue) => {
+    if (EPHEMERAL_WINDOW_LOCAL_KEYS.has(rawKey)) return;
+    if (!(rawKey in settingsSchema.shape)) return;
+    const settingSchema = settingsSchema.shape[rawKey as keyof typeof settingsSchema.shape];
+    const parsed = settingSchema.safeParse(rawValue);
+    if (!parsed.success) return;
+    const currentValue = (settingsTarget as Record<string, unknown>)[rawKey];
+    if (JSON.stringify(currentValue) === JSON.stringify(parsed.data)) return;
+    (settingsTarget as Record<string, unknown>)[rawKey] = parsed.data;
+    listeners[rawKey]?.forEach((cb) => cb(parsed.data));
+  });
+}
+
 export const Settings = new Proxy<
   Settings & {
     watch: (key: keyof Settings, callback: (value: any) => void) => () => void;
     use: <T extends keyof Settings>(key: T) => [Settings[T], (newValue: Settings[T]) => void];
   }
->(
-  {
-    ...savedSettings,
-    watch: () => () => {},
-    use: () => [undefined as any, () => {}],
+>(settingsTarget, {
+  set: (target, key, value, receiver) => {
+    if (typeof key === "symbol") {
+      throw new Error(`不能设置symbol属性: ${String(key)}`);
+    }
+    if (!(key in target)) {
+      throw new Error(`没有这个设置项: ${key}`);
+    }
+    store.set(key, value);
+    // 必须先写入内存再通知 listener：listener 中可能读取或联动修改其他设置项（如 theme ↔ darkTheme），
+    // 若先通知后写入，listener 读到的仍是旧值，会导致无限递归（栈溢出），最终内存值也未更新。
+    const result = Reflect.set(target, key, value, receiver);
+    listeners[key]?.forEach((cb) => cb(value));
+    return result;
   },
-  {
-    set: (target, key, value, receiver) => {
-      if (typeof key === "symbol") {
-        throw new Error(`不能设置symbol属性: ${String(key)}`);
+  get: (target, key, receiver) => {
+    switch (key) {
+      case "watch": {
+        return (key: keyof Settings, callback: (value: any) => void) => {
+          if (!listeners[key]) {
+            listeners[key] = [];
+          }
+          listeners[key].push(callback);
+          callback(target[key]);
+          return () => {
+            listeners[key] = listeners[key]?.filter((cb) => cb !== callback);
+          };
+        };
       }
-      if (!(key in target)) {
-        throw new Error(`没有这个设置项: ${key}`);
-      }
-      store.set(key, value);
-      // 必须先写入内存再通知 listener：listener 中可能读取或联动修改其他设置项（如 theme ↔ darkTheme），
-      // 若先通知后写入，listener 读到的仍是旧值，会导致无限递归（栈溢出），最终内存值也未更新。
-      const result = Reflect.set(target, key, value, receiver);
-      listeners[key]?.forEach((cb) => cb(value));
-      return result;
-    },
-    get: (target, key, receiver) => {
-      switch (key) {
-        case "watch": {
-          return (key: keyof Settings, callback: (value: any) => void) => {
+      case "use": {
+        return <T extends keyof Settings>(key: T) => {
+          const [value, setValue] = useState(target[key]);
+          useEffect(() => {
             if (!listeners[key]) {
               listeners[key] = [];
             }
-            listeners[key].push(callback);
-            callback(target[key]);
+            listeners[key].push(setValue);
             return () => {
-              listeners[key] = listeners[key]?.filter((cb) => cb !== callback);
+              listeners[key] = listeners[key]?.filter((cb) => cb !== setValue);
             };
-          };
-        }
-        case "use": {
-          return <T extends keyof Settings>(key: T) => {
-            const [value, setValue] = useState(target[key]);
-            useEffect(() => {
-              if (!listeners[key]) {
-                listeners[key] = [];
-              }
-              listeners[key].push(setValue);
-              return () => {
-                listeners[key] = listeners[key]?.filter((cb) => cb !== setValue);
-              };
-            }, []);
-            return [
-              value,
-              (newValue: Settings[T]) => {
-                console.log(newValue);
-                store.set(key, newValue);
-                Reflect.set(target, key, newValue);
-                listeners[key]?.forEach((cb) => cb(newValue));
-              },
-            ];
-          };
-        }
-        default: {
-          return Reflect.get(target, key, receiver);
-        }
+          }, []);
+          return [
+            value,
+            (newValue: Settings[T]) => {
+              console.log(newValue);
+              store.set(key, newValue);
+              Reflect.set(target, key, newValue);
+              listeners[key]?.forEach((cb) => cb(newValue));
+            },
+          ];
+        };
       }
-    },
+      default: {
+        return Reflect.get(target, key, receiver);
+      }
+    }
   },
-);
+});
 
 export type HandwritingPen = Settings["handwritingPens"][number];
 

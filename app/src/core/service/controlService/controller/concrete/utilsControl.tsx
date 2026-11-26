@@ -220,8 +220,11 @@ export class ControllerUtils {
         // 完整公式在退出编辑时转换，编辑期间保留源码。
         await autoChangeTextNodeToLatexNode(this.project, clickedNode);
         const liveAfterConvert = this.project.stageManager.get(clickedNode.uuid);
-        if (liveAfterConvert && liveAfterConvert !== clickedNode && isPersistentMindMapDragEnabled()) {
-          reflowMindMapTreesForEntities(this.project, [liveAfterConvert as Entity, ...fatherSections], prevCenters);
+        if (liveAfterConvert && liveAfterConvert !== clickedNode) {
+          if (isPersistentMindMapDragEnabled()) {
+            reflowMindMapTreesForEntities(this.project, [liveAfterConvert as Entity, ...fatherSections], prevCenters);
+          }
+          this.project.emit("document-commit");
         }
       });
   }
@@ -341,9 +344,10 @@ export class ControllerUtils {
       this.project.syncAssociationManager.syncFrom(clickedNode, "details");
       if (this.project.getService("stageTable")) {
         this.project.stageTable.syncSemanticTimestamps();
-        this.project.stageTable.notifyChange();
+        this.project.stageTable.notifyChange({ emitSync: false });
       }
       this.project.projectState = ProjectState.Unsaved;
+      this.project.emit("document-commit-debounced");
     });
   }
 

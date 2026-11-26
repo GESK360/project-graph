@@ -85,7 +85,11 @@ import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import {
   applyTableFiltersAndSort,
   collectColumnFilterBuckets,
+  countActiveFilterConditions,
   createDefaultTableData,
+  getColumnFilterKind,
+  getDefaultFilterOperator,
+  getFilterOperatorsForKind,
   normalizeTableData,
   type PrgTableData,
 } from "@/types/table";
@@ -1014,5 +1018,210 @@ describe("StageTableService & .prg v2.8.0", () => {
     expect(created!.entity.tableFields).not.toBe(prevRef);
     expect(created!.entity.tableFields[startCol.id]).toBe("2026-11-26");
     expect(created!.entity.tableFields[endCol.id]).toBe("2026-11-28");
+  });
+
+  it("supports multi-condition filterGroup with category operators, AND/OR, date presets, collapse persistence, and cleanup", () => {
+    const project = createTestHarness();
+    const fixedNow = new Date(2026, 10, 26, 12, 0, 0); // 2026-11-26 local
+    const tToday = new Date(2026, 10, 26, 9, 0, 0).getTime();
+    const tYesterday = new Date(2026, 10, 25, 9, 0, 0).getTime();
+    const tOld = new Date(2026, 9, 1, 9, 0, 0).getTime();
+
+    const n1 = new TextNode(project as never, {
+      uuid: "r1",
+      text: "生物 细胞膜",
+      createdAt: tToday,
+      updatedAt: tToday,
+    });
+    const n2 = new TextNode(project as never, {
+      uuid: "r2",
+      text: "化学 氧化还原",
+      createdAt: tYesterday,
+      updatedAt: tYesterday,
+    });
+    const sec3 = new Section(project as never, {
+      uuid: "r3",
+      text: "物理 电磁学",
+      createdAt: tOld,
+      updatedAt: tOld,
+      children: [],
+    });
+    const imgInSec3 = new ImageNode(project as never, { uuid: "img-r3", attachmentId: "att-r3" });
+    sec3.children.push(imgInSec3);
+    project.stage.push(n1, n2, sec3, imgInSec3);
+
+    const colNum = project.stageTable.addCustomColumn({ name: "分值", type: "number" });
+    const colStatus = project.stageTable.addCustomColumn({ name: "归档状态", type: "select" });
+    const colTags = project.stageTable.addCustomColumn({ name: "标签", type: "multi_select" });
+    const colDate = project.stageTable.addCustomColumn({ name: "复习日期", type: "date" });
+    const colFormula = project.stageTable.addCustomColumn({
+      name: "是否到期",
+      type: "formula",
+      formula: `IF({{${colNum.id}}} >= 60, "是", "否")`,
+    });
+
+    const optArchived = project.stageTable.createOrGetSelectOption(colStatus.id, "归档")!;
+    const optActive = project.stageTable.createOrGetSelectOption(colStatus.id, "进行中")!;
+    const tagA = project.stageTable.createOrGetSelectOption(colTags.id, "重点")!;
+    const tagB = project.stageTable.createOrGetSelectOption(colTags.id, "易错")!;
+
+    project.stageTable.updateRowCustomField("r1", colNum.id, 80);
+    project.stageTable.updateRowCustomField("r2", colNum.id, 40);
+    // r3 number intentionally empty
+
+    project.stageTable.updateRowCustomField("r1", colStatus.id, optArchived.id);
+    project.stageTable.updateRowCustomField("r2", colStatus.id, optActive.id);
+
+    project.stageTable.updateRowCustomField("r1", colTags.id, [tagA.id, tagB.id]);
+    project.stageTable.updateRowCustomField("r2", colTags.id, [tagA.id]);
+
+    project.stageTable.updateRowCustomField("r1", colDate.id, "2026-11-26");
+    project.stageTable.updateRowCustomField("r2", colDate.id, "2026-11-25");
+
+    // Verify exact operators per category
+    expect(getFilterOperatorsForKind(getColumnFilterKind(colNum.id, colNum))).toEqual([
+      "eq",
+      "neq",
+      "gt",
+      "gte",
+      "lt",
+      "lte",
+      "is_empty",
+      "is_not_empty",
+    ]);
+    expect(getFilterOperatorsForKind(getColumnFilterKind("images"))).toEqual(["is_empty", "is_not_empty"]);
+    expect(getDefaultFilterOperator("images")).toBe("is_not_empty");
+    expect(getFilterOperatorsForKind(getColumnFilterKind("name"))).toEqual([
+      "contains",
+      "not_contains",
+      "eq",
+      "neq",
+      "is_empty",
+      "is_not_empty",
+    ]);
+    expect(getFilterOperatorsForKind(getColumnFilterKind(colStatus.id, colStatus))).toEqual([
+      "contains",
+      "not_contains",
+      "eq",
+      "neq",
+      "is_empty",
+      "is_not_empty",
+    ]);
+    expect(getFilterOperatorsForKind(getColumnFilterKind(colFormula.id, colFormula))).toEqual([
+      "contains",
+      "not_contains",
+      "eq",
+      "neq",
+      "is_empty",
+      "is_not_empty",
+    ]);
+
+    const evalFiltered = () =>
+      applyTableFiltersAndSort(
+        project.stageTable.getRows(),
+        project.stageTable.getColumns(),
+        project.stageTable.getFilters(),
+        null,
+        project.stageTable.getFilterGroup(),
+        fixedNow,
+      ).map((r) => r.uuid);
+
+    // 1. Newly added incomplete text condition is pass-through & not counted as active
+    const cName = project.stageTable.addFilterCondition("name")!;
+    expect(countActiveFilterConditions(project.stageTable.getFilterGroup(), project.stageTable.getColumns())).toBe(0);
+    expect(evalFiltered()).toEqual(["r1", "r2", "r3"]);
+
+    // 2. Numeric operators (=, ≠, >, ≥, <, ≤, is_empty, is_not_empty)
+    project.stageTable.removeFilterCondition(cName.id);
+    const cNum = project.stageTable.addFilterCondition(colNum.id)!;
+    project.stageTable.updateFilterCondition(cNum.id, { operator: "gt", value: "50" });
+    expect(evalFiltered()).toEqual(["r1"]);
+    project.stageTable.updateFilterCondition(cNum.id, { operator: "lte", value: "40" });
+    expect(evalFiltered()).toEqual(["r2"]);
+    project.stageTable.updateFilterCondition(cNum.id, { operator: "neq", value: "80" });
+    expect(evalFiltered()).toEqual(["r2", "r3"]);
+    project.stageTable.updateFilterCondition(cNum.id, { operator: "is_empty" });
+    expect(evalFiltered()).toEqual(["r3"]);
+    project.stageTable.updateFilterCondition(cNum.id, { operator: "is_not_empty" });
+    expect(evalFiltered()).toEqual(["r1", "r2"]);
+
+    // 3. Images column (is_not_empty / is_empty)
+    project.stageTable.removeFilterCondition(cNum.id);
+    const cImg = project.stageTable.addFilterCondition("images")!;
+    expect(cImg.operator).toBe("is_not_empty");
+    expect(countActiveFilterConditions(project.stageTable.getFilterGroup(), project.stageTable.getColumns())).toBe(1);
+    expect(evalFiltered()).toEqual(["r3"]);
+    project.stageTable.updateFilterCondition(cImg.id, { operator: "is_empty" });
+    expect(evalFiltered()).toEqual(["r1", "r2"]);
+
+    // 4. Formula & Select & Multi-select (contains vs exact eq)
+    project.stageTable.clearAllFilters();
+    const cFormula = project.stageTable.addFilterCondition(colFormula.id)!;
+    project.stageTable.updateFilterCondition(cFormula.id, { operator: "contains", value: "是" });
+    expect(evalFiltered()).toEqual(["r1"]);
+
+    project.stageTable.clearAllFilters();
+    const cTags = project.stageTable.addFilterCondition(colTags.id)!;
+    project.stageTable.updateFilterCondition(cTags.id, { operator: "contains", values: [tagA.id] });
+    expect(evalFiltered()).toEqual(["r1", "r2"]);
+    project.stageTable.updateFilterCondition(cTags.id, { operator: "eq", values: [tagA.id] });
+    expect(evalFiltered()).toEqual(["r2"]);
+    project.stageTable.updateFilterCondition(cTags.id, { operator: "not_contains", values: [tagB.id] });
+    expect(evalFiltered()).toEqual(["r2", "r3"]);
+
+    // 5. Date presets & exact date
+    project.stageTable.clearAllFilters();
+    const cCreated = project.stageTable.addFilterCondition("createdAt")!;
+    project.stageTable.updateFilterCondition(cCreated.id, { operator: "eq", datePreset: "today" });
+    expect(evalFiltered()).toEqual(["r1"]);
+    project.stageTable.updateFilterCondition(cCreated.id, { operator: "eq", datePreset: "past_7_days" });
+    expect(evalFiltered()).toEqual(["r1", "r2"]);
+    project.stageTable.updateFilterCondition(cCreated.id, {
+      operator: "lt",
+      datePreset: undefined,
+      value: "2026-11-26",
+    });
+    expect(evalFiltered()).toEqual(["r2", "r3"]);
+
+    // 6. AND vs OR conjunction + collapse state + persistence round-trip
+    const cImg2 = project.stageTable.addFilterCondition("images")!;
+    project.stageTable.updateFilterCondition(cCreated.id, { operator: "eq", datePreset: "today", value: undefined });
+    // AND: createdAt == today (r1) AND images is_not_empty (r3) => []
+    expect(evalFiltered()).toEqual([]);
+    // OR: r1 or r3
+    project.stageTable.setFilterConjunction("or");
+    expect(evalFiltered()).toEqual(["r1", "r3"]);
+
+    project.stageTable.toggleFilterConditionCollapsed(cImg2.id);
+    expect(project.stageTable.getFilterGroup().conditions.find((c) => c.id === cImg2.id)?.collapsed).toBe(true);
+
+    // Drag-reorder filter conditions
+    expect(project.stageTable.reorderFilterConditions(cImg2.id, cCreated.id, "before")).toBe(true);
+    expect(project.stageTable.getFilterGroup().conditions.map((c) => c.id)).toEqual([cImg2.id, cCreated.id]);
+    expect(project.stageTable.reorderFilterConditions(cImg2.id, cCreated.id, "after")).toBe(true);
+    expect(project.stageTable.getFilterGroup().conditions.map((c) => c.id)).toEqual([cCreated.id, cImg2.id]);
+    expect(project.stageTable.reorderFilterConditions(cCreated.id, cCreated.id, "before")).toBe(false);
+
+    const normalized = normalizeTableData(JSON.parse(JSON.stringify(project.table)));
+    expect(normalized.views[0].filterGroup?.conjunction).toBe("or");
+    expect(normalized.views[0].filterGroup?.conditions.length).toBe(2);
+    expect(normalized.views[0].filterGroup?.conditions[1].collapsed).toBe(true);
+
+    // 7. Duplicating view deep-clones filterGroup with distinct condition IDs
+    const dupView = project.stageTable.duplicateView(project.stageTable.getActiveView().id, "副本")!;
+    expect(dupView.filterGroup?.conditions.length).toBe(2);
+    expect(dupView.filterGroup?.conditions[0].id).not.toBe(cCreated.id);
+
+    // 8. Column deletion cleans up filterGroup conditions referencing that column
+    const cNumDel = project.stageTable.addFilterCondition(colNum.id)!;
+    project.stageTable.updateFilterCondition(cNumDel.id, { operator: "eq", value: "80" });
+    project.stageTable.deleteCustomColumn(colNum.id);
+    expect(project.stageTable.getFilterGroup().conditions.some((c) => c.columnId === colNum.id)).toBe(false);
+
+    // 9. clearAllFilters clears both legacy column filters and filterGroup
+    project.stageTable.setColumnFilter("name", { values: ["生物 细胞膜"], includeEmpty: false });
+    project.stageTable.clearAllFilters();
+    expect(project.stageTable.getFilters()).toEqual([]);
+    expect(project.stageTable.getFilterGroup().conditions).toEqual([]);
   });
 });

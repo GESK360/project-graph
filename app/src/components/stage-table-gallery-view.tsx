@@ -1,23 +1,26 @@
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { StageTableFilterToolbarPopover } from "@/components/stage-table-filter-popover";
 import {
   StageTableAttachmentThumb,
   StageTableFieldValueDisplay,
   StageTableFieldVisibilityList,
-  StageTableFilterToolbarPopover,
   StageTableSortToolbarPopover,
   getRowDisplayTitle,
 } from "@/components/stage-table-views-shared";
 import type { Project } from "@/core/Project";
 import type { StageTableRow } from "@/core/service/dataManageService/stageTableService/StageTableService";
-import type {
-  GalleryCardSize,
-  TableColumnFilter,
-  TableColumnSchema,
-  TableGalleryViewConfig,
-  TableSortConfig,
-  TableViewSchema,
+import {
+  countActiveFilterConditions,
+  type GalleryCardSize,
+  type TableColumnFilter,
+  type TableColumnGroup,
+  type TableColumnSchema,
+  type TableFilterGroup,
+  type TableGalleryViewConfig,
+  type TableSortConfig,
+  type TableViewSchema,
 } from "@/types/table";
 import { cn } from "@/utils/cn";
 import { Crosshair, Image as ImageIcon, LayoutGrid, Pencil, PlusCircle, Upload } from "lucide-react";
@@ -41,9 +44,13 @@ export function StageTableGalleryView({
   allRows,
   rows,
   allColumnIds,
+  filterableColumnIds,
+  filterColumnGroups,
   visibleColumnIds,
+  customColumns,
   customColumnMap,
   activeFilters,
+  activeFilterGroup,
   activeSort,
   selectedRowIds,
   getColumnLabel,
@@ -57,9 +64,13 @@ export function StageTableGalleryView({
   allRows: readonly StageTableRow[];
   rows: readonly StageTableRow[];
   allColumnIds: readonly string[];
+  filterableColumnIds: readonly string[];
+  filterColumnGroups: readonly TableColumnGroup[];
   visibleColumnIds: readonly string[];
+  customColumns: readonly TableColumnSchema[];
   customColumnMap: ReadonlyMap<string, TableColumnSchema>;
   activeFilters: readonly TableColumnFilter[];
+  activeFilterGroup: TableFilterGroup;
   activeSort: TableSortConfig | null;
   selectedRowIds: ReadonlySet<string>;
   getColumnLabel: (colId: string) => string;
@@ -72,6 +83,8 @@ export function StageTableGalleryView({
   const uploadTargetRowRef = useRef<string | null>(null);
 
   const config: TableGalleryViewConfig = activeView.gallery ?? {};
+  const hasAnyActiveFilter =
+    activeFilters.length > 0 || countActiveFilterConditions(activeFilterGroup, customColumns) > 0;
   const coverMode = config.coverMode ?? "images";
   const coverFit = config.coverFit ?? "cover";
   const cardSize: GalleryCardSize = config.cardSize ?? "medium";
@@ -241,11 +254,22 @@ export function StageTableGalleryView({
         <div className="bg-border mx-0.5 h-3.5 w-px shrink-0" />
 
         <StageTableFilterToolbarPopover
-          allColumnIds={allColumnIds}
+          filterableColumnIds={filterableColumnIds}
+          columnGroups={filterColumnGroups}
+          customColumns={customColumns}
           customColumnMap={customColumnMap}
           allRows={allRows}
           activeFilters={activeFilters}
+          filterGroup={activeFilterGroup}
           getColumnLabel={getColumnLabel}
+          onSetConjunction={(conj) => project.stageTable.setFilterConjunction?.(conj)}
+          onAddCondition={(cid) => project.stageTable.addFilterCondition?.(cid)}
+          onUpdateCondition={(id, patch) => project.stageTable.updateFilterCondition?.(id, patch)}
+          onRemoveCondition={(id) => project.stageTable.removeFilterCondition?.(id)}
+          onToggleConditionCollapse={(id) => project.stageTable.toggleFilterConditionCollapsed?.(id)}
+          onReorderConditions={(dragId, targetId, pos) =>
+            project.stageTable.reorderFilterConditions?.(dragId, targetId, pos)
+          }
           onSetColumnFilter={(cid, flt) => project.stageTable.setColumnFilter?.(cid, flt)}
           onClearAllFilters={() => project.stageTable.clearAllFilters?.()}
           t={t}
@@ -265,10 +289,8 @@ export function StageTableGalleryView({
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {rows.length === 0 ? (
           <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2 text-xs">
-            <span>
-              {allRows.length > 0 && activeFilters.length > 0 ? t("sortFilter.noFilterMatch") : t("emptyCanvas")}
-            </span>
-            {allRows.length > 0 && activeFilters.length > 0 && (
+            <span>{allRows.length > 0 && hasAnyActiveFilter ? t("sortFilter.noFilterMatch") : t("emptyCanvas")}</span>
+            {allRows.length > 0 && hasAnyActiveFilter && (
               <Button
                 type="button"
                 variant="outline"

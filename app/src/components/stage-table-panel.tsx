@@ -21,6 +21,7 @@ import {
 } from "@/components/stage-table-formula-editor";
 import { ImageLightbox, type ImageLightboxItem } from "@/components/image-lightbox";
 import { StageTableCalendarView } from "@/components/stage-table-calendar-view";
+import { StageTableFilterToolbarPopover } from "@/components/stage-table-filter-popover";
 import { StageTableGalleryView } from "@/components/stage-table-gallery-view";
 import { StageTableGanttView } from "@/components/stage-table-gantt-view";
 import { StageTableKanbanView } from "@/components/stage-table-kanban-view";
@@ -39,6 +40,8 @@ import {
   TABLE_VIEW_TYPES,
   applyTableFiltersAndSort,
   collectColumnFilterBuckets,
+  countActiveFilterConditions,
+  isFilterConditionActive,
   pickNextSelectOptionColor,
   type CustomColumnType,
   type SystemColumnId,
@@ -46,6 +49,7 @@ import {
   type TableColumnFilter,
   type TableColumnGroup,
   type TableColumnSchema,
+  type TableFilterGroup,
   type TableRowHeight,
   type TableSelectOption,
   type TableSortConfig,
@@ -2227,8 +2231,17 @@ export default function StageTablePanel({ project }: { project: Project }) {
   const allRows = project.stageTable.getRows();
   const activeSort: TableSortConfig | null = project.stageTable.getSort?.() ?? activeView.sort ?? null;
   const activeFilters: TableColumnFilter[] = project.stageTable.getFilters?.() ?? activeView.filters ?? [];
+  const activeFilterGroup: TableFilterGroup = project.stageTable.getFilterGroup?.() ??
+    activeView.filterGroup ?? { conjunction: "and", conditions: [] };
   const activeFilterByColId = new Map<string, TableColumnFilter>(activeFilters.map((f) => [f.columnId, f]));
-  const rows = applyTableFiltersAndSort(allRows, customColumns, activeFilters, activeSort);
+  const activeFilterGroupColIds = new Set<string>(
+    activeFilterGroup.conditions
+      .filter((cond) => isFilterConditionActive(cond, customColumnMap.get(cond.columnId)))
+      .map((cond) => cond.columnId),
+  );
+  const activeFilterConditionCount = countActiveFilterConditions(activeFilterGroup, customColumns);
+  const hasAnyActiveFilter = activeFilters.length > 0 || activeFilterConditionCount > 0;
+  const rows = applyTableFiltersAndSort(allRows, customColumns, activeFilters, activeSort, activeFilterGroup);
 
   const displayedRowIndexById = new Map<string, number>(rows.map((r, idx) => [r.uuid, idx]));
   const visibleColIndexById = new Map<string, number>(visibleColumnIds.map((c, idx) => [c, idx]));
@@ -3017,6 +3030,17 @@ export default function StageTablePanel({ project }: { project: Project }) {
   };
 
   const allPropertyIds: string[] = ["name", ...OPTIONAL_SYSTEM_COLUMN_IDS, ...customColumns.map((col) => col.id)];
+  const originalTableView = views.find((v) => !v.deletable) ?? views[0] ?? activeView;
+  const validPropertyIdSet = new Set<string>(allPropertyIds);
+  const filterableColumnIds: string[] = Array.from(
+    new Set([
+      "name",
+      ...(originalTableView.visibleColumnIds ?? []).filter(
+        (colId) => colId !== "name" && validPropertyIdSet.has(colId),
+      ),
+    ]),
+  );
+  const filterColumnGroups: TableColumnGroup[] = originalTableView.columnGroups ?? [];
 
   const filteredPropertyIds = allPropertyIds.filter((colId) => {
     const q = propertySearch.trim().toLowerCase();
@@ -3097,7 +3121,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
 
   const totalTableWidth = runningLeft + ADD_COLUMN_WIDTH;
 
-  const layoutDepsKey = `${project.uri?.toString?.() ?? ""}:${rows.length}:${activeSort ? `${activeSort.columnId}:${activeSort.direction}` : ""}:${activeFilters.length}:${frozenColumnId ?? ""}:${hasVisibleColumnGroups ? 1 : 0}:${visibleColumnIds.map((c) => `${c}=${getColumnWidth(c)}`).join(",")}`;
+  const layoutDepsKey = `${project.uri?.toString?.() ?? ""}:${rows.length}:${activeSort ? `${activeSort.columnId}:${activeSort.direction}` : ""}:${activeFilters.length}:${activeFilterConditionCount}:${frozenColumnId ?? ""}:${hasVisibleColumnGroups ? 1 : 0}:${visibleColumnIds.map((c) => `${c}=${getColumnWidth(c)}`).join(",")}`;
 
   const selectionSummaryText =
     selection.mode === "all"
@@ -3700,10 +3724,13 @@ export default function StageTablePanel({ project }: { project: Project }) {
           allRows={allRows}
           rows={rows}
           allColumnIds={allPropertyIds}
+          filterableColumnIds={filterableColumnIds}
+          filterColumnGroups={filterColumnGroups}
           visibleColumnIds={visibleColumnIds}
           customColumns={customColumns}
           customColumnMap={customColumnMap}
           activeFilters={activeFilters}
+          activeFilterGroup={activeFilterGroup}
           activeSort={activeSort}
           selectedRowIds={selectedRowIdsForViews}
           getColumnLabel={getColumnLabel}
@@ -3721,10 +3748,13 @@ export default function StageTablePanel({ project }: { project: Project }) {
           allRows={allRows}
           rows={rows}
           allColumnIds={allPropertyIds}
+          filterableColumnIds={filterableColumnIds}
+          filterColumnGroups={filterColumnGroups}
           visibleColumnIds={visibleColumnIds}
           customColumns={customColumns}
           customColumnMap={customColumnMap}
           activeFilters={activeFilters}
+          activeFilterGroup={activeFilterGroup}
           activeSort={activeSort}
           selectedRowIds={selectedRowIdsForViews}
           getColumnLabel={getColumnLabel}
@@ -3742,9 +3772,13 @@ export default function StageTablePanel({ project }: { project: Project }) {
           allRows={allRows}
           rows={rows}
           allColumnIds={allPropertyIds}
+          filterableColumnIds={filterableColumnIds}
+          filterColumnGroups={filterColumnGroups}
           visibleColumnIds={visibleColumnIds}
+          customColumns={customColumns}
           customColumnMap={customColumnMap}
           activeFilters={activeFilters}
+          activeFilterGroup={activeFilterGroup}
           activeSort={activeSort}
           selectedRowIds={selectedRowIdsForViews}
           getColumnLabel={getColumnLabel}
@@ -3762,10 +3796,13 @@ export default function StageTablePanel({ project }: { project: Project }) {
           allRows={allRows}
           rows={rows}
           allColumnIds={allPropertyIds}
+          filterableColumnIds={filterableColumnIds}
+          filterColumnGroups={filterColumnGroups}
           visibleColumnIds={visibleColumnIds}
           customColumns={customColumns}
           customColumnMap={customColumnMap}
           activeFilters={activeFilters}
+          activeFilterGroup={activeFilterGroup}
           activeSort={activeSort}
           selectedRowIds={selectedRowIdsForViews}
           getColumnLabel={getColumnLabel}
@@ -3882,81 +3919,27 @@ export default function StageTablePanel({ project }: { project: Project }) {
 
             <div className="bg-border mx-0.5 h-3.5 w-px shrink-0" />
 
-            <Popover>
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  data-stage-table-filter-toolbar
-                  className={cn(
-                    "hover:bg-accent inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded px-2 transition-colors",
-                    activeFilters.length > 0
-                      ? "bg-primary/15 text-primary font-medium"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  <Filter className="size-3.5" />
-                  <span>
-                    {activeFilters.length > 0
-                      ? `${t("toolbar.filter")} (${activeFilters.length})`
-                      : t("toolbar.filter")}
-                  </span>
-                </button>
-              </PopoverTrigger>
-              <PopoverContent
-                align="start"
-                className="w-60 p-2 text-xs select-none"
-                onWheel={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-              >
-                <div className="mb-1.5 flex items-center justify-between px-1">
-                  <span className="text-muted-foreground text-[11px] font-medium">{t("sortFilter.filterTitle")}</span>
-                  {activeFilters.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => project.stageTable.clearAllFilters?.()}
-                      className="text-primary cursor-pointer text-[11px] hover:underline"
-                    >
-                      {t("sortFilter.clearAllFilters")}
-                    </button>
-                  )}
-                </div>
-                {activeFilters.length === 0 && (
-                  <div className="text-muted-foreground mb-1.5 px-1 text-[11px]">{t("sortFilter.noActiveFilters")}</div>
-                )}
-                <div className="max-h-56 space-y-0.5 overflow-y-auto">
-                  {visibleColumnIds.map((cid) => {
-                    const hasFilter = activeFilterByColId.has(cid);
-                    return (
-                      <div
-                        key={cid}
-                        className="hover:bg-accent flex items-center gap-2 rounded-sm px-2 py-1 text-xs transition-colors"
-                      >
-                        <button
-                          type="button"
-                          onClick={() => setFilterPopoverColId(cid)}
-                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left"
-                        >
-                          <ColumnIcon columnId={cid} customColumn={customColumnMap.get(cid)} />
-                          <span className={cn("min-w-0 flex-1 truncate", hasFilter && "text-primary font-medium")}>
-                            {getColumnLabel(cid)}
-                          </span>
-                        </button>
-                        {hasFilter && (
-                          <button
-                            type="button"
-                            aria-label={t("sortFilter.clearFilter")}
-                            onClick={() => project.stageTable.setColumnFilter?.(cid, null)}
-                            className="text-muted-foreground hover:text-foreground cursor-pointer rounded p-0.5"
-                          >
-                            <X className="size-3" />
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </PopoverContent>
-            </Popover>
+            <StageTableFilterToolbarPopover
+              filterableColumnIds={filterableColumnIds}
+              columnGroups={filterColumnGroups}
+              customColumns={customColumns}
+              customColumnMap={customColumnMap}
+              allRows={allRows}
+              activeFilters={activeFilters}
+              filterGroup={activeFilterGroup}
+              getColumnLabel={getColumnLabel}
+              onSetConjunction={(conj) => project.stageTable.setFilterConjunction?.(conj)}
+              onAddCondition={(cid) => project.stageTable.addFilterCondition?.(cid)}
+              onUpdateCondition={(id, patch) => project.stageTable.updateFilterCondition?.(id, patch)}
+              onRemoveCondition={(id) => project.stageTable.removeFilterCondition?.(id)}
+              onToggleConditionCollapse={(id) => project.stageTable.toggleFilterConditionCollapsed?.(id)}
+              onReorderConditions={(dragId, targetId, pos) =>
+                project.stageTable.reorderFilterConditions?.(dragId, targetId, pos)
+              }
+              onSetColumnFilter={(cid, flt) => project.stageTable.setColumnFilter?.(cid, flt)}
+              onClearAllFilters={() => project.stageTable.clearAllFilters?.()}
+              t={t}
+            />
 
             <button
               type="button"
@@ -4330,7 +4313,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                     const colSortDir: TableSortDirection | null =
                       activeSort?.columnId === colId ? activeSort.direction : null;
                     const colFilter = activeFilterByColId.get(colId) ?? null;
-                    const isColFiltered = colFilter !== null;
+                    const isColFiltered = colFilter !== null || activeFilterGroupColIds.has(colId);
                     const isFilterMenuOpen = filterPopoverColId === colId;
 
                     return (
@@ -4861,7 +4844,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                       colSpan={visibleColumnIds.length + 2}
                       className="text-muted-foreground py-12 text-center text-xs"
                     >
-                      {allRows.length > 0 && activeFilters.length > 0 ? (
+                      {allRows.length > 0 && hasAnyActiveFilter ? (
                         <div className="flex flex-col items-center gap-2">
                           <span>{t("sortFilter.noFilterMatch")}</span>
                           <Button

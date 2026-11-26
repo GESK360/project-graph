@@ -109,17 +109,39 @@ pub(crate) enum DesktopOwnershipAcquisition {
         ownership_id: String,
         canonical_path: String,
     },
+    Shared {
+        ownership_id: String,
+        canonical_path: String,
+        peer_window_label: String,
+    },
     AlreadyOwned {
         ownership_id: String,
         canonical_path: String,
     },
 }
 
+struct DesktopOwnershipEntry {
+    ownership: ProjectOwnership,
+    canonical_path_protocol: String,
+    holders: Vec<String>,
+}
+
 #[derive(Default)]
 struct DesktopOwnershipState {
-    ownership_by_id: HashMap<String, ProjectOwnership>,
+    ownership_by_id: HashMap<String, DesktopOwnershipEntry>,
     ownership_id_by_path: HashMap<PathBuf, String>,
     acquiring_paths: HashSet<PathBuf>,
+}
+
+fn normalize_protocol_path_key(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        path.replace('/', "\\").to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_owned()
+    }
 }
 
 #[derive(Default)]
@@ -152,29 +174,52 @@ impl DesktopProjectOwnershipManager {
         self.acquire_with_retry_delay(project_path, OWNERSHIP_RETRY_DELAY)
     }
 
+    #[cfg(test)]
     pub(crate) fn acquire_connectable(
         &self,
         project_path: &Path,
         endpoint: &str,
     ) -> Result<DesktopOwnershipAcquisition, ProjectOwnershipError> {
-        self.acquire_with_owner_and_retry_delay(
+        self.acquire_connectable_for_window(project_path, endpoint, "main")
+    }
+
+    pub(crate) fn acquire_connectable_for_window(
+        &self,
+        project_path: &Path,
+        endpoint: &str,
+        window_label: &str,
+    ) -> Result<DesktopOwnershipAcquisition, ProjectOwnershipError> {
+        self.acquire_with_owner_and_retry_delay_for_window(
             project_path,
             ProjectOwner::Connectable {
                 endpoint: endpoint.to_owned(),
             },
             OWNERSHIP_RETRY_DELAY,
+            window_label,
+            true,
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn acquire_for_save(
         &self,
         project_path: &Path,
     ) -> Result<DesktopOwnershipAcquisition, ProjectOwnershipError> {
+        self.acquire_for_save_in_window(project_path, "main")
+    }
+
+    pub(crate) fn acquire_for_save_in_window(
+        &self,
+        project_path: &Path,
+        window_label: &str,
+    ) -> Result<DesktopOwnershipAcquisition, ProjectOwnershipError> {
         let canonical_path = canonicalize_project_save_target(project_path)?;
-        self.acquire_canonical_with_owner_and_retry_delay(
+        self.acquire_canonical_with_owner_and_retry_delay_for_window(
             canonical_path,
             ProjectOwner::UnconnectableHolder,
             OWNERSHIP_RETRY_DELAY,
+            window_label,
+            false,
         )
     }
 
@@ -184,28 +229,40 @@ impl DesktopProjectOwnershipManager {
         project_path: &Path,
         retry_delay: Duration,
     ) -> Result<DesktopOwnershipAcquisition, ProjectOwnershipError> {
-        self.acquire_with_owner_and_retry_delay(
+        self.acquire_with_owner_and_retry_delay_for_window(
             project_path,
             ProjectOwner::UnconnectableHolder,
             retry_delay,
+            "main",
+            true,
         )
     }
 
-    fn acquire_with_owner_and_retry_delay(
+    fn acquire_with_owner_and_retry_delay_for_window(
         &self,
         project_path: &Path,
         owner: ProjectOwner,
         retry_delay: Duration,
+        window_label: &str,
+        allow_cross_window_share: bool,
     ) -> Result<DesktopOwnershipAcquisition, ProjectOwnershipError> {
         let canonical_path = canonicalize_project_path(project_path)?;
-        self.acquire_canonical_with_owner_and_retry_delay(canonical_path, owner, retry_delay)
+        self.acquire_canonical_with_owner_and_retry_delay_for_window(
+            canonical_path,
+            owner,
+            retry_delay,
+            window_label,
+            allow_cross_window_share,
+        )
     }
 
-    fn acquire_canonical_with_owner_and_retry_delay(
+    fn acquire_canonical_with_owner_and_retry_delay_for_window(
         &self,
         canonical_path: CanonicalProjectPath,
         owner: ProjectOwner,
         retry_delay: Duration,
+        window_label: &str,
+        allow_cross_window_share: bool,
     ) -> Result<DesktopOwnershipAcquisition, ProjectOwnershipError> {
         {
             let mut state = self
@@ -218,6 +275,27 @@ impl DesktopProjectOwnershipManager {
                     .get(canonical_path.as_path())
                     .cloned()
                 {
+                    if allow_cross_window_share {
+                        if let Some(entry) = state.ownership_by_id.get_mut(&ownership_id) {
+                            if entry.holders.iter().any(|holder| holder == window_label) {
+                                return Ok(DesktopOwnershipAcquisition::AlreadyOwned {
+                                    ownership_id,
+                                    canonical_path: canonical_path.to_protocol_string(),
+                                });
+                            }
+                            let peer_window_label = entry
+                                .holders
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| "main".to_owned());
+                            entry.holders.push(window_label.to_owned());
+                            return Ok(DesktopOwnershipAcquisition::Shared {
+                                ownership_id,
+                                canonical_path: canonical_path.to_protocol_string(),
+                                peer_window_label,
+                            });
+                        }
+                    }
                     return Ok(DesktopOwnershipAcquisition::AlreadyOwned {
                         ownership_id,
                         canonical_path: canonical_path.to_protocol_string(),
@@ -259,9 +337,14 @@ impl DesktopProjectOwnershipManager {
         state
             .ownership_id_by_path
             .insert(canonical_path.0, ownership_id.clone());
-        state
-            .ownership_by_id
-            .insert(ownership_id.clone(), ownership);
+        state.ownership_by_id.insert(
+            ownership_id.clone(),
+            DesktopOwnershipEntry {
+                ownership,
+                canonical_path_protocol: normalize_protocol_path_key(&canonical_path_string),
+                holders: vec![window_label.to_owned()],
+            },
+        );
         self.acquisition_finished.notify_all();
         Ok(DesktopOwnershipAcquisition::Acquired {
             ownership_id,
@@ -279,14 +362,14 @@ impl DesktopProjectOwnershipManager {
                 .state
                 .lock()
                 .map_err(|_| ProjectOwnershipError::LoadFailed)?;
-            let ownership = state
+            let entry = state
                 .ownership_by_id
                 .get(ownership_id)
                 .ok_or(ProjectOwnershipError::LoadFailed)?;
-            if ownership.connectable_owner_lock.is_some() {
+            if entry.ownership.connectable_owner_lock.is_some() {
                 return Ok(());
             }
-            ownership.canonical_path.clone()
+            entry.ownership.canonical_path.clone()
         };
         let owner = ProjectOwner::Connectable {
             endpoint: endpoint.to_owned(),
@@ -297,56 +380,173 @@ impl DesktopProjectOwnershipManager {
             .state
             .lock()
             .map_err(|_| ProjectOwnershipError::LoadFailed)?;
-        let ownership = state
+        let entry = state
             .ownership_by_id
             .get_mut(ownership_id)
             .ok_or(ProjectOwnershipError::LoadFailed)?;
-        ownership.connectable_owner_lock = Some(connectable_owner_lock);
+        entry.ownership.connectable_owner_lock = Some(connectable_owner_lock);
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn release(&self, ownership_id: &str) -> Result<(), ProjectOwnershipError> {
+        self.release_for_window(ownership_id, "main").map(|_| ())
+    }
+
+    pub(crate) fn release_for_window(
+        &self,
+        ownership_id: &str,
+        window_label: &str,
+    ) -> Result<Option<String>, ProjectOwnershipError> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| ProjectOwnershipError::LoadFailed)?;
-        let Some(ownership) = state.ownership_by_id.remove(ownership_id) else {
-            return Ok(());
+        let (canonical_path, should_remove) = {
+            let Some(entry) = state.ownership_by_id.get_mut(ownership_id) else {
+                return Ok(None);
+            };
+            entry.holders.retain(|holder| holder != window_label);
+            (
+                entry.ownership.canonical_path().to_protocol_string(),
+                entry.holders.is_empty(),
+            )
+        };
+        if should_remove {
+            if let Some(entry) = state.ownership_by_id.remove(ownership_id) {
+                state
+                    .ownership_id_by_path
+                    .remove(entry.ownership.canonical_path().as_path());
+                drop(entry.ownership);
+            }
+        }
+        Ok(Some(canonical_path))
+    }
+
+    pub(crate) fn release_all_for_window(&self, window_label: &str) -> Vec<String> {
+        let Ok(mut state) = self.state.lock() else {
+            return Vec::new();
+        };
+        let mut affected_paths = Vec::new();
+        let mut empty_ids = Vec::new();
+        for (ownership_id, entry) in state.ownership_by_id.iter_mut() {
+            let before = entry.holders.len();
+            entry.holders.retain(|holder| holder != window_label);
+            if entry.holders.len() != before {
+                affected_paths.push(entry.ownership.canonical_path().to_protocol_string());
+            }
+            if entry.holders.is_empty() {
+                empty_ids.push(ownership_id.clone());
+            }
+        }
+        for ownership_id in empty_ids {
+            if let Some(entry) = state.ownership_by_id.remove(&ownership_id) {
+                state
+                    .ownership_id_by_path
+                    .remove(entry.ownership.canonical_path().as_path());
+                drop(entry.ownership);
+            }
+        }
+        affected_paths
+    }
+
+    pub(crate) fn holder_count(&self, ownership_id: &str) -> usize {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.ownership_by_id.get(ownership_id).map(|e| e.holders.len()))
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn peer_windows_for_path(
+        &self,
+        canonical_path: &str,
+        exclude_window: &str,
+    ) -> Vec<String> {
+        let key = normalize_protocol_path_key(canonical_path);
+        let Ok(state) = self.state.lock() else {
+            return Vec::new();
         };
         state
-            .ownership_id_by_path
-            .remove(ownership.canonical_path().as_path());
-        drop(ownership);
-        Ok(())
+            .ownership_by_id
+            .values()
+            .find(|entry| entry.canonical_path_protocol == key)
+            .map(|entry| {
+                entry
+                    .holders
+                    .iter()
+                    .filter(|holder| holder.as_str() != exclude_window)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn all_holders_for_path(&self, canonical_path: &str) -> Vec<String> {
+        let key = normalize_protocol_path_key(canonical_path);
+        let Ok(state) = self.state.lock() else {
+            return Vec::new();
+        };
+        state
+            .ownership_by_id
+            .values()
+            .find(|entry| entry.canonical_path_protocol == key)
+            .map(|entry| entry.holders.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn host_window_for_path(&self, canonical_path: &str) -> Option<String> {
+        let key = normalize_protocol_path_key(canonical_path);
+        let state = self.state.lock().ok()?;
+        state
+            .ownership_by_id
+            .values()
+            .find(|entry| entry.canonical_path_protocol == key)
+            .and_then(|entry| entry.holders.first().cloned())
     }
 }
 
 #[tauri::command]
 pub(crate) async fn acquire_desktop_project_ownership(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     manager: tauri::State<'_, Arc<DesktopProjectOwnershipManager>>,
     runtime_bridge: tauri::State<'_, Arc<ProjectRuntimeBridgeManager>>,
     project_path: String,
 ) -> Result<DesktopOwnershipAcquisition, DesktopProjectOwnershipError> {
-    let manager = Arc::clone(manager.inner());
+    let manager_for_task = Arc::clone(manager.inner());
     let endpoint = runtime_bridge.endpoint().to_owned();
-    tauri::async_runtime::spawn_blocking(move || {
-        manager.acquire_connectable(Path::new(&project_path), &endpoint)
+    let window_label = window.label().to_owned();
+    let acquisition = tauri::async_runtime::spawn_blocking(move || {
+        manager_for_task.acquire_connectable_for_window(
+            Path::new(&project_path),
+            &endpoint,
+            &window_label,
+        )
     })
     .await
     .map_err(|_| DesktopProjectOwnershipError::from(ProjectOwnershipError::LoadFailed))?
-    .map_err(DesktopProjectOwnershipError::from)
+    .map_err(DesktopProjectOwnershipError::from)?;
+    if let DesktopOwnershipAcquisition::Shared { canonical_path, .. } = &acquisition {
+        crate::window_manager::notify_doc_peers_changed(&app, manager.inner(), canonical_path);
+    }
+    Ok(acquisition)
 }
 
 #[tauri::command]
 pub(crate) async fn acquire_desktop_project_ownership_for_save(
+    window: tauri::WebviewWindow,
     manager: tauri::State<'_, Arc<DesktopProjectOwnershipManager>>,
     project_path: String,
 ) -> Result<DesktopOwnershipAcquisition, DesktopProjectOwnershipError> {
     let manager = Arc::clone(manager.inner());
-    tauri::async_runtime::spawn_blocking(move || manager.acquire_for_save(Path::new(&project_path)))
-        .await
-        .map_err(|_| DesktopProjectOwnershipError::from(ProjectOwnershipError::LoadFailed))?
-        .map_err(DesktopProjectOwnershipError::from)
+    let window_label = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        manager.acquire_for_save_in_window(Path::new(&project_path), &window_label)
+    })
+    .await
+    .map_err(|_| DesktopProjectOwnershipError::from(ProjectOwnershipError::LoadFailed))?
+    .map_err(DesktopProjectOwnershipError::from)
 }
 
 #[tauri::command]
@@ -362,12 +562,26 @@ pub(crate) fn make_desktop_project_ownership_connectable(
 
 #[tauri::command]
 pub(crate) fn release_desktop_project_ownership(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     manager: tauri::State<'_, Arc<DesktopProjectOwnershipManager>>,
     ownership_id: String,
 ) -> Result<(), DesktopProjectOwnershipError> {
-    manager
-        .release(&ownership_id)
-        .map_err(DesktopProjectOwnershipError::from)
+    let affected_path = manager
+        .release_for_window(&ownership_id, window.label())
+        .map_err(DesktopProjectOwnershipError::from)?;
+    if let Some(canonical_path) = affected_path {
+        crate::window_manager::notify_doc_peers_changed(&app, manager.inner(), &canonical_path);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn get_desktop_project_holder_count(
+    manager: tauri::State<'_, Arc<DesktopProjectOwnershipManager>>,
+    ownership_id: String,
+) -> usize {
+    manager.holder_count(&ownership_id)
 }
 
 impl ProjectOwnership {
@@ -1324,6 +1538,147 @@ mod tests {
             DesktopOwnershipAcquisition::Acquired { .. }
         ));
         assert!(holder.wait().success());
+    }
+
+    #[test]
+    fn desktop_manager_shares_ownership_across_windows_and_releases_when_last_closes() {
+        let directory = TestDirectory::new();
+        let project = directory.path().join("shared.prg");
+        fs::write(&project, []).unwrap();
+        let manager = DesktopProjectOwnershipManager::default();
+        let endpoint = "tcp://127.0.0.1:41234";
+
+        let DesktopOwnershipAcquisition::Acquired {
+            ownership_id,
+            canonical_path,
+        } = manager
+            .acquire_connectable_for_window(&project, endpoint, "main")
+            .unwrap()
+        else {
+            panic!("first window must acquire ownership");
+        };
+        assert_eq!(manager.holder_count(&ownership_id), 1);
+        assert_eq!(
+            manager.host_window_for_path(&canonical_path).as_deref(),
+            Some("main")
+        );
+
+        let second = manager
+            .acquire_connectable_for_window(&project, endpoint, "window-2")
+            .unwrap();
+        assert_eq!(
+            second,
+            DesktopOwnershipAcquisition::Shared {
+                ownership_id: ownership_id.clone(),
+                canonical_path: canonical_path.clone(),
+                peer_window_label: "main".to_owned(),
+            }
+        );
+        assert_eq!(manager.holder_count(&ownership_id), 2);
+        assert_eq!(
+            manager.peer_windows_for_path(&canonical_path, "main"),
+            vec!["window-2".to_owned()]
+        );
+        assert_eq!(
+            manager.peer_windows_for_path(&canonical_path, "window-2"),
+            vec!["main".to_owned()]
+        );
+
+        // 同一窗口重复打开仍返回 AlreadyOwned，保持单窗口内切标签语义
+        let duplicate_same_window = manager
+            .acquire_connectable_for_window(&project, endpoint, "window-2")
+            .unwrap();
+        assert_eq!(
+            duplicate_same_window,
+            DesktopOwnershipAcquisition::AlreadyOwned {
+                ownership_id: ownership_id.clone(),
+                canonical_path: canonical_path.clone(),
+            }
+        );
+
+        // 主窗口关闭后，OS 文件锁仍由 window-2 持有，host 自动转移到 window-2
+        manager.release_for_window(&ownership_id, "main").unwrap();
+        assert_eq!(manager.holder_count(&ownership_id), 1);
+        assert_eq!(
+            manager.host_window_for_path(&canonical_path).as_deref(),
+            Some("window-2")
+        );
+        let still_busy = acquire_project_ownership_with_retry_delay(
+            &project,
+            ProjectOwner::UnconnectableHolder,
+            Duration::from_millis(1),
+        )
+        .unwrap_err();
+        assert_eq!(still_busy.code(), "PROJECT_BUSY");
+
+        // 最后一个窗口释放后，OS 文件锁才真正释放
+        manager
+            .release_for_window(&ownership_id, "window-2")
+            .unwrap();
+        assert_eq!(manager.holder_count(&ownership_id), 0);
+        acquire_project_ownership_with_retry_delay(
+            &project,
+            ProjectOwner::UnconnectableHolder,
+            Duration::from_millis(1),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn desktop_manager_release_all_for_window_cleans_up_destroyed_window() {
+        let directory = TestDirectory::new();
+        let shared = directory.path().join("shared.prg");
+        let sole = directory.path().join("sole.prg");
+        fs::write(&shared, []).unwrap();
+        fs::write(&sole, []).unwrap();
+        let manager = DesktopProjectOwnershipManager::default();
+        let endpoint = "tcp://127.0.0.1:41234";
+
+        let DesktopOwnershipAcquisition::Acquired {
+            ownership_id: shared_id,
+            ..
+        } = manager
+            .acquire_connectable_for_window(&shared, endpoint, "main")
+            .unwrap()
+        else {
+            panic!("main must acquire shared");
+        };
+        let _ = manager
+            .acquire_connectable_for_window(&shared, endpoint, "window-2")
+            .unwrap();
+        let DesktopOwnershipAcquisition::Acquired {
+            ownership_id: sole_id,
+            ..
+        } = manager
+            .acquire_connectable_for_window(&sole, endpoint, "window-2")
+            .unwrap()
+        else {
+            panic!("window-2 must acquire sole");
+        };
+
+        let affected = manager.release_all_for_window("window-2");
+        assert_eq!(affected.len(), 2);
+        assert_eq!(manager.holder_count(&shared_id), 1);
+        assert_eq!(manager.holder_count(&sole_id), 0);
+
+        // sole 已被释放，shared 仍被 main 持有
+        acquire_project_ownership_with_retry_delay(
+            &sole,
+            ProjectOwner::UnconnectableHolder,
+            Duration::from_millis(1),
+        )
+        .unwrap();
+        assert_eq!(
+            acquire_project_ownership_with_retry_delay(
+                &shared,
+                ProjectOwner::UnconnectableHolder,
+                Duration::from_millis(1),
+            )
+            .unwrap_err()
+            .code(),
+            "PROJECT_BUSY"
+        );
+        manager.release_for_window(&shared_id, "main").unwrap();
     }
 
     fn spawn_holder(project_path: &Path, exit_after_millis: Option<u64>) -> HolderProcess {

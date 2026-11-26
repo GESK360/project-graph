@@ -155,6 +155,37 @@ stageTable:
     noSortActive: 預設順序
     columnFilterAria: 排序與篩選
     toggleSortAria: 切換遞增或遞減排序
+    matchPrefix: 符合以下
+    conjunctionAll: 全部條件
+    conjunctionAny: 任一條件
+    addCondition: 新增篩選條件
+    selectFieldTitle: 選擇欄位
+    dragConditionAria: 拖曳調整篩選條件順序
+    removeCondition: 移除條件
+    expandCondition: 展開條件
+    collapseCondition: 收合條件
+    inputPlaceholder: 請輸入
+    selectPlaceholder: 請選擇
+    noOptions: 尚無選項
+    columnQuickFilters: 欄快速篩選
+    opContains: 包含
+    opNotContains: 不包含
+    opEq: 等於
+    opNeq: 不等於
+    opAfter: 晚於
+    opBefore: 早於
+    opOnOrAfter: 晚於等於
+    opOnOrBefore: 早於等於
+    opIsEmpty: 為空
+    opIsNotEmpty: 不為空
+    datePreset_today: 今天
+    datePreset_yesterday: 昨天
+    datePreset_tomorrow: 明天
+    datePreset_past_7_days: 最近 7 天
+    datePreset_past_30_days: 最近 30 天
+    datePreset_this_week: 本週
+    datePreset_this_month: 本月
+    datePreset_this_year: 今年
   selection:
     selectAllAria: 全選表格
     rowsCount: 已選 {{count}} 列
@@ -548,6 +579,7 @@ tabMenu:
   closeLeft: 關閉左邊分頁
   closeOthers: 關閉其他分頁
   closeRight: 關閉右邊分頁
+  openInNewWindow: 喺新視窗打開
 
 settings:
   title: 設定
@@ -2209,6 +2241,9 @@ keyBinds:
     description: '新增一個草稿檔案，並切換到該檔案
 
       若目前檔案未儲存則無法切換'
+  newWindow:
+    title: 新開視窗
+    description: 開多一個 Flux Graph 視窗，支援多視窗同時睇同編輯唔同或者同一個工程檔
   newFileAtCurrentProjectDir:
     title: 在目前專案目錄下新增檔案
     description: '在目前專案目錄下建立一個專案檔，並切換到該檔案（用於快速建立檔案）
@@ -2934,6 +2969,7 @@ workspace:
   copy: 複製
   paste: 貼上
   copyLink: 複製指向頁面嘅連結
+  openInNewWindow: 喺新視窗打開
   moveOrCopy: 移動或複製…
   demote: 降級做子頁
   promote: 升級做上層頁

@@ -586,6 +586,7 @@ export const shortcutKeysGroups: ShortcutKeysGroup[] = [
       "openCurrentProjectFileFolder",
       "renameWorkspaceEntry",
       "newDraft",
+      "newWindow",
       "newFileAtCurrentProjectDir",
       "undo",
       "redo",

@@ -58,6 +58,10 @@ export function createTableViewId(): string {
   return `view_${crypto.randomUUID()}`;
 }
 
+export function createFilterConditionId(): string {
+  return `flt_${crypto.randomUUID()}`;
+}
+
 export function pickNextSelectOptionColor(existingOptions: readonly TableSelectOption[] = []): SelectOptionColor {
   const usedCounts = new Map<string, number>();
   for (const color of SELECT_OPTION_COLORS) {
@@ -162,6 +166,58 @@ export interface TableColumnFilter {
   includeEmpty: boolean;
 }
 
+export type TableFilterConjunction = "and" | "or";
+
+export type TableFilterOperator =
+  | "contains"
+  | "not_contains"
+  | "eq"
+  | "neq"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "is_empty"
+  | "is_not_empty";
+
+export type TableDateFilterPreset =
+  | "today"
+  | "yesterday"
+  | "tomorrow"
+  | "past_7_days"
+  | "past_30_days"
+  | "this_week"
+  | "this_month"
+  | "this_year";
+
+export const TABLE_DATE_FILTER_PRESETS: readonly TableDateFilterPreset[] = [
+  "today",
+  "yesterday",
+  "tomorrow",
+  "past_7_days",
+  "past_30_days",
+  "this_week",
+  "this_month",
+  "this_year",
+];
+
+export type TableColumnFilterKind = "number" | "images" | "date" | "select" | "relation" | "text";
+
+export interface TableFilterCondition {
+  id: string;
+  columnId: string;
+  operator: TableFilterOperator;
+  value?: string;
+  values?: string[];
+  datePreset?: TableDateFilterPreset;
+  collapsed?: boolean;
+}
+
+export interface TableFilterGroup {
+  conjunction: TableFilterConjunction;
+  conditions: TableFilterCondition[];
+}
+
 export interface TableViewSchema {
   id: string;
   name: string;
@@ -173,6 +229,7 @@ export interface TableViewSchema {
   columnGroups?: TableColumnGroup[];
   sort?: TableSortConfig | null;
   filters?: TableColumnFilter[];
+  filterGroup?: TableFilterGroup;
   rowHeight?: TableRowHeight;
   kanban?: TableKanbanViewConfig;
   gantt?: TableGanttViewConfig;
@@ -279,6 +336,7 @@ export function normalizeTableData(raw: unknown): PrgTableData {
   }
 
   const validColumnIds = new Set<string>([...ALL_SYSTEM_COLUMN_IDS, ...columns.map((c) => c.id)]);
+  const columnById = new Map<string, TableColumnSchema>(columns.map((c) => [c.id, c]));
   const views: TableViewSchema[] = [];
   const seenViewIds = new Set<string>();
 
@@ -376,6 +434,51 @@ export function normalizeTableData(raw: unknown): PrgTableData {
         }
       }
 
+      let filterGroup: TableFilterGroup | undefined;
+      if (view.filterGroup && typeof view.filterGroup === "object" && !Array.isArray(view.filterGroup)) {
+        const rawGroup = view.filterGroup as Record<string, unknown>;
+        const conjunction: TableFilterConjunction = rawGroup.conjunction === "or" ? "or" : "and";
+        const conditions: TableFilterCondition[] = [];
+        const seenCondIds = new Set<string>();
+        if (Array.isArray(rawGroup.conditions)) {
+          for (const rawCond of rawGroup.conditions) {
+            if (!rawCond || typeof rawCond !== "object" || Array.isArray(rawCond)) continue;
+            const cond = rawCond as Record<string, unknown>;
+            if (typeof cond.id !== "string" || !isSafeColumnKey(cond.id) || seenCondIds.has(cond.id)) continue;
+            if (typeof cond.columnId !== "string" || !validColumnIds.has(cond.columnId)) continue;
+            const kind = getColumnFilterKind(cond.columnId, columnById.get(cond.columnId));
+            const allowedOps = getFilterOperatorsForKind(kind);
+            if (typeof cond.operator !== "string" || !allowedOps.includes(cond.operator as TableFilterOperator)) {
+              continue;
+            }
+            const operator = cond.operator as TableFilterOperator;
+            const value = typeof cond.value === "string" ? cond.value : undefined;
+            const values = Array.isArray(cond.values)
+              ? Array.from(new Set(cond.values.filter((v): v is string => typeof v === "string")))
+              : undefined;
+            const datePreset =
+              typeof cond.datePreset === "string" &&
+              TABLE_DATE_FILTER_PRESETS.includes(cond.datePreset as TableDateFilterPreset)
+                ? (cond.datePreset as TableDateFilterPreset)
+                : undefined;
+            const collapsed = cond.collapsed === true ? true : undefined;
+            seenCondIds.add(cond.id);
+            conditions.push({
+              id: cond.id,
+              columnId: cond.columnId,
+              operator,
+              ...(value !== undefined ? { value } : {}),
+              ...(values && values.length > 0 ? { values } : {}),
+              ...(datePreset ? { datePreset } : {}),
+              ...(collapsed ? { collapsed: true } : {}),
+            });
+          }
+        }
+        if (conditions.length > 0 || conjunction === "or") {
+          filterGroup = { conjunction, conditions };
+        }
+      }
+
       const rowHeight: TableRowHeight | undefined =
         view.rowHeight === "compact" || view.rowHeight === "medium" || view.rowHeight === "tall"
           ? view.rowHeight
@@ -470,6 +573,7 @@ export function normalizeTableData(raw: unknown): PrgTableData {
         ...(columnGroups.length > 0 ? { columnGroups } : {}),
         ...(sort ? { sort } : {}),
         ...(filters.length > 0 ? { filters } : {}),
+        ...(filterGroup ? { filterGroup } : {}),
         ...(rowHeight ? { rowHeight } : {}),
         ...(kanban && Object.keys(kanban).length > 0 ? { kanban } : {}),
         ...(gantt && Object.keys(gantt).length > 0 ? { gantt } : {}),
@@ -793,11 +897,296 @@ function getRowSortKey(
   }
 }
 
+const NUMBER_FILTER_OPERATORS: readonly TableFilterOperator[] = [
+  "eq",
+  "neq",
+  "gt",
+  "gte",
+  "lt",
+  "lte",
+  "is_empty",
+  "is_not_empty",
+];
+
+const IMAGES_FILTER_OPERATORS: readonly TableFilterOperator[] = ["is_empty", "is_not_empty"];
+
+const DATE_FILTER_OPERATORS: readonly TableFilterOperator[] = [
+  "eq",
+  "neq",
+  "gt",
+  "lt",
+  "gte",
+  "lte",
+  "is_empty",
+  "is_not_empty",
+];
+
+const GENERAL_FILTER_OPERATORS: readonly TableFilterOperator[] = [
+  "contains",
+  "not_contains",
+  "eq",
+  "neq",
+  "is_empty",
+  "is_not_empty",
+];
+
+export function getColumnFilterKind(columnId: string, customCol?: TableColumnSchema): TableColumnFilterKind {
+  if (columnId === "images") return "images";
+  if (columnId === "createdAt" || columnId === "updatedAt") return "date";
+  if (columnId === "parents" || columnId === "children" || columnId === "outer" || columnId === "inner") {
+    return "relation";
+  }
+  if (columnId === "name" || !customCol) return "text";
+  switch (customCol.type) {
+    case "number":
+      return "number";
+    case "date":
+      return "date";
+    case "select":
+    case "multi_select":
+      return "select";
+    case "formula":
+    case "text":
+    default:
+      return "text";
+  }
+}
+
+export function getFilterOperatorsForKind(kind: TableColumnFilterKind): readonly TableFilterOperator[] {
+  switch (kind) {
+    case "number":
+      return NUMBER_FILTER_OPERATORS;
+    case "images":
+      return IMAGES_FILTER_OPERATORS;
+    case "date":
+      return DATE_FILTER_OPERATORS;
+    case "select":
+    case "relation":
+    case "text":
+    default:
+      return GENERAL_FILTER_OPERATORS;
+  }
+}
+
+export function getDefaultFilterOperator(kind: TableColumnFilterKind): TableFilterOperator {
+  switch (kind) {
+    case "number":
+    case "date":
+      return "eq";
+    case "images":
+      return "is_not_empty";
+    case "select":
+    case "relation":
+    case "text":
+    default:
+      return "contains";
+  }
+}
+
+export function operatorRequiresValue(operator: TableFilterOperator): boolean {
+  return operator !== "is_empty" && operator !== "is_not_empty";
+}
+
+export function resolveDateFilterPresetRange(
+  preset: TableDateFilterPreset,
+  now: Date = new Date(),
+): { startKey: string; endKey: string } {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const todayKey = toLocalDateKey(today);
+  switch (preset) {
+    case "today":
+      return { startKey: todayKey, endKey: todayKey };
+    case "yesterday": {
+      const y = addDaysToDateKey(todayKey, -1);
+      return { startKey: y, endKey: y };
+    }
+    case "tomorrow": {
+      const tm = addDaysToDateKey(todayKey, 1);
+      return { startKey: tm, endKey: tm };
+    }
+    case "past_7_days":
+      return { startKey: addDaysToDateKey(todayKey, -6), endKey: todayKey };
+    case "past_30_days":
+      return { startKey: addDaysToDateKey(todayKey, -29), endKey: todayKey };
+    case "this_week": {
+      const daysSinceMonday = (today.getDay() + 6) % 7;
+      const startKey = addDaysToDateKey(todayKey, -daysSinceMonday);
+      return { startKey, endKey: addDaysToDateKey(startKey, 6) };
+    }
+    case "this_month": {
+      const start = new Date(today.getFullYear(), today.getMonth(), 1);
+      const end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+      return { startKey: toLocalDateKey(start), endKey: toLocalDateKey(end) };
+    }
+    case "this_year":
+      return { startKey: `${today.getFullYear()}-01-01`, endKey: `${today.getFullYear()}-12-31` };
+  }
+}
+
+export function isFilterConditionActive(condition: TableFilterCondition, customCol?: TableColumnSchema): boolean {
+  const kind = getColumnFilterKind(condition.columnId, customCol);
+  if (!getFilterOperatorsForKind(kind).includes(condition.operator)) return false;
+  if (!operatorRequiresValue(condition.operator)) return true;
+  switch (kind) {
+    case "number": {
+      const trimmed = condition.value?.trim() ?? "";
+      return trimmed.length > 0 && Number.isFinite(Number(trimmed));
+    }
+    case "date":
+      return Boolean(condition.datePreset || (condition.value && parseLocalDateKey(condition.value)));
+    case "select":
+    case "relation":
+      return Array.isArray(condition.values) && condition.values.length > 0;
+    case "text":
+      return (condition.value?.trim().length ?? 0) > 0;
+    case "images":
+      return true;
+  }
+}
+
+export function countActiveFilterConditions(
+  filterGroup: TableFilterGroup | null | undefined,
+  columns: readonly TableColumnSchema[],
+): number {
+  if (!filterGroup || filterGroup.conditions.length === 0) return 0;
+  const colMap = new Map(columns.map((c) => [c.id, c]));
+  let count = 0;
+  for (const cond of filterGroup.conditions) {
+    if (isFilterConditionActive(cond, colMap.get(cond.columnId))) {
+      count++;
+    }
+  }
+  return count;
+}
+
+export function matchesFilterCondition(
+  row: TableFilterSortRow,
+  condition: TableFilterCondition,
+  customCol?: TableColumnSchema,
+  now: Date = new Date(),
+): boolean {
+  if (!isFilterConditionActive(condition, customCol)) return true;
+  const kind = getColumnFilterKind(condition.columnId, customCol);
+
+  switch (kind) {
+    case "images":
+      return condition.operator === "is_empty" ? row.images.length === 0 : row.images.length > 0;
+
+    case "number": {
+      const raw = customCol ? row.tableFields?.[customCol.id] : undefined;
+      const hasNum = typeof raw === "number" && Number.isFinite(raw);
+      if (condition.operator === "is_empty") return !hasNum;
+      if (condition.operator === "is_not_empty") return hasNum;
+      const target = Number(condition.value!.trim());
+      switch (condition.operator) {
+        case "eq":
+          return hasNum && raw === target;
+        case "neq":
+          return !hasNum || raw !== target;
+        case "gt":
+          return hasNum && raw > target;
+        case "gte":
+          return hasNum && raw >= target;
+        case "lt":
+          return hasNum && raw < target;
+        case "lte":
+          return hasNum && raw <= target;
+        default:
+          return true;
+      }
+    }
+
+    case "date": {
+      const rowKey = resolveRowDateKey(row, condition.columnId, customCol);
+      if (condition.operator === "is_empty") return rowKey === null;
+      if (condition.operator === "is_not_empty") return rowKey !== null;
+      const range = condition.datePreset
+        ? resolveDateFilterPresetRange(condition.datePreset, now)
+        : (() => {
+            const parsed = parseLocalDateKey(condition.value ?? "");
+            if (!parsed) return null;
+            const key = toLocalDateKey(parsed);
+            return { startKey: key, endKey: key };
+          })();
+      if (!range) return true;
+      switch (condition.operator) {
+        case "eq":
+          return rowKey !== null && rowKey >= range.startKey && rowKey <= range.endKey;
+        case "neq":
+          return rowKey === null || rowKey < range.startKey || rowKey > range.endKey;
+        case "gt":
+          return rowKey !== null && rowKey > range.endKey;
+        case "gte":
+          return rowKey !== null && rowKey >= range.startKey;
+        case "lt":
+          return rowKey !== null && rowKey < range.startKey;
+        case "lte":
+          return rowKey !== null && rowKey <= range.endKey;
+        default:
+          return true;
+      }
+    }
+
+    case "select":
+    case "relation": {
+      const { tokens, isEmpty } = getRowFilterTokens(row, condition.columnId, customCol);
+      if (condition.operator === "is_empty") return isEmpty;
+      if (condition.operator === "is_not_empty") return !isEmpty;
+      const selected = new Set(condition.values ?? []);
+      const rowKeys = new Set(tokens.map((t) => t.key));
+      switch (condition.operator) {
+        case "contains":
+          return tokens.some((t) => selected.has(t.key));
+        case "not_contains":
+          return !tokens.some((t) => selected.has(t.key));
+        case "eq":
+          return rowKeys.size === selected.size && Array.from(selected).every((id) => rowKeys.has(id));
+        case "neq":
+          return !(rowKeys.size === selected.size && Array.from(selected).every((id) => rowKeys.has(id)));
+        default:
+          return true;
+      }
+    }
+
+    case "text":
+    default: {
+      let text = "";
+      if (condition.columnId === "name") {
+        text = row.primaryText.trim();
+      } else if (customCol?.type === "formula") {
+        const cell = row.formulaValues?.[customCol.id];
+        text = !cell || cell.kind === "empty" ? "" : cell.displayText.trim();
+      } else if (customCol) {
+        const raw = row.tableFields?.[customCol.id];
+        text = typeof raw === "string" ? raw.trim() : typeof raw === "number" ? String(raw) : "";
+      }
+      if (condition.operator === "is_empty") return text.length === 0;
+      if (condition.operator === "is_not_empty") return text.length > 0;
+      const target = (condition.value ?? "").trim().toLowerCase();
+      const lower = text.toLowerCase();
+      switch (condition.operator) {
+        case "contains":
+          return lower.length > 0 && lower.includes(target);
+        case "not_contains":
+          return !lower.includes(target);
+        case "eq":
+          return lower === target;
+        case "neq":
+          return lower !== target;
+        default:
+          return true;
+      }
+    }
+  }
+}
+
 export function applyTableFiltersAndSort<T extends TableFilterSortRow>(
   rows: readonly T[],
   columns: readonly TableColumnSchema[],
   filters: readonly TableColumnFilter[],
   sort: TableSortConfig | null,
+  filterGroup?: TableFilterGroup | null,
+  now?: Date,
 ): T[] {
   const customColMap = new Map(columns.map((col) => [col.id, col]));
   let result: T[] = [...rows];
@@ -813,6 +1202,24 @@ export function applyTableFiltersAndSort<T extends TableFilterSortRow>(
         return tokens.some((token) => allowed.has(token.key));
       }),
     );
+  }
+
+  if (filterGroup && filterGroup.conditions.length > 0) {
+    const effectiveConditions = filterGroup.conditions.filter((cond) =>
+      isFilterConditionActive(cond, customColMap.get(cond.columnId)),
+    );
+    if (effectiveConditions.length > 0) {
+      const evalNow = now ?? new Date();
+      result = result.filter((row) =>
+        filterGroup.conjunction === "or"
+          ? effectiveConditions.some((cond) =>
+              matchesFilterCondition(row, cond, customColMap.get(cond.columnId), evalNow),
+            )
+          : effectiveConditions.every((cond) =>
+              matchesFilterCondition(row, cond, customColMap.get(cond.columnId), evalNow),
+            ),
+      );
+    }
   }
 
   if (sort) {

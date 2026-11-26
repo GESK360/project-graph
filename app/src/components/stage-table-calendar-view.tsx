@@ -1,11 +1,11 @@
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { StageTableFilterToolbarPopover } from "@/components/stage-table-filter-popover";
 import {
   StageTableColumnIcon,
   StageTableFieldValueDisplay,
   StageTableFieldVisibilityList,
-  StageTableFilterToolbarPopover,
   StageTableSortToolbarPopover,
   getRowDisplayTitle,
   getViewOptionPillAccentClass,
@@ -23,8 +23,10 @@ import {
   type CalendarDisplayMode,
   type TableCalendarViewConfig,
   type TableColumnFilter,
+  type TableColumnGroup,
   type TableColumnSchema,
   type TableFields,
+  type TableFilterGroup,
   type TableSortConfig,
   type TableViewSchema,
 } from "@/types/table";
@@ -61,10 +63,13 @@ export function StageTableCalendarView({
   allRows,
   rows,
   allColumnIds,
+  filterableColumnIds,
+  filterColumnGroups,
   visibleColumnIds,
   customColumns,
   customColumnMap,
   activeFilters,
+  activeFilterGroup,
   activeSort,
   selectedRowIds,
   getColumnLabel,
@@ -78,10 +83,13 @@ export function StageTableCalendarView({
   allRows: readonly StageTableRow[];
   rows: readonly StageTableRow[];
   allColumnIds: readonly string[];
+  filterableColumnIds: readonly string[];
+  filterColumnGroups: readonly TableColumnGroup[];
   visibleColumnIds: readonly string[];
   customColumns: readonly TableColumnSchema[];
   customColumnMap: ReadonlyMap<string, TableColumnSchema>;
   activeFilters: readonly TableColumnFilter[];
+  activeFilterGroup: TableFilterGroup;
   activeSort: TableSortConfig | null;
   selectedRowIds: ReadonlySet<string>;
   getColumnLabel: (colId: string) => string;
@@ -465,11 +473,22 @@ export function StageTableCalendarView({
         <div className="bg-border mx-0.5 h-3.5 w-px shrink-0" />
 
         <StageTableFilterToolbarPopover
-          allColumnIds={allColumnIds}
+          filterableColumnIds={filterableColumnIds}
+          columnGroups={filterColumnGroups}
+          customColumns={customColumns}
           customColumnMap={customColumnMap}
           allRows={allRows}
           activeFilters={activeFilters}
+          filterGroup={activeFilterGroup}
           getColumnLabel={getColumnLabel}
+          onSetConjunction={(conj) => project.stageTable.setFilterConjunction?.(conj)}
+          onAddCondition={(cid) => project.stageTable.addFilterCondition?.(cid)}
+          onUpdateCondition={(id, patch) => project.stageTable.updateFilterCondition?.(id, patch)}
+          onRemoveCondition={(id) => project.stageTable.removeFilterCondition?.(id)}
+          onToggleConditionCollapse={(id) => project.stageTable.toggleFilterConditionCollapsed?.(id)}
+          onReorderConditions={(dragId, targetId, pos) =>
+            project.stageTable.reorderFilterConditions?.(dragId, targetId, pos)
+          }
           onSetColumnFilter={(cid, flt) => project.stageTable.setColumnFilter?.(cid, flt)}
           onClearAllFilters={() => project.stageTable.clearAllFilters?.()}
           t={t}

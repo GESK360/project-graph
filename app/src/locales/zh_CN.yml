@@ -159,6 +159,37 @@ stageTable:
     noSortActive: 默认顺序
     columnFilterAria: 排序与筛选
     toggleSortAria: 切换升序或降序
+    matchPrefix: 满足以下
+    conjunctionAll: 全部条件
+    conjunctionAny: 任一条件
+    addCondition: 添加筛选条件
+    selectFieldTitle: 选择字段
+    dragConditionAria: 拖动调整筛选条件顺序
+    removeCondition: 删除条件
+    expandCondition: 展开条件
+    collapseCondition: 收起条件
+    inputPlaceholder: 请输入
+    selectPlaceholder: 请选择
+    noOptions: 暂无选项
+    columnQuickFilters: 列快捷筛选
+    opContains: 包含
+    opNotContains: 不包含
+    opEq: 等于
+    opNeq: 不等于
+    opAfter: 晚于
+    opBefore: 早于
+    opOnOrAfter: 晚于等于
+    opOnOrBefore: 早于等于
+    opIsEmpty: 为空
+    opIsNotEmpty: 不为空
+    datePreset_today: 今天
+    datePreset_yesterday: 昨天
+    datePreset_tomorrow: 明天
+    datePreset_past_7_days: 最近 7 天
+    datePreset_past_30_days: 最近 30 天
+    datePreset_this_week: 本周
+    datePreset_this_month: 本月
+    datePreset_this_year: 今年
   selection:
     selectAllAria: 全选表格
     rowsCount: 已选 {{count}} 行
@@ -509,6 +540,7 @@ tabMenu:
   closeLeft: 关闭左侧标签页
   closeOthers: 关闭其它标签页
   closeRight: 关闭右侧标签页
+  openInNewWindow: 在新窗口中打开
 
 settings:
   title: 设置
@@ -1952,6 +1984,10 @@ keyBinds:
     description: |
       新建一个草稿文件，并切换到该文件
       若当前文件未保存则无法切换
+  newWindow:
+    title: 新建窗口
+    description: |
+      打开一个新的 Flux Graph 窗口，支持多窗口同时查看与编辑不同或同一工程文件
   startCollaboration:
     title: 开始协作
     description: |
@@ -3220,6 +3256,7 @@ workspace:
   copy: 复制
   paste: 粘贴
   copyLink: 复制指向页面的链接
+  openInNewWindow: 在新窗口中打开
   moveOrCopy: 移动或复制…
   demote: 降级子页
   promote: 升级子页

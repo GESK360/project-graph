@@ -1,6 +1,5 @@
 import { cn } from "./utils/cn";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 import { isMac } from "./utils/platform";
 import { DragFileIntoStageEngine } from "./core/service/dataManageService/dragFileIntoStageEngine/dragFileIntoStageEngine";
@@ -42,7 +41,7 @@ export const DropWindowCover = ({ project }: { project: Project }) => {
       rafRef.current = null;
     };
 
-    const unlistenPromise = listen<PgDragDropPayload>("pg-drag-drop", async (event) => {
+    const unlistenPromise = getCurrentWindow().listen<PgDragDropPayload>("pg-drag-drop", async (event) => {
       const payload = event.payload;
       const size = await getCurrentWindow().outerSize();
       const scaleFactor = await getCurrentWindow().scaleFactor();

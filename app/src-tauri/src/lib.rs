@@ -8,6 +8,7 @@ pub mod project_reference_store;
 #[cfg(target_os = "windows")]
 mod custom_drag_drop;
 mod project_runtime_bridge;
+mod window_manager;
 
 pub mod ownership_helper {
     pub use crate::project_ownership::{
@@ -17,7 +18,7 @@ pub mod ownership_helper {
 }
 
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::{Emitter, Manager, State};
+use tauri::{Manager, State, WindowEvent};
 
 #[cfg(target_os = "linux")]
 use std::path::Path;
@@ -25,34 +26,6 @@ use std::path::Path;
 pub static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 #[derive(Default)]
 struct PendingOpenFiles(Mutex<Vec<String>>);
-
-/// 第二个实例把命令行参数转发过来后，把主窗口拉到前台。
-/// Windows 上前台权限已由 single-instance 插件通过 AllowSetForegroundWindow 让渡，
-/// 因此这里直接 set_focus 即可；最小化或被隐藏的窗口需要先 show/unminimize。
-#[cfg(desktop)]
-fn focus_main_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-    }
-}
-
-/// 双击 .prg 文件时系统会把文件路径作为参数交给新进程。
-/// 新进程已被 single-instance 插件拦下并转发参数，这里把路径还原成前端已有的
-/// open-file-from-os 事件，交由前端在已运行的实例里打开标签页。
-#[cfg(desktop)]
-fn forward_open_files(app: &tauri::AppHandle, args: &[String]) {
-    for arg in args.iter().skip(1) {
-        if !arg.to_lowercase().ends_with(".prg") {
-            continue;
-        }
-        if !std::path::Path::new(arg).exists() {
-            continue;
-        }
-        let _ = app.emit("open-file-from-os", arg.clone());
-    }
-}
 
 #[tauri::command]
 fn take_pending_open_files(state: State<PendingOpenFiles>) -> Vec<String> {
@@ -93,19 +66,19 @@ pub fn run() {
     // 单实例插件必须第一个注册：它在 setup 阶段创建具名互斥体。
     // 第二个实例（例如点击外部 prg:// 链接、双击 .prg 文件）不会再启动进程，
     // 而是把命令行参数转发给已运行实例后立即退出。
-    // 开启 deep-link 特性后，转发过来的 URL 会先交给 deep-link 插件，
-    // 由它触发 deep-link://new-url 事件，前端 onOpenUrl 即可跳转到对应节点。
+    // 转发后的深链接与文件打开事件不再全窗口广播，而是定向投递到最后获得焦点的窗口。
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-        focus_main_window(app);
-        forward_open_files(app, &args);
+        window_manager::route_single_instance_args(app, &args);
     }));
 
-    builder
+    let ownership_manager = Arc::new(project_ownership::DesktopProjectOwnershipManager::default());
+    let window_manager_state = Arc::new(window_manager::WindowManagerState::default());
+
+    let app = builder
         .manage(PendingOpenFiles::default())
-        .manage(Arc::new(
-            project_ownership::DesktopProjectOwnershipManager::default(),
-        ))
+        .manage(Arc::clone(&ownership_manager))
+        .manage(Arc::clone(&window_manager_state))
         .manage(cmd::mcp::McpStdioManager::default())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -115,17 +88,34 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .on_window_event(|window, event| {
+            let app = window.app_handle();
+            let wm = app.state::<Arc<window_manager::WindowManagerState>>();
+            match event {
+                WindowEvent::Focused(true) => {
+                    wm.record_focus(window.label());
+                }
+                WindowEvent::Destroyed => {
+                    let ownership =
+                        app.state::<Arc<project_ownership::DesktopProjectOwnershipManager>>();
+                    wm.on_window_destroyed(app, ownership.inner(), window.label());
+                }
+                _ => {}
+            }
+        })
         .setup(|app| {
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 macos_resize_cursor::install(&window)?;
             }
+            let ownership =
+                Arc::clone(app.state::<Arc<project_ownership::DesktopProjectOwnershipManager>>().inner());
             app.manage(project_runtime_bridge::ProjectRuntimeBridgeManager::start(
                 app.handle().clone(),
+                ownership,
             )?);
             #[cfg(debug_assertions)]
             {
-                app.handle().plugin(tauri_plugin_devtools::init())?;
                 if let Some(window) = app.handle().get_webview_window("main") {
                     let _ = window.show();
                 }
@@ -135,8 +125,11 @@ pub fn run() {
                 app.handle().plugin(tauri_plugin_cli::init())?;
                 app.handle().plugin(tauri_plugin_process::init())?;
                 app.handle().plugin(tauri_plugin_system_info::init())?;
-                app.handle()
-                    .plugin(tauri_plugin_window_state::Builder::new().build())?;
+                app.handle().plugin(
+                    tauri_plugin_window_state::Builder::new()
+                        .with_filter(|label| label == "main")
+                        .build(),
+                )?;
                 app.handle()
                     .plugin(tauri_plugin_updater::Builder::new().build())?;
                 app.handle()
@@ -164,6 +157,22 @@ pub fn run() {
             project_ownership::acquire_desktop_project_ownership_for_save,
             project_ownership::make_desktop_project_ownership_connectable,
             project_ownership::release_desktop_project_ownership,
+            project_ownership::get_desktop_project_holder_count,
+            window_manager::create_new_window,
+            window_manager::take_window_init_payload,
+            window_manager::activate_window_routing,
+            window_manager::get_window_role,
+            window_manager::focus_last_active_window,
+            window_manager::focus_window_by_label,
+            window_manager::list_open_windows,
+            window_manager::broadcast_document_patch,
+            window_manager::broadcast_document_saved,
+            window_manager::request_peer_document_snapshot,
+            window_manager::respond_peer_document_snapshot,
+            window_manager::coordinate_workspace_action,
+            window_manager::respond_workspace_action,
+            window_manager::broadcast_workspace_event,
+            window_manager::write_project_file_atomic,
             project_reference_store::load_project_reference_snapshot,
             project_reference_store::save_project_reference_snapshot,
             project_runtime_bridge::respond_project_runtime_bridge,
@@ -190,6 +199,14 @@ pub fn run() {
             #[cfg(desktop)]
             cmd::mcp::mcp_stdio_stop,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|_app_handle, _event| {
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        if let tauri::RunEvent::Opened { urls } = _event {
+            let url_strings: Vec<String> = urls.into_iter().map(|u| u.to_string()).collect();
+            window_manager::route_opened_urls(_app_handle, url_strings);
+        }
+    });
 }

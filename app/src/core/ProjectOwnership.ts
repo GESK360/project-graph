@@ -11,11 +11,18 @@ import type { URI } from "vscode-uri";
 
 type ProjectOwner = { kind: "connectable"; endpoint: string } | { kind: "unconnectable_holder" };
 
-type DesktopOwnershipAcquisition = {
-  status: "acquired" | "already_owned";
-  ownershipId: string;
-  canonicalPath: string;
-};
+type DesktopOwnershipAcquisition =
+  | {
+      status: "acquired" | "already_owned";
+      ownershipId: string;
+      canonicalPath: string;
+    }
+  | {
+      status: "shared";
+      ownershipId: string;
+      canonicalPath: string;
+      peerWindowLabel: string;
+    };
 
 export class ProjectOwnershipError extends Error {
   readonly name = "ProjectOwnershipError";
@@ -41,6 +48,7 @@ export class ProjectOwnershipLease {
   constructor(
     readonly ownershipId: string,
     readonly canonicalPath: string,
+    readonly peerWindowLabel?: string,
   ) {}
 
   async makeConnectable(): Promise<void> {
@@ -81,6 +89,22 @@ export class ProjectOwnershipLifecycle {
 
   get canonicalPath() {
     return this.ownership?.canonicalPath;
+  }
+
+  get peerWindowLabel() {
+    return this.ownership?.peerWindowLabel;
+  }
+
+  async getHolderCount(): Promise<number> {
+    if (!this.ownership || !isTauri()) return 1;
+    try {
+      const count = await invoke<number>("get_desktop_project_holder_count", {
+        ownershipId: this.ownership.ownershipId,
+      });
+      return typeof count === "number" && count > 0 ? count : 1;
+    } catch {
+      return 1;
+    }
   }
 
   attach(ownership: ProjectOwnershipLease): void {
@@ -267,7 +291,8 @@ export async function loadWithProjectOwnership<T>(
     };
   }
 
-  const ownership = new ProjectOwnershipLease(acquisition.ownershipId, acquisition.canonicalPath);
+  const peerWindowLabel = acquisition.status === "shared" ? acquisition.peerWindowLabel : undefined;
+  const ownership = new ProjectOwnershipLease(acquisition.ownershipId, acquisition.canonicalPath, peerWindowLabel);
   try {
     return { status: "opened", value: await load(ownership) };
   } catch (error) {

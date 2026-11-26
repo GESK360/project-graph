@@ -91,6 +91,7 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { URI } from "vscode-uri";
 import { CollaborationService } from "./service/collaboration/CollaborationService";
 import { AutoSaveBackupService } from "./service/dataFileService/AutoSaveBackupService";
+import { LocalDocumentSync } from "./service/dataFileService/LocalDocumentSync";
 import { generateThumbnail } from "./service/dataGenerateService/generateThumbnail";
 import { ProjectOwnershipLifecycle, ProjectOwnershipLease } from "./ProjectOwnership";
 import { compareProjectVersions, parseProjectFile } from "./ProjectFile";
@@ -174,6 +175,14 @@ export class Project extends Tab {
 
   get canonicalProjectPath() {
     return this.projectOwnership.canonicalPath;
+  }
+
+  get projectOwnershipPeerWindow() {
+    return this.projectOwnership.peerWindowLabel;
+  }
+
+  getOwnershipHolderCount(): Promise<number> {
+    return this.projectOwnership.getHolderCount();
   }
 
   activateOpenRuntimeHost() {
@@ -359,6 +368,7 @@ export class Project extends Tab {
       await this.fs.write(this.uri, await this.getFileContent(options));
       this.docIdNeedsSave = false;
       this.projectState = ProjectState.Saved;
+      void LocalDocumentSync.notifySaved(this);
     } finally {
       this.isSaving = false;
     }
@@ -375,6 +385,10 @@ export class Project extends Tab {
       await this.projectOwnership.saveAs(targetUri, () => fileSystemProvider.write(targetUri, content));
       this.docIdNeedsSave = false;
       this.projectState = ProjectState.Saved;
+      if (this.canonicalProjectPath) {
+        LocalDocumentSync.rebind(this, this.canonicalProjectPath);
+      }
+      void LocalDocumentSync.notifySaved(this);
     } finally {
       this.isSaving = false;
     }
@@ -566,6 +580,7 @@ export class Project extends Tab {
   }
 
   override async dispose() {
+    await LocalDocumentSync.flushAndDetach(this);
     await this.projectOwnership.dispose(async () => {
       const cleanupErrors: unknown[] = [];
       try {

@@ -11,7 +11,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Project, ProjectState } from "@/core/Project";
 import { isResourceTab, Tab } from "@/core/Tab";
 import { TabWorkspace } from "@/core/TabWorkspace";
-import { GlobalMenu, onNewDraft } from "@/core/service/GlobalMenu";
+import { GlobalMenu, onNewDraft, onNewWindow } from "@/core/service/GlobalMenu";
 import { flushSettingsLoadErrors, Settings } from "@/core/service/Settings";
 import { Telemetry } from "@/core/service/Telemetry";
 import { Themes } from "@/core/service/Themes";
@@ -29,12 +29,12 @@ import {
 } from "@/state";
 import WelcomeWindow from "@/sub/WelcomeWindow";
 import { getVersion } from "@tauri-apps/api/app";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { arch, platform, version } from "@tauri-apps/plugin-os";
 import { restoreStateCurrent, saveWindowState, StateFlags } from "@tauri-apps/plugin-window-state";
 import { useAtom } from "jotai";
-import { Copy, Minus, Pin, PinOff, Search, Square, X } from "lucide-react";
+import { AppWindow, Copy, Minus, Pin, PinOff, Search, Square, X } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -141,8 +141,10 @@ export default function App() {
       setUiScalePercent(value);
     });
 
-    // 恢复窗口位置大小
-    restoreStateCurrent(StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED);
+    // 仅主窗口恢复窗口位置大小，避免新开的副窗口与主窗口位置冲突
+    if (getCurrentWindow().label === "main") {
+      restoreStateCurrent(StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED);
+    }
 
     // setIsWide(window.innerWidth / window.innerHeight > 1.8);
 
@@ -249,12 +251,19 @@ export default function App() {
       .onCloseRequested(async (e) => {
         e.preventDefault();
 
-        // 检查是否有未保存的项目
-        const unsavedTabs = tabs.filter(
+        // 检查是否有仅由本窗口独占持有的未保存项目（若其他窗口也开着同一文件，由最后一个关闭的窗口负责保存提示）
+        const unsavedCandidates = tabs.filter(
           (tab): tab is Project =>
             tab instanceof Project &&
             (tab.projectState === ProjectState.Unsaved || tab.projectState === ProjectState.Stashed),
         );
+        const unsavedTabs: Project[] = [];
+        for (const candidate of unsavedCandidates) {
+          const holderCount = await candidate.getOwnershipHolderCount();
+          if (holderCount <= 1) {
+            unsavedTabs.push(candidate);
+          }
+        }
 
         if (unsavedTabs.length > 0) {
           // 弹出警告对话框
@@ -287,8 +296,10 @@ export default function App() {
           return;
         }
         Telemetry.event("关闭应用");
-        // 保存窗口位置
-        await saveWindowState(StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED);
+        // 仅主窗口持久化位置大小
+        if (getCurrentWindow().label === "main") {
+          await saveWindowState(StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED);
+        }
         await getCurrentWindow().destroy();
       })
       .then((it) => {
@@ -323,20 +334,23 @@ export default function App() {
 
   const closeTab = async (tab: Tab) => {
     if (tab instanceof Project) {
-      if (tab.projectState === ProjectState.Stashed) {
-        toast("文件还没有保存，但已经暂存，在“最近打开的文件”中可恢复文件");
-      } else if (tab.projectState === ProjectState.Unsaved) {
-        // 切换到这个文件
-        setActiveTab(tab);
-        const response = await Dialog.buttons("是否保存更改？", decodeURI(tab.uri.toString()), [
-          { id: "cancel", label: "取消", variant: "ghost" },
-          { id: "discard", label: "不保存", variant: "destructive" },
-          { id: "save", label: "保存" },
-        ]);
-        if (response === "save") {
-          await tab.save();
-        } else if (response === "cancel") {
-          return false;
+      const holderCount = await tab.getOwnershipHolderCount();
+      if (holderCount <= 1) {
+        if (tab.projectState === ProjectState.Stashed) {
+          toast("文件还没有保存，但已经暂存，在“最近打开的文件”中可恢复文件");
+        } else if (tab.projectState === ProjectState.Unsaved) {
+          // 切换到这个文件
+          setActiveTab(tab);
+          const response = await Dialog.buttons("是否保存更改？", decodeURI(tab.uri.toString()), [
+            { id: "cancel", label: "取消", variant: "ghost" },
+            { id: "discard", label: "不保存", variant: "destructive" },
+            { id: "save", label: "保存" },
+          ]);
+          if (response === "save") {
+            await tab.save();
+          } else if (response === "cancel") {
+            return false;
+          }
         }
       }
     }
@@ -483,6 +497,7 @@ export default function App() {
                 className="scrollbar-hide pointer-events-auto flex h-full max-w-[60%] min-w-0 shrink-0 cursor-grab items-center overflow-x-auto rounded-full empty:hidden active:cursor-grabbing"
                 onMouseDown={handleTitleBarMouseDown}
               />
+              <TitlebarNewWindowButton />
               <TitlebarSearchButton />
             </div>
           </div>
@@ -581,6 +596,29 @@ function WindowResizeHandles() {
       />
     </div>
   ));
+}
+
+function TitlebarNewWindowButton() {
+  if (!isTauri()) return null;
+  return (
+    <div className="pointer-events-auto flex h-full shrink-0 items-center">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground h-7 gap-1.5 rounded-full px-2.5 text-xs"
+            aria-label="新建窗口"
+            onClick={() => void onNewWindow()}
+          >
+            <AppWindow className="size-3.5" />
+            <span className="hidden sm:inline">新窗口</span>
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">新建窗口 (Ctrl+Alt+N)</TooltipContent>
+      </Tooltip>
+    </div>
+  );
 }
 
 /**

@@ -12,6 +12,7 @@ import type {
 } from "@/core/service/workspace/WorkspaceManager";
 import { cn } from "@/utils/cn";
 import {
+  AppWindow,
   ArrowDown,
   ArrowUp,
   ChevronDown,
@@ -58,6 +59,7 @@ export interface WorkspaceRowClick {
 
 export interface WorkspaceTreeActions {
   openPage: (node: WorkspacePageNode) => void;
+  openInNewWindow?: (node: WorkspacePageNode) => void;
   toggleDir: (node: WorkspaceDirNode) => void;
   clickRow: (click: WorkspaceRowClick) => void;
   /** 右键某行时先确保它被选中，菜单才会作用在它（或它所在的选择集）上 */
@@ -649,6 +651,15 @@ function PageRow({ row, actions, drag, ...state }: TreeState & RowProps) {
         </button>
       </ContextMenuTrigger>
       <ContextMenuContent>
+        {actions.openInNewWindow && (
+          <>
+            <ContextMenuItem disabled={batch} onSelect={() => actions.openInNewWindow?.(node)}>
+              <AppWindow />
+              {t("openInNewWindow")}
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+          </>
+        )}
         <ContextMenuItem disabled={batch} onSelect={() => actions.renameNode(node)}>
           <Pencil />
           {t("rename")}
