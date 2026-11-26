@@ -143,10 +143,20 @@ export function deserialize(originalJson: any, extra?: any): any {
     if (Reflect.hasMetadata(passObjectSymbol, class_)) {
       args.push(json);
     } else {
-      for (const key in json) {
+      const orderedArgs: any[] = [];
+      const fallbackArgs: any[] = [];
+      let hasIndexedArgs = false;
+      for (const key of Object.keys(json)) {
         if (key === "_") continue;
-        args.push(json[key]);
+        const index = Reflect.getMetadata(serializableSymbol, class_.prototype, key);
+        if (typeof index === "number") {
+          orderedArgs[index] = json[key];
+          hasIndexedArgs = true;
+        } else {
+          fallbackArgs.push(json[key]);
+        }
       }
+      args.push(...(hasIndexedArgs ? orderedArgs : fallbackArgs));
     }
     if (Reflect.hasMetadata(passExtraAtLastArgSymbol, class_)) {
       args.push(extra);

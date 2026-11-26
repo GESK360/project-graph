@@ -98,6 +98,23 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export function canonicalJsonStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => (item === undefined ? "null" : canonicalJsonStringify(item))).join(",")}]`;
+  }
+  if (isPlainObject(value)) {
+    const keys = Object.keys(value).sort();
+    const parts: string[] = [];
+    for (const key of keys) {
+      const child = value[key];
+      if (child === undefined) continue;
+      parts.push(`${JSON.stringify(key)}:${canonicalJsonStringify(child)}`);
+    }
+    return `{${parts.join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
 function isSerializedStageItem(value: unknown): value is Record<string, unknown> & { _: string; uuid: string } {
   return isPlainObject(value) && typeof value._ === "string" && typeof value.uuid === "string";
 }
@@ -260,7 +277,7 @@ export function computeUuidStageDiff(
   for (const uuid of nextDoc.order) {
     const obj = nextDoc.objects[uuid];
     if (!obj) continue;
-    const serialized = JSON.stringify(obj);
+    const serialized = canonicalJsonStringify(obj);
     nextStrings.set(uuid, serialized);
     if (prevStrings.get(uuid) !== serialized) {
       upserted[uuid] = obj;
@@ -528,7 +545,7 @@ class LocalDocumentSyncManager {
     if (hasPeers) {
       for (const uuid of shadowDoc.order) {
         const obj = shadowDoc.objects[uuid];
-        if (obj) shadowStrings.set(uuid, JSON.stringify(obj));
+        if (obj) shadowStrings.set(uuid, canonicalJsonStringify(obj));
       }
     }
 
@@ -538,10 +555,10 @@ class LocalDocumentSyncManager {
       pathKey,
       shadowDoc,
       shadowStrings,
-      lastTableJson: hasPeers ? JSON.stringify(project.table) : "",
-      lastTagsJson: hasPeers ? JSON.stringify(project.tags) : "",
-      lastRefsJson: hasPeers ? JSON.stringify(project.references) : "",
-      lastMetaJson: hasPeers ? JSON.stringify(project.metadata) : "",
+      lastTableJson: hasPeers ? canonicalJsonStringify(project.table) : "",
+      lastTagsJson: hasPeers ? canonicalJsonStringify(project.tags) : "",
+      lastRefsJson: hasPeers ? canonicalJsonStringify(project.references) : "",
+      lastMetaJson: hasPeers ? canonicalJsonStringify(project.metadata) : "",
       lastReadme: project.readme,
       knownAttachmentIds: new Set(project.attachments.keys()),
       lastAppliedRevision: 0,
@@ -646,14 +663,14 @@ class LocalDocumentSyncManager {
     const shadowStrings = new Map<string, string>();
     for (const uuid of shadowDoc.order) {
       const obj = shadowDoc.objects[uuid];
-      if (obj) shadowStrings.set(uuid, JSON.stringify(obj));
+      if (obj) shadowStrings.set(uuid, canonicalJsonStringify(obj));
     }
     entry.shadowDoc = shadowDoc;
     entry.shadowStrings = shadowStrings;
-    entry.lastTableJson = JSON.stringify(project.table);
-    entry.lastTagsJson = JSON.stringify(project.tags);
-    entry.lastRefsJson = JSON.stringify(project.references);
-    entry.lastMetaJson = JSON.stringify(project.metadata);
+    entry.lastTableJson = canonicalJsonStringify(project.table);
+    entry.lastTagsJson = canonicalJsonStringify(project.tags);
+    entry.lastRefsJson = canonicalJsonStringify(project.references);
+    entry.lastMetaJson = canonicalJsonStringify(project.metadata);
     entry.lastReadme = project.readme;
     entry.knownAttachmentIds = new Set(project.attachments.keys());
     entry.shadowReady = true;
@@ -709,10 +726,10 @@ class LocalDocumentSyncManager {
     );
 
     const hasStageChanges = Object.keys(upserted).length > 0 || removed.length > 0 || orderChanged;
-    const nextTableJson = JSON.stringify(project.table);
-    const nextTagsJson = JSON.stringify(project.tags);
-    const nextRefsJson = JSON.stringify(project.references);
-    const nextMetaJson = JSON.stringify(project.metadata);
+    const nextTableJson = canonicalJsonStringify(project.table);
+    const nextTagsJson = canonicalJsonStringify(project.tags);
+    const nextRefsJson = canonicalJsonStringify(project.references);
+    const nextMetaJson = canonicalJsonStringify(project.metadata);
 
     const tableChanged = nextTableJson !== entry.lastTableJson;
     const tagsChanged = nextTagsJson !== entry.lastTagsJson;
@@ -797,22 +814,22 @@ class LocalDocumentSyncManager {
 
       if (patch.table !== undefined) {
         project.table = structuredClone(patch.table);
-        entry.lastTableJson = JSON.stringify(project.table);
+        entry.lastTableJson = canonicalJsonStringify(project.table);
       }
       if (patch.tags !== undefined) {
         project.tags = [...patch.tags];
-        entry.lastTagsJson = JSON.stringify(project.tags);
+        entry.lastTagsJson = canonicalJsonStringify(project.tags);
         if (project.getService?.("tagManager")) {
           project.tagManager.reset(project.tags);
         }
       }
       if (patch.references !== undefined) {
         project.references = structuredClone(patch.references);
-        entry.lastRefsJson = JSON.stringify(project.references);
+        entry.lastRefsJson = canonicalJsonStringify(project.references);
       }
       if (patch.metadata !== undefined) {
         project.metadata = structuredClone(patch.metadata);
-        entry.lastMetaJson = JSON.stringify(project.metadata);
+        entry.lastMetaJson = canonicalJsonStringify(project.metadata);
       }
       if (patch.readme !== undefined) {
         project.readme = patch.readme === null ? undefined : patch.readme;
@@ -838,7 +855,7 @@ class LocalDocumentSyncManager {
         }
         if (patch.upserted) {
           for (const [uuid, obj] of Object.entries(patch.upserted)) {
-            entry.shadowStrings.set(uuid, JSON.stringify(obj));
+            entry.shadowStrings.set(uuid, canonicalJsonStringify(obj));
           }
         }
         if (project.getService?.("historyManager")) {
@@ -875,7 +892,7 @@ class LocalDocumentSyncManager {
     try {
       if (event.docId && !entry.project.metadata.docId) {
         entry.project.metadata = { ...entry.project.metadata, docId: event.docId };
-        entry.lastMetaJson = JSON.stringify(entry.project.metadata);
+        entry.lastMetaJson = canonicalJsonStringify(entry.project.metadata);
       }
       entry.project.docIdNeedsSave = false;
       entry.project.projectState = PROJECT_STATE_SAVED;

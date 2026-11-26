@@ -146,6 +146,55 @@ describe("对象序列化", () => {
     expect(typeof b.meta).toBe("object");
     expect(b.meta).toBe(b.mirrorMeta);
   });
+
+  test("反序列化非 passObject 类时按 @serializable 声明顺序传参，不受 JSON 键顺序影响", () => {
+    class RgbaLike {
+      @serializable
+      public r: number;
+      @serializable
+      public g: number;
+      @serializable
+      public b: number;
+      @serializable
+      public a: number;
+
+      constructor(r: number, g: number, b: number, a: number = 1) {
+        this.r = r;
+        this.g = g;
+        this.b = b;
+        this.a = a;
+      }
+    }
+
+    // 模拟 Rust serde_json::Value(BTreeMap) 按字母序重排后的 JSON 对象
+    const alphabeticallySorted = {
+      _: "RgbaLike",
+      a: 1,
+      b: 235,
+      g: 99,
+      r: 37,
+    };
+    const restored = deserialize(alphabeticallySorted) as RgbaLike;
+    expect(restored).toBeInstanceOf(RgbaLike);
+    expect(restored.r).toBe(37);
+    expect(restored.g).toBe(99);
+    expect(restored.b).toBe(235);
+    expect(restored.a).toBe(1);
+
+    // 缺失尾部可选字段且混入未知字段时，不破坏默认参数
+    const withDefaultAndExtra = {
+      _: "RgbaLike",
+      b: 68,
+      extraLegacyKey: 999,
+      g: 68,
+      r: 239,
+    };
+    const restoredDefault = deserialize(withDefaultAndExtra) as RgbaLike;
+    expect(restoredDefault.r).toBe(239);
+    expect(restoredDefault.g).toBe(68);
+    expect(restoredDefault.b).toBe(68);
+    expect(restoredDefault.a).toBe(1);
+  });
 });
 
 describe("数组序列化", () => {

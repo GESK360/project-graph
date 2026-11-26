@@ -61,6 +61,7 @@ import { Rectangle } from "@graphif/shapes";
 import { serialize } from "@graphif/serializer";
 import {
   applyUuidStagePatch,
+  canonicalJsonStringify,
   computeUuidStageDiff,
   exportLiveDocumentSnapshot,
   hydrateProjectFromSnapshot,
@@ -69,6 +70,20 @@ import {
   serializeStageToUuidDoc,
   uuidDocToSerializerArray,
 } from "./LocalDocumentSync";
+
+function sortJsonKeysRecursively<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => sortJsonKeysRecursively(item)) as T;
+  }
+  if (typeof value === "object" && value !== null) {
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      sorted[key] = sortJsonKeysRecursively((value as Record<string, unknown>)[key]);
+    }
+    return sorted as T;
+  }
+  return value;
+}
 
 function createMockProject(): Project {
   const project = {
@@ -194,7 +209,7 @@ describe("LocalDocumentSync", () => {
     const doc1 = serializeStageToUuidDoc(project.stage);
     const strings1 = new Map<string, string>();
     for (const uuid of doc1.order) {
-      strings1.set(uuid, JSON.stringify(doc1.objects[uuid]));
+      strings1.set(uuid, canonicalJsonStringify(doc1.objects[uuid]));
     }
 
     // 只修改 nodeA 文本，新增一条涂鸦
@@ -318,5 +333,91 @@ describe("LocalDocumentSync", () => {
     expect(target.attachments.has("att-1")).toBe(true);
     expect(target.attachments.get("att-1")?.type).toBe("image/png");
     expect(await target.attachments.get("att-1")?.text()).toBe("hello-image-bytes");
+  });
+
+  it("preserves exact PenStroke and TextNode colors across Rust serde_json alphabetical key sorting in patches and snapshots", async () => {
+    const window1 = createMockProject();
+    const blueStroke = new PenStroke(window1, {
+      uuid: "10101010-1010-4010-8010-101010101010",
+      segments: [new PenStrokeSegment(new Vector(10, 20), 1), new PenStrokeSegment(new Vector(80, 90), 0.8)],
+      color: Color.fromCss("#2563EB"),
+      width: 5,
+    });
+    const redStroke = new PenStroke(window1, {
+      uuid: "20202020-2020-4020-8020-202020202020",
+      segments: [new PenStrokeSegment(new Vector(30, 40), 1), new PenStrokeSegment(new Vector(120, 140), 1)],
+      color: Color.fromCss("#EF4444"),
+      width: 8,
+    });
+    const blackStroke = new PenStroke(window1, {
+      uuid: "30303030-3030-4030-8030-303030303030",
+      segments: [new PenStrokeSegment(new Vector(0, 0), 1), new PenStrokeSegment(new Vector(50, 50), 1)],
+      color: Color.fromCss("#000000"),
+      width: 3,
+    });
+    const coloredNode = new TextNode(window1, {
+      uuid: "40404040-4040-4040-8040-404040404040",
+      text: "Colored",
+      color: Color.fromCss("#F97316"),
+      collisionBox: new CollisionBox([new Rectangle(new Vector(100, 100), new Vector(120, 40))]),
+    });
+    window1.stage = [blueStroke, redStroke, blackStroke, coloredNode];
+
+    // 1. 模拟“在新窗口中打开”时经 Rust serde_json::Value(BTreeMap) 字典序重排的快照同步
+    const snapshot = await exportLiveDocumentSnapshot(window1);
+    const rustSortedSnapshot = sortJsonKeysRecursively(snapshot);
+
+    const window2 = createMockProject();
+    hydrateProjectFromSnapshot(window2, rustSortedSnapshot);
+
+    const w2Blue = window2.stage.find((o) => o.uuid === blueStroke.uuid) as PenStroke;
+    const w2Red = window2.stage.find((o) => o.uuid === redStroke.uuid) as PenStroke;
+    const w2Black = window2.stage.find((o) => o.uuid === blackStroke.uuid) as PenStroke;
+    const w2Node = window2.stage.find((o) => o.uuid === coloredNode.uuid) as TextNode;
+
+    expect(w2Blue.color.toArray()).toEqual([37, 99, 235, 1]);
+    expect(w2Red.color.toArray()).toEqual([239, 68, 68, 1]);
+    expect(w2Black.color.toArray()).toEqual([0, 0, 0, 1]);
+    expect(w2Node.color.toArray()).toEqual([249, 115, 22, 1]);
+
+    // 2. 模拟实时绘制新笔迹后经 Rust serde_json::Value 广播的增量 patch 同步
+    const baseDoc = serializeStageToUuidDoc(window1.stage);
+    const baseStrings = new Map<string, string>();
+    for (const uuid of baseDoc.order) {
+      baseStrings.set(uuid, canonicalJsonStringify(baseDoc.objects[uuid]));
+    }
+
+    const greenStroke = new PenStroke(window1, {
+      uuid: "50505050-5050-4050-8050-505050505050",
+      segments: [new PenStrokeSegment(new Vector(15, 25), 1), new PenStrokeSegment(new Vector(75, 95), 0.6)],
+      color: Color.fromCss("#22C55E"),
+      width: 6,
+    });
+    window1.stage.push(greenStroke);
+
+    const nextDocFromW1 = serializeStageToUuidDoc(window1.stage);
+    const diffFromW1 = computeUuidStageDiff(baseStrings, baseDoc.order, nextDocFromW1);
+    const rustSortedPatch = sortJsonKeysRecursively({
+      upserted: diffFromW1.upserted,
+      removed: diffFromW1.removed,
+      order: nextDocFromW1.order,
+    });
+
+    const { nextDoc: w2NextDoc, dirtyUuids } = applyUuidStagePatch(baseDoc, rustSortedPatch);
+    reconcileProjectStage(window2, w2NextDoc, dirtyUuids);
+
+    const w2Green = window2.stage.find((o) => o.uuid === greenStroke.uuid) as PenStroke;
+    expect(w2Green.color.toArray()).toEqual([34, 197, 94, 1]);
+
+    // 3. 验证窗口 2 接收字典序重排的 patch 后，再次 diff 不会把未改动笔迹误判为脏对象
+    const w2ShadowStrings = new Map<string, string>(baseStrings);
+    for (const [uuid, obj] of Object.entries(rustSortedPatch.upserted)) {
+      w2ShadowStrings.set(uuid, canonicalJsonStringify(obj));
+    }
+    const w2Reserialized = serializeStageToUuidDoc(window2.stage);
+    const w2Diff = computeUuidStageDiff(w2ShadowStrings, w2NextDoc.order, w2Reserialized);
+    expect(Object.keys(w2Diff.upserted)).toEqual([]);
+    expect(w2Diff.removed).toEqual([]);
+    expect(w2Diff.orderChanged).toBe(false);
   });
 });
