@@ -629,13 +629,19 @@ settings:
       仍可移動和縮放視野、選擇及框選對象。
   enablePenPressure:
     title: 啟用壓感
-    description: 開啟後，數位筆壓力會控制筆跡粗細；關閉後以固定粗細書寫。壓感曲線可調整壓力響應。
+    description: 開啟後，會根據下筆力度與書寫速度動態變化筆跡粗細（數位筆響應硬件壓力並結合速度，鼠標自動依據書寫速度模擬壓感）；關閉後以固定粗細書寫。
+  penPressureSensitivity:
+    title: 壓感粗細變化強度
+    description: 控制壓感帶來的筆跡粗細變化幅度。數值越高，輕重與快慢之間的筆鋒反差越明顯；設為 0 時保持均勻粗細。
+  penVelocitySensitivity:
+    title: 速度壓感靈敏度
+    description: 控制書寫速度對筆跡粗細的影響（慢寫加粗、快劃變細）。鼠標繪圖時以此模擬壓感，數位筆也會結合速度形成自然筆鋒；設為 0 時僅響應數位筆硬件壓力。
   hideCursorInPenMode:
-    title: 畫筆模式下隱藏鼠標
-    description: "開啟後，在使用畫筆繪製時會隱藏鼠標指針"
+    title: 畫筆模式下隱藏光標
+    description: "開啟後，在使用畫筆繪製期間會隱藏畫筆光標"
   penPressureCurve:
     title: 壓感曲線
-    description: 調整筆壓輸入的映射曲線，改變壓力與筆畫寬度的關係
+    description: 調整壓感輸入的映射曲線，改變力度或速度與筆跡寬度的對應關係
     options:
       fixed: 固定值（無壓感）
       linear: 線性（原始值）

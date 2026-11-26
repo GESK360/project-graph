@@ -610,13 +610,19 @@ settings:
       Navigasi kamera, pemilihan objek, dan pemilihan kotak tetap tersedia.
   enablePenPressure:
     title: Aktifkan tekanan pena
-    description: Jika aktif, tekanan pena mengatur ketebalan goresan. Jika nonaktif, ketebalan tetap. Kurva tekanan mengatur responsnya.
+    description: Jika aktif, ketebalan goresan menyesuaikan gaya tekan dan kecepatan menggambar (stylus memakai tekanan perangkat keras dan kecepatan; mouse mensimulasikan tekanan dari kecepatan). Jika nonaktif, ketebalan tetap.
+  penPressureSensitivity:
+    title: Intensitas Variasi Tekanan
+    description: Mengatur seberapa besar perubahan ketebalan goresan dari tekanan dan kecepatan. Nilai lebih tinggi menghasilkan kontras tipis-tebal lebih kuat; atur ke 0 untuk ketebalan seragam.
+  penVelocitySensitivity:
+    title: Sensitivitas Tekanan Kecepatan
+    description: Mengatur pengaruh kecepatan goresan terhadap ketebalan (lambat lebih tebal, cepat lebih tipis). Digunakan untuk simulasi tekanan pada mouse dan ujung goresan alami pada stylus; atur ke 0 untuk tekanan stylus saja.
   hideCursorInPenMode:
     title: Sembunyikan Kursor dalam Mode Kuas
-    description: "Saat diaktifkan, kursor mouse akan disembunyikan saat menggambar dengan kuas"
+    description: "Saat diaktifkan, kursor kuas akan disembunyikan selama menggambar"
   penPressureCurve:
     title: Kurva Tekanan Pena
-    description: Sesuaikan kurva pemetaan input tekanan pena, mengubah hubungan antara tekanan dan lebar goresan
+    description: Sesuaikan kurva pemetaan input tekanan untuk mengubah hubungan antara gaya/kecepatan dan lebar goresan
     options:
       fixed: Tetap (Tanpa sensitivitas tekanan)
       linear: Linear (Nilai mentah)

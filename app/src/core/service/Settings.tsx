@@ -643,6 +643,8 @@ export const settingsSchema = z.object({
   defaultFontFamily: projectToolSettingSchemas.defaultFontFamily,
   hideCursorInPenMode: z.boolean().default(false),
   enablePenPressure: z.boolean().default(true),
+  penPressureSensitivity: z.number().min(0).max(1).default(0.75),
+  penVelocitySensitivity: z.number().min(0).max(1).default(0.65),
   penPressureCurve: z
     .union([
       z.literal("fixed"),

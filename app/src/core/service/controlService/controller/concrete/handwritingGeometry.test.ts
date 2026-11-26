@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildVariableWidthStrokeOutline,
   eraserScreenDiameterToWorldRadius,
   getPenStrokeLength,
+  mapPressureToWidthFactor,
   normalizePenPressure,
   splitStrokeByEraser,
+  StrokePressureTracker,
   sweptEraserHitsStrokeSegment,
+  velocityToPressure,
 } from "./handwritingGeometry";
 
 describe("handwriting eraser geometry", () => {
@@ -129,5 +133,179 @@ describe("pen pressure mapping", () => {
     ["cubic", 0.015625],
   ] as const)("applies the %s curve", (curve, expected) => {
     expect(normalizePenPressure(0.25, curve, true)).toBeCloseTo(expected);
+  });
+
+  it("maps higher sensitivity to a broader thin-to-thick width factor range", () => {
+    const lowThin = mapPressureToWidthFactor(0.1, "linear", 0.3);
+    const lowThick = mapPressureToWidthFactor(0.9, "linear", 0.3);
+    const highThin = mapPressureToWidthFactor(0.1, "linear", 0.9);
+    const highThick = mapPressureToWidthFactor(0.9, "linear", 0.9);
+
+    expect(highThin).toBeLessThan(lowThin);
+    expect(highThick).toBeGreaterThan(lowThick);
+    expect(mapPressureToWidthFactor(0.2, "linear", 0)).toBe(1);
+    expect(mapPressureToWidthFactor(0.2, "fixed", 0.8)).toBe(1);
+  });
+
+  it("maps slower speed to higher simulated pressure than fast sweeps", () => {
+    expect(velocityToPressure(0.1)).toBeGreaterThan(velocityToPressure(0.7));
+    expect(velocityToPressure(0.7)).toBeGreaterThan(velocityToPressure(2.5));
+  });
+});
+
+describe("StrokePressureTracker", () => {
+  it("keeps uniform width factor 1 when pressure is disabled", () => {
+    const tracker = new StrokePressureTracker({
+      enabled: false,
+      curve: "linear",
+      sensitivity: 0.8,
+      velocitySensitivity: 0.7,
+    });
+    expect(tracker.start({ viewX: 0, viewY: 0, pressure: 0.2, pointerType: "pen", timeStamp: 100 })).toBe(1);
+    expect(tracker.update({ viewX: 30, viewY: 0, pressure: 0.9, pointerType: "pen", timeStamp: 110 }).widthFactor).toBe(
+      1,
+    );
+    expect(tracker.finish({ viewX: 60, viewY: 0, pressure: 0, pointerType: "pen", timeStamp: 120 })).toBe(1);
+  });
+
+  it("responds to hardware pen force and avoids full-width blobs on zero-pressure touchdown", () => {
+    const lightTracker = new StrokePressureTracker({
+      enabled: true,
+      curve: "linear",
+      sensitivity: 0.75,
+      velocitySensitivity: 0.5,
+    });
+    const zeroStart = lightTracker.start({ viewX: 0, viewY: 0, pressure: 0, pointerType: "pen", timeStamp: 100 });
+    expect(zeroStart).toBeLessThan(0.8);
+
+    const lightFactor = lightTracker.update({
+      viewX: 12,
+      viewY: 0,
+      pressure: 0.15,
+      pointerType: "pen",
+      timeStamp: 120,
+    }).widthFactor;
+
+    const heavyTracker = new StrokePressureTracker({
+      enabled: true,
+      curve: "linear",
+      sensitivity: 0.75,
+      velocitySensitivity: 0.5,
+    });
+    heavyTracker.start({ viewX: 0, viewY: 0, pressure: 0.9, pointerType: "pen", timeStamp: 100 });
+    const heavyFactor = heavyTracker.update({
+      viewX: 12,
+      viewY: 0,
+      pressure: 0.95,
+      pointerType: "pen",
+      timeStamp: 120,
+    }).widthFactor;
+
+    expect(heavyFactor).toBeGreaterThan(lightFactor * 1.8);
+  });
+
+  it("modulates stylus strokes with speed while keeping mouse strokes responsive to drawing speed", () => {
+    const slowMouse = new StrokePressureTracker({
+      enabled: true,
+      curve: "linear",
+      sensitivity: 0.75,
+      velocitySensitivity: 0.65,
+    });
+    slowMouse.start({ viewX: 0, viewY: 0, pressure: 0.5, pointerType: "mouse", timeStamp: 100 });
+    let slowWidth = 1;
+    for (let i = 1; i <= 6; i++) {
+      slowWidth = slowMouse.update({
+        viewX: i * 4,
+        viewY: 0,
+        pressure: 0.5,
+        pointerType: "mouse",
+        timeStamp: 100 + i * 30,
+      }).widthFactor;
+    }
+
+    const fastMouse = new StrokePressureTracker({
+      enabled: true,
+      curve: "linear",
+      sensitivity: 0.75,
+      velocitySensitivity: 0.65,
+    });
+    fastMouse.start({ viewX: 0, viewY: 0, pressure: 0.5, pointerType: "mouse", timeStamp: 100 });
+    let fastWidth = 1;
+    for (let i = 1; i <= 6; i++) {
+      fastWidth = fastMouse.update({
+        viewX: i * 32,
+        viewY: 0,
+        pressure: 0.5,
+        pointerType: "mouse",
+        timeStamp: 100 + i * 10,
+      }).widthFactor;
+    }
+    const fastRelease = fastMouse.finish({
+      viewX: 220,
+      viewY: 0,
+      pressure: 0,
+      pointerType: "mouse",
+      timeStamp: 170,
+    });
+
+    expect(slowWidth).toBeGreaterThan(1.05);
+    expect(fastWidth).toBeLessThan(0.65);
+    expect(fastRelease).toBeLessThanOrEqual(fastWidth);
+  });
+
+  it("keeps mouse strokes uniform when velocity sensitivity is set to zero", () => {
+    const tracker = new StrokePressureTracker({
+      enabled: true,
+      curve: "linear",
+      sensitivity: 0.8,
+      velocitySensitivity: 0,
+    });
+    expect(tracker.start({ viewX: 0, viewY: 0, pressure: 0.5, pointerType: "mouse", timeStamp: 100 })).toBe(1);
+    expect(
+      tracker.update({ viewX: 60, viewY: 0, pressure: 0.5, pointerType: "mouse", timeStamp: 110 }).widthFactor,
+    ).toBe(1);
+    expect(tracker.finish({ viewX: 100, viewY: 0, pressure: 0, pointerType: "mouse", timeStamp: 120 })).toBe(1);
+  });
+});
+
+describe("buildVariableWidthStrokeOutline", () => {
+  it("builds a wider polygon around higher-pressure regions and stays finite on hairpin turns", () => {
+    const outline = buildVariableWidthStrokeOutline(
+      [
+        { location: { x: 0, y: 0 }, pressure: 0.25 },
+        { location: { x: 40, y: 0 }, pressure: 0.8 },
+        { location: { x: 80, y: 0 }, pressure: 1.4 },
+      ],
+      10,
+      1,
+    );
+    expect(outline.length).toBeGreaterThan(10);
+    for (const pt of outline) {
+      expect(Number.isFinite(pt.x)).toBe(true);
+      expect(Number.isFinite(pt.y)).toBe(true);
+    }
+
+    const leftBandYs = outline.filter((pt) => pt.x >= -2 && pt.x <= 10).map((pt) => pt.y);
+    const rightBandYs = outline.filter((pt) => pt.x >= 70 && pt.x <= 85).map((pt) => pt.y);
+    const leftThickness = Math.max(...leftBandYs) - Math.min(...leftBandYs);
+    const rightThickness = Math.max(...rightBandYs) - Math.min(...rightBandYs);
+    expect(rightThickness).toBeGreaterThan(leftThickness * 3);
+
+    const hairpin = buildVariableWidthStrokeOutline(
+      [
+        { location: { x: 0, y: 0 }, pressure: 0.6 },
+        { location: { x: 40, y: 0 }, pressure: 1.2 },
+        { location: { x: 0, y: 2 }, pressure: 0.4 },
+      ],
+      10,
+      1,
+    );
+    expect(hairpin.length).toBeGreaterThan(10);
+    for (const pt of hairpin) {
+      expect(Number.isFinite(pt.x)).toBe(true);
+      expect(Number.isFinite(pt.y)).toBe(true);
+      expect(Math.abs(pt.x)).toBeLessThan(80);
+      expect(Math.abs(pt.y)).toBeLessThan(80);
+    }
   });
 });

@@ -15,8 +15,8 @@ import { getPointerSamples } from "../ControllerInput";
 import {
   eraserScreenDiameterToWorldRadius,
   getPenStrokeLength,
-  normalizePenPressure,
   splitStrokeByEraser,
+  StrokePressureTracker,
   sweptEraserHitsStrokeSegment,
 } from "./handwritingGeometry";
 
@@ -25,6 +25,9 @@ import {
  */
 export class ControllerPenStrokeDrawingClass extends ControllerClass {
   private _isUsing: boolean = false;
+  public get isUsing(): boolean {
+    return this._isUsing;
+  }
 
   /** 在移动的过程中，记录这一笔画的笔迹 */
   public currentSegments: PenStrokeSegment[] = [];
@@ -37,6 +40,8 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
   private activeEraser: HandwritingEraser | undefined;
   private lastEraserLocation: Vector | null = null;
   private erasedWhileUsingEraser = false;
+  private pressureTracker: StrokePressureTracker | null = null;
+  private hidCursorDuringStroke = false;
 
   /**
    * 初始化函数
@@ -70,14 +75,29 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
       this.eraseAlong(eraserLocation, eraserLocation, this.activeEraser);
     }
     if (Settings.hideCursorInPenMode) {
+      this.hidCursorDuringStroke = true;
       this.project.controller.setCursorName(CursorNameEnum.None);
     }
     const pressWorldLocation = this.project.renderer.transformView2World(new Vector(event.clientX, event.clientY));
-    const pressPressure =
-      event.pointerType === "pen"
-        ? normalizePenPressure(event.pressure, Settings.penPressureCurve, Settings.enablePenPressure)
-        : 1;
-    this.currentSegments = this.activeEraser ? [] : [new PenStrokeSegment(pressWorldLocation.clone(), pressPressure)];
+    if (this.activeEraser) {
+      this.pressureTracker = null;
+      this.currentSegments = [];
+    } else {
+      this.pressureTracker = new StrokePressureTracker({
+        enabled: Settings.enablePenPressure,
+        curve: Settings.penPressureCurve,
+        sensitivity: Settings.penPressureSensitivity,
+        velocitySensitivity: Settings.penVelocitySensitivity,
+      });
+      const pressPressure = this.pressureTracker.start({
+        viewX: event.clientX,
+        viewY: event.clientY,
+        pressure: event.pressure,
+        pointerType: event.pointerType,
+        timeStamp: event.timeStamp,
+      });
+      this.currentSegments = [new PenStrokeSegment(pressWorldLocation.clone(), pressPressure)];
+    }
     if (this.project.controller.pressingKeySet.has("shift")) {
       this.isDrawingLine = true;
     }
@@ -99,12 +119,20 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
       return;
     }
     for (const e of events) {
-      const isPen = e.pointerType === "pen";
       const worldLocation = this.project.renderer.transformView2World(new Vector(e.clientX, e.clientY));
-      const finalPressure = isPen
-        ? normalizePenPressure(e.pressure, Settings.penPressureCurve, Settings.enablePenPressure)
-        : 1;
-      this.currentSegments.push(new PenStrokeSegment(worldLocation, finalPressure));
+      if (this.pressureTracker) {
+        const { widthFactor, shouldKeep } = this.pressureTracker.update({
+          viewX: e.clientX,
+          viewY: e.clientY,
+          pressure: e.pressure,
+          pointerType: e.pointerType,
+          timeStamp: e.timeStamp,
+        });
+        if (!shouldKeep) continue;
+        this.currentSegments.push(new PenStrokeSegment(worldLocation, widthFactor));
+      } else {
+        this.currentSegments.push(new PenStrokeSegment(worldLocation, 1));
+      }
     }
   };
 
@@ -131,13 +159,25 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
     // const diagonal = first.distance(last);
     // toast(`涂鸦对角线长度: ${diagonal}`);
     const releaseWorldLocation = this.project.renderer.transformView2World(new Vector(event.clientX, event.clientY));
+    const pointerEvent = event as Partial<PointerEvent>;
+    const releasePressure = this.pressureTracker
+      ? this.pressureTracker.finish({
+          viewX: event.clientX,
+          viewY: event.clientY,
+          pressure: typeof pointerEvent.pressure === "number" ? pointerEvent.pressure : 0,
+          pointerType: typeof pointerEvent.pointerType === "string" ? pointerEvent.pointerType : "mouse",
+          timeStamp: event.timeStamp,
+        })
+      : (this.currentSegments[this.currentSegments.length - 1]?.pressure ?? 1);
     const lastSegment = this.currentSegments[this.currentSegments.length - 1];
     if (
       !lastSegment ||
       lastSegment.location.x !== releaseWorldLocation.x ||
       lastSegment.location.y !== releaseWorldLocation.y
     ) {
-      this.currentSegments.push(new PenStrokeSegment(releaseWorldLocation, lastSegment?.pressure ?? 1));
+      this.currentSegments.push(new PenStrokeSegment(releaseWorldLocation, releasePressure));
+    } else {
+      lastSegment.pressure = releasePressure;
     }
     const pathLength = getPenStrokeLength(
       this.currentSegments.map(({ location }) => ({ x: location.x, y: location.y })),
@@ -234,8 +274,13 @@ export class ControllerPenStrokeDrawingClass extends ControllerClass {
     this.lastEraserLocation = null;
     this.erasedWhileUsingEraser = false;
     this.activeEraser = undefined;
+    this.pressureTracker = null;
     this._isUsing = false;
     this.isDrawingLine = false;
+    if (this.hidCursorDuringStroke) {
+      this.hidCursorDuringStroke = false;
+      this.project.controller.setCursorName(CursorNameEnum.Default);
+    }
   }
 
   public mouseMoveOutWindowForcedShutdown(_outsideLocation: Vector) {

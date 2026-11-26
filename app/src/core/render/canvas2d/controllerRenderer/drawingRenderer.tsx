@@ -83,6 +83,10 @@ export class DrawingControllerRenderer {
   }
 
   private renderMouse(currentStrokeColor: Color) {
+    const isDrawing = this.project.controller.penStrokeDrawing.isUsing;
+    if (!this.project.controller.isPointerInsideCanvas && !isDrawing) {
+      return;
+    }
     const mouseLocation = MouseLocation.vector();
     const outlineColor =
       currentStrokeColor.a === 0 ? this.project.stageStyleManager.currentStyle.StageObjectBorder : currentStrokeColor;
@@ -106,14 +110,17 @@ export class DrawingControllerRenderer {
       return;
     }
 
-    const width = this.project.controller.penStrokeDrawing.getCurrentStrokeWidth();
-    this.project.shapeRenderer.renderCircle(
-      mouseLocation,
-      (width * this.project.camera.currentScale) / 2,
-      outlineColor,
-      Color.Transparent,
-      0,
-    );
+    // 默认情况下由自定义画笔 SVG 光标直接显示尖端色点；仅在“绘制时隐藏光标”生效期间补画画布圆点
+    if (Settings.hideCursorInPenMode && isDrawing) {
+      const width = this.project.controller.penStrokeDrawing.getCurrentStrokeWidth();
+      this.project.shapeRenderer.renderCircle(
+        mouseLocation,
+        (width * this.project.camera.currentScale) / 2,
+        outlineColor,
+        Color.Transparent,
+        0,
+      );
+    }
     // 如果按下shift键，说明正在画直线
     if (this.project.controller.pressingKeySet.has("shift")) {
       this.renderAxisMouse();

@@ -1,4 +1,5 @@
 import { Project, service } from "@/core/Project";
+import { buildVariableWidthStrokeOutline } from "@/core/service/controlService/controller/concrete/handwritingGeometry";
 import { PenStrokeSegment } from "@/core/stage/stageObject/entity/PenStroke";
 import { Color, Vector } from "@graphif/data-structures";
 import { CubicBezierCurve, SymmetryCurve } from "@graphif/shapes";
@@ -44,12 +45,27 @@ export class CurveRenderer {
     this.project.canvas.ctx.stroke();
   }
   renderPenStroke(stroke: PenStrokeSegment[], color: Color, width: number = 5): void {
-    this.project.canvas.ctx.strokeStyle = color.toString();
-    this.project.canvas.ctx.lineJoin = "round";
     if (stroke.length < 2) return;
+    const ctx = this.project.canvas.ctx;
+    const scale = this.project.camera.currentScale;
 
-    if (this.project.camera.currentScale <= 0.065) {
-      const ctx = this.project.canvas.ctx;
+    let minPressure = stroke[0].pressure;
+    let maxPressure = minPressure;
+    let pressureSum = minPressure;
+    for (let i = 1; i < stroke.length; i++) {
+      const p = stroke[i].pressure;
+      if (p < minPressure) minPressure = p;
+      if (p > maxPressure) maxPressure = p;
+      pressureSum += p;
+    }
+
+    if (scale <= 0.065) {
+      const avgPressure = pressureSum / stroke.length;
+      const originLineCap = ctx.lineCap;
+      const originLineJoin = ctx.lineJoin;
+      ctx.strokeStyle = color.toString();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
       ctx.beginPath();
       ctx.moveTo(stroke[0].location.x, stroke[0].location.y);
       let previous = stroke[0].location;
@@ -64,34 +80,47 @@ export class CurveRenderer {
         previous = current;
       }
       ctx.lineTo(stroke[stroke.length - 1].location.x, stroke[stroke.length - 1].location.y);
-      ctx.lineWidth = Math.max(0.5, stroke[0].pressure * width * this.project.camera.currentScale);
+      ctx.lineWidth = Math.max(0.5, avgPressure * width * scale);
       ctx.stroke();
+      ctx.lineCap = originLineCap;
+      ctx.lineJoin = originLineJoin;
       return;
     }
 
-    this.project.canvas.ctx.beginPath();
-    this.project.canvas.ctx.moveTo(stroke[0].location.x, stroke[0].location.y);
-
-    for (let i = 1; i < stroke.length - 1; i++) {
-      const curr = stroke[i].location;
-      const next = stroke[i + 1].location;
-      // 取当前点和下一个点的中点
-      const midX = (curr.x + next.x) / 2;
-      const midY = (curr.y + next.y) / 2;
-
-      this.project.canvas.ctx.lineWidth = stroke[i].pressure * width * this.project.camera.currentScale;
-      this.project.canvas.ctx.quadraticCurveTo(curr.x, curr.y, midX, midY);
-      this.project.canvas.ctx.stroke();
-      this.project.canvas.ctx.beginPath();
-      this.project.canvas.ctx.moveTo(midX, midY);
+    if (maxPressure - minPressure <= 0.005) {
+      const originLineCap = ctx.lineCap;
+      const originLineJoin = ctx.lineJoin;
+      ctx.strokeStyle = color.toString();
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = Math.max(0.5, minPressure * width * scale);
+      ctx.beginPath();
+      ctx.moveTo(stroke[0].location.x, stroke[0].location.y);
+      for (let i = 1; i < stroke.length - 1; i++) {
+        const curr = stroke[i].location;
+        const next = stroke[i + 1].location;
+        const midX = (curr.x + next.x) / 2;
+        const midY = (curr.y + next.y) / 2;
+        ctx.quadraticCurveTo(curr.x, curr.y, midX, midY);
+      }
+      const last = stroke[stroke.length - 1].location;
+      ctx.lineTo(last.x, last.y);
+      ctx.stroke();
+      ctx.lineCap = originLineCap;
+      ctx.lineJoin = originLineJoin;
+      return;
     }
-    // 处理最后一个点
-    const lastIndex = stroke.length - 1;
-    const last = stroke[lastIndex].location;
-    // 使用最后一个线段的pressure值设置lineWidth (AI修复的涂鸦粗细很恍惚的问题)
-    this.project.canvas.ctx.lineWidth = stroke[lastIndex - 1].pressure * width * this.project.camera.currentScale;
-    this.project.canvas.ctx.lineTo(last.x, last.y);
-    this.project.canvas.ctx.stroke();
+
+    const outline = buildVariableWidthStrokeOutline(stroke, width, scale);
+    if (outline.length < 3) return;
+    ctx.fillStyle = color.toString();
+    ctx.beginPath();
+    ctx.moveTo(outline[0].x, outline[0].y);
+    for (let i = 1; i < outline.length; i++) {
+      ctx.lineTo(outline[i].x, outline[i].y);
+    }
+    ctx.closePath();
+    ctx.fill();
   }
 
   /**

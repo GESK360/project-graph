@@ -176,6 +176,8 @@ export class ControllerInput {
   }
 
   private touchPointer(touch: Touch, type: string): PointerEvent {
+    const force =
+      typeof touch.force === "number" && Number.isFinite(touch.force) && touch.force > 0 ? touch.force : 0.5;
     return this.viewEvent(
       new PointerEvent(type, {
         pointerType: "touch",
@@ -184,6 +186,7 @@ export class ControllerInput {
         buttons: type === "pointerup" ? 0 : 1,
         clientX: touch.clientX,
         clientY: touch.clientY,
+        pressure: type === "pointerup" ? 0 : force,
       }),
     );
   }

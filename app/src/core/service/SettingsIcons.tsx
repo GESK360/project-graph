@@ -104,12 +104,15 @@ import {
   Unlink,
   VenetianMask,
   WholeWord,
+  Zap,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
 
 export const settingsIcons = {
   enablePenPressure: Gauge,
+  penPressureSensitivity: TrendingUpDown,
+  penVelocitySensitivity: Zap,
   hideCursorInPenMode: MouseOff,
   penPressureCurve: Spline,
   autoNamerTemplate: Tag,

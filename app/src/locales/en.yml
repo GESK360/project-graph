@@ -569,13 +569,19 @@ settings:
       Camera navigation, object selection, and rectangle selection remain available.
   enablePenPressure:
     title: Enable pen pressure
-    description: When enabled, pen pressure controls stroke width. When disabled, strokes use a fixed width. Use the pressure curve to tune the response.
+    description: When enabled, stroke width responds dynamically to pen force and drawing speed (styluses use hardware pressure plus speed taper; mice simulate pressure from speed). When disabled, strokes use a fixed width.
+  penPressureSensitivity:
+    title: Pressure Width Variation
+    description: Controls how strongly pressure and speed vary stroke thickness. Higher values create sharper thin-to-thick contrast; set to 0 for uniform width.
+  penVelocitySensitivity:
+    title: Velocity Pressure Sensitivity
+    description: Controls how drawing speed affects stroke width (slower strokes thicken, faster strokes thin). Drives simulated pressure for mouse input and adds natural speed tapering for styluses; set to 0 for hardware pen pressure only.
   hideCursorInPenMode:
     title: Hide Cursor in Brush Mode
-    description: "When enabled, hides the mouse cursor while drawing with the brush tool"
+    description: "When enabled, hides the brush cursor while actively drawing"
   penPressureCurve:
     title: Pen Pressure Curve
-    description: Adjust the mapping curve of pen pressure input, changing the relationship between pressure and stroke width
+    description: Adjust the mapping curve of pressure input, changing the relationship between force/speed and stroke width
     options:
       fixed: Fixed (No pressure sensitivity)
       linear: Linear (Raw value)

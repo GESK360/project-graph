@@ -1,4 +1,4 @@
-import { Vector } from "@graphif/data-structures";
+import { Color, Vector } from "@graphif/data-structures";
 // import { ControllerKeyboardOnly } from "@/core/service/controlService/controller/concrete/ControllerKeyboardOnly";
 // ...
 import { Project, service } from "@/core/Project";
@@ -19,7 +19,7 @@ import { ControllerPenStrokeDrawingClass } from "@/core/service/controlService/c
 import { ControllerRectangleSelectClass } from "@/core/service/controlService/controller/concrete/ControllerRectangleSelect";
 import { ControllerSectionEditClass } from "@/core/service/controlService/controller/concrete/ControllerSectionEdit";
 import type { BranchFoldSide, SectionFoldBadge } from "@/core/stage/stageManager/StageManager";
-import { CursorNameEnum } from "@/types/cursors";
+import { buildPenCursorCssValue, CursorNameEnum } from "@/types/cursors";
 import { isMac } from "@/utils/platform";
 import { Settings } from "../../Settings";
 import { ControllerClass } from "./ControllerClass";
@@ -32,8 +32,32 @@ import { ControllerInput } from "./ControllerInput";
  */
 @service("controller")
 export class Controller {
+  private currentCursorName: CursorNameEnum = CursorNameEnum.Default;
+  private appliedCanvasCursor = "";
+  public isPointerInsideCanvas = false;
+
+  private resolveDefaultCanvasCursor(): string {
+    if (!Settings.viewerMode && Settings.mouseLeftMode === "draw" && Settings.handwritingActiveTool !== "eraser") {
+      let color = this.penStrokeDrawing?.getCurrentStrokeColor() ?? Color.Transparent;
+      if (color.a === 0) {
+        color = this.project.stageStyleManager?.currentStyle?.StageObjectBorder ?? Color.White;
+      }
+      return buildPenCursorCssValue(color);
+    }
+    return CursorNameEnum.Default;
+  }
+
+  public syncCanvasCursor() {
+    const nextCursor =
+      this.currentCursorName === CursorNameEnum.Default ? this.resolveDefaultCanvasCursor() : this.currentCursorName;
+    if (nextCursor === this.appliedCanvasCursor) return;
+    this.appliedCanvasCursor = nextCursor;
+    this.project.canvas.element.style.cursor = nextCursor;
+  }
+
   setCursorName(name: CursorNameEnum) {
-    this.project.canvas.element.style.cursor = name;
+    this.currentCursorName = name;
+    this.syncCanvasCursor();
   }
 
   // 检测正在按下的键
@@ -78,7 +102,7 @@ export class Controller {
   private readonly input: ControllerInput;
   private autoStylusDrawMode = false;
   private settingModeFromPointer = false;
-  private readonly unwatchMouseLeftMode: () => void;
+  private readonly settingsUnwatchers: Array<() => void> = [];
   private readonly controllers: ControllerClass[] = [];
   private isCameraPointerGesture = false;
   private pressedBranchBadge: { branch: BranchFoldSide; view: Vector; dragged: boolean } | null = null;
@@ -121,6 +145,7 @@ export class Controller {
     this.isMouseDown.fill(false);
     this.isMovingEdge = false;
     this.isCameraPointerGesture = false;
+    this.isPointerInsideCanvas = false;
     this.pressedBranchBadge = null;
     this.branchFoldPointer = undefined;
     for (const controller of this.controllers) controller.mouseMoveOutWindowForcedShutdown(location);
@@ -175,11 +200,22 @@ export class Controller {
         this[id as keyof this] = inst;
         this.controllers.push(inst);
       });
-    this.unwatchMouseLeftMode = Settings.watch("mouseLeftMode", () => {
-      if (!this.settingModeFromPointer) this.autoStylusDrawMode = false;
-    });
+    this.settingsUnwatchers.push(
+      Settings.watch("mouseLeftMode", () => {
+        if (!this.settingModeFromPointer) this.autoStylusDrawMode = false;
+        this.syncCanvasCursor();
+      }),
+      Settings.watch("handwritingActiveTool", () => this.syncCanvasCursor()),
+      Settings.watch("handwritingPens", () => this.syncCanvasCursor()),
+      Settings.watch("autoFillPenStrokeColor", () => this.syncCanvasCursor()),
+      Settings.watch("autoFillPenStrokeColorEnable", () => this.syncCanvasCursor()),
+      Settings.watch("viewerMode", () => this.syncCanvasCursor()),
+      Settings.watch("theme", () => this.syncCanvasCursor()),
+    );
+    this.syncCanvasCursor();
     this.input = new ControllerInput(project.canvas.element, (x, y) => project.canvas.clientToView(x, y), {
       down: (event) => {
+        this.isPointerInsideCanvas = true;
         this.updateModeForPointer(event);
         this.mousedown(event);
         this.camera.mousedown(event);
@@ -210,6 +246,7 @@ export class Controller {
           });
       },
       move: (event) => {
+        this.isPointerInsideCanvas = true;
         this.updateModeForPointer(event);
         this.resetCountdownTimer();
         const view = new Vector(event.clientX, event.clientY);
@@ -229,6 +266,7 @@ export class Controller {
         else this.dispatch((c) => c.mousemove(event));
       },
       leave: () => {
+        this.isPointerInsideCanvas = false;
         this.branchFoldPointer = undefined;
         this.sectionFoldPointer = undefined;
         this.resetCountdownTimer();
@@ -310,7 +348,8 @@ export class Controller {
     });
   }
   dispose() {
-    this.unwatchMouseLeftMode();
+    for (const unwatch of this.settingsUnwatchers) unwatch();
+    this.settingsUnwatchers.length = 0;
     this.input.dispose();
     for (const controller of this.controllers) controller.dispose();
     this.controllers.length = 0;
