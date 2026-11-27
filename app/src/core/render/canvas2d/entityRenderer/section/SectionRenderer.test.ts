@@ -94,3 +94,73 @@ describe("section overview title detail", () => {
     expect(background).toHaveBeenCalledTimes(3);
   });
 });
+
+describe("section resize handle rendering", () => {
+  const createRenderer = (isLocked = false) => {
+    const renderRect = vi.fn();
+    const renderResizeArrow = vi.fn();
+    const renderPolygonAndFill = vi.fn();
+    const renderer = new SectionRenderer({
+      camera: { currentScale: 1 },
+      renderer: { transformWorld2View: (point: Vector) => point },
+      sectionMethods: {
+        isSectionBigTitleActive: () => false,
+        isObjectBeLockedBySection: () => isLocked,
+      },
+      stageManager: { isHiddenByBranchCollapse: () => false },
+      references: { sections: {} },
+      collisionBoxRenderer: { render: vi.fn() },
+      stageStyleManager: {
+        currentStyle: {
+          Background: Color.Black,
+          StageObjectBorder: Color.White,
+          CollideBoxSelected: Color.Green,
+        },
+      },
+      textRenderer: { renderText: vi.fn() },
+      shapeRenderer: {
+        renderRect,
+        renderDashedRect: vi.fn(),
+        renderResizeArrow,
+        renderPolygonAndFill,
+      },
+    } as unknown as Project);
+    return { renderer, renderRect, renderResizeArrow };
+  };
+
+  const createSection = (overrides: Partial<Section> = {}) =>
+    ({
+      text: "group",
+      color: Color.Transparent,
+      borderStyle: "solid",
+      rectangle: new Rectangle(new Vector(0, 0), new Vector(300, 200)),
+      collisionBox: { getRectangle: () => new Rectangle(new Vector(0, 0), new Vector(300, 200)) },
+      _collisionBoxNormal: { getRectangle: () => new Rectangle(new Vector(0, 0), new Vector(300, 200)) },
+      isSelected: true,
+      isCollapsed: false,
+      isEditingTitle: false,
+      isHiddenBySectionCollapse: false,
+      locked: false,
+      children: [],
+      getResizeHandleRect: () => new Rectangle(new Vector(275, 175), new Vector(25, 25)),
+      ...overrides,
+    }) as unknown as Section;
+
+  it("renders the bottom-right resize handle for selected expanded unlocked sections", () => {
+    const { renderer, renderResizeArrow } = createRenderer(false);
+    renderer.render(createSection());
+    expect(renderResizeArrow).toHaveBeenCalledOnce();
+    expect(renderResizeArrow.mock.calls[0][0]).toEqual(new Rectangle(new Vector(275, 175), new Vector(25, 25)));
+  });
+
+  it("does not render resize handle when collapsed, locked, or editing title", () => {
+    const unlocked = createRenderer(false);
+    unlocked.renderer.render(createSection({ isCollapsed: true }));
+    unlocked.renderer.render(createSection({ isEditingTitle: true }));
+    expect(unlocked.renderResizeArrow).not.toHaveBeenCalled();
+
+    const locked = createRenderer(true);
+    locked.renderer.render(createSection({ locked: true }));
+    expect(locked.renderResizeArrow).not.toHaveBeenCalled();
+  });
+});

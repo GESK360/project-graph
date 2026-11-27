@@ -286,6 +286,30 @@ export class SectionRenderer {
         const fillColor = this.project.stageStyleManager.currentStyle.CollideBoxSelected.toNewAlpha(0.35);
         this.project.shapeRenderer.renderPolygonAndFill(pointsView, fillColor, fillColor, 0, "round");
       }
+      // 非折叠、非锁定、非编辑标题状态下渲染右下角自定义大小控制点
+      if (
+        !section.isCollapsed &&
+        !section.isEditingTitle &&
+        !this.project.sectionMethods.isObjectBeLockedBySection(section)
+      ) {
+        const resizeHandleRect = section.getResizeHandleRect();
+        const viewResizeHandleRect = new Rectangle(
+          this.project.renderer.transformWorld2View(resizeHandleRect.location),
+          resizeHandleRect.size.multiply(this.project.camera.currentScale),
+        );
+        this.project.shapeRenderer.renderRect(
+          viewResizeHandleRect,
+          this.project.stageStyleManager.currentStyle.CollideBoxSelected,
+          this.project.stageStyleManager.currentStyle.StageObjectBorder,
+          2 * this.project.camera.currentScale,
+          8 * this.project.camera.currentScale,
+        );
+        this.project.shapeRenderer.renderResizeArrow(
+          viewResizeHandleRect,
+          this.project.stageStyleManager.currentStyle.StageObjectBorder,
+          2 * this.project.camera.currentScale,
+        );
+      }
     }
     // debug: 绿色虚线 观察父子关系
     if (Settings.showDebug) {

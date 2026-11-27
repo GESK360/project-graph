@@ -26,6 +26,9 @@ export class ControllerSectionEditClass extends ControllerClass {
       return;
     }
     const worldLocation = this.project.renderer.transformView2World(new Vector(event.clientX, event.clientY));
+    if (this.project.controllerUtils.isClickedResizeRect(worldLocation)) {
+      return;
+    }
     const clickedEntity = this.project.stageManager.findEntityByLocation(worldLocation);
     // 双击分组框内的图片用于打开大图灯箱，不触发分组框重命名
     if (clickedEntity instanceof ImageNode && !clickedEntity.isBackground) {

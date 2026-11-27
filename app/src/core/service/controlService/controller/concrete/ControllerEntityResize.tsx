@@ -6,72 +6,129 @@ import { ImageNode } from "@/core/stage/stageObject/entity/ImageNode";
 import { MediaNode } from "@/core/stage/stageObject/entity/MediaNode";
 import { SvgNode } from "@/core/stage/stageObject/entity/SvgNode";
 import { ReferenceBlockNode } from "@/core/stage/stageObject/entity/ReferenceBlockNode";
+import { Section } from "@/core/stage/stageObject/entity/Section";
+import { Settings } from "@/core/service/Settings";
+import { CursorNameEnum } from "@/types/cursors";
 import { isPersistentMindMapDragEnabled, reflowMindMapTreesForEntities } from "./MindMapDrag";
 
+type ResizableEntity = TextNode | ImageNode | SvgNode | MediaNode | ReferenceBlockNode | Section;
+
 export class ControllerEntityResizeClass extends ControllerClass {
-  private changeSizeEntity: Entity | null = null;
+  private changeSizeEntity: ResizableEntity | null = null;
   private resizePreviousCenters: Map<string, Vector> | null = null;
-  public mousedown: (event: MouseEvent) => void = (event) => {
-    if (!(event.button == 0)) {
+  private isManagingResizeCursor = false;
+
+  private canResizeInteraction(): boolean {
+    return (
+      !Settings.viewerMode &&
+      Settings.mouseLeftMode === "selectAndMove" &&
+      !this.project.controller.camera.isPreGrabbingWhenSpace &&
+      !this.project.controller.pressingKeySet.has("alt")
+    );
+  }
+
+  private isResizableEntity(entity: Entity): entity is ResizableEntity {
+    if (entity instanceof TextNode) {
+      return entity.sizeAdjust !== "auto";
+    }
+    if (entity instanceof Section) {
+      return (
+        !entity.isCollapsed && !entity.isEditingTitle && !this.project.sectionMethods.isObjectBeLockedBySection(entity)
+      );
+    }
+    return (
+      entity instanceof ImageNode ||
+      entity instanceof SvgNode ||
+      entity instanceof MediaNode ||
+      entity instanceof ReferenceBlockNode
+    );
+  }
+
+  private findHitResizeEntity(worldLocation: Vector): ResizableEntity | null {
+    const selectedEntities = this.project.stageManager.getSelectedEntities();
+    const candidates: ResizableEntity[] = [];
+    for (const selectedEntity of selectedEntities) {
+      if (!this.isResizableEntity(selectedEntity)) {
+        continue;
+      }
+      if (selectedEntity.getResizeHandleRect().isPointIn(worldLocation)) {
+        candidates.push(selectedEntity);
+      }
+    }
+    if (candidates.length === 0) {
+      return null;
+    }
+    // 优先命中非 Section 实体与更深层子 Section，避免外层框手柄抢占内层手柄。
+    candidates.sort((a, b) => {
+      const aIsSection = a instanceof Section ? 1 : 0;
+      const bIsSection = b instanceof Section ? 1 : 0;
+      if (aIsSection !== bIsSection) {
+        return aIsSection - bIsSection;
+      }
+      return b.sectionDepth - a.sectionDepth;
+    });
+    return candidates[0];
+  }
+
+  private getResizeCursor(entity: ResizableEntity): CursorNameEnum {
+    return entity instanceof TextNode ? CursorNameEnum.EResize : CursorNameEnum.NwseResize;
+  }
+
+  private resetResizeCursor() {
+    if (!this.isManagingResizeCursor) {
       return;
     }
-    // 检查是否有选中的物体
-    const selectedEntities = this.project.stageManager.getSelectedEntities();
-    if (selectedEntities.length === 0) {
+    this.isManagingResizeCursor = false;
+    this.project.controller.setCursorName(CursorNameEnum.Default);
+  }
+
+  private collectCenters(entity: Entity): Map<string, Vector> {
+    const centers = new Map<string, Vector>();
+    centers.set(entity.uuid, entity.collisionBox.getRectangle().center);
+    for (let sec = entity.parentSection; sec; sec = sec.parentSection) {
+      centers.set(sec.uuid, sec.collisionBox.getRectangle().center);
+    }
+    return centers;
+  }
+
+  public mousedown: (event: MouseEvent) => void = (event) => {
+    if (event.button !== 0 || !this.canResizeInteraction()) {
       return;
     }
     const pressWorldLocation = this.project.renderer.transformView2World(new Vector(event.clientX, event.clientY));
     this.lastMoveLocation = pressWorldLocation.clone();
-    for (const selectedEntity of selectedEntities) {
-      // 检查是否是支持缩放的实体类型
-      if (
-        selectedEntity instanceof TextNode ||
-        selectedEntity instanceof ImageNode ||
-        selectedEntity instanceof SvgNode ||
-        selectedEntity instanceof MediaNode ||
-        selectedEntity instanceof ReferenceBlockNode
-      ) {
-        // 对TextNode进行特殊处理，只在手动模式下允许缩放
-        if (selectedEntity instanceof TextNode && selectedEntity.sizeAdjust === "auto") {
-          continue;
-        }
-
-        // 检查是否点击了缩放控制点
-        const resizeRect = selectedEntity.getResizeHandleRect();
-        if (resizeRect.isPointIn(pressWorldLocation)) {
-          // 点中了扩大缩小的东西
-          this.changeSizeEntity = selectedEntity;
-          const centers = new Map<string, Vector>();
-          centers.set(selectedEntity.uuid, selectedEntity.collisionBox.getRectangle().center);
-          for (let sec = selectedEntity.parentSection; sec; sec = sec.parentSection) {
-            centers.set(sec.uuid, sec.collisionBox.getRectangle().center);
-          }
-          this.resizePreviousCenters = centers;
-          break;
-        }
-      }
+    const hitEntity = this.findHitResizeEntity(pressWorldLocation);
+    if (!hitEntity) {
+      return;
     }
+    this.changeSizeEntity = hitEntity;
+    this.resizePreviousCenters = this.collectCenters(hitEntity);
+    this.isManagingResizeCursor = true;
+    this.project.controller.setCursorName(this.getResizeCursor(hitEntity));
   };
 
   public mousemove: (event: MouseEvent) => void = (event) => {
-    if (this.changeSizeEntity === null) {
+    const pressWorldLocation = this.project.renderer.transformView2World(new Vector(event.clientX, event.clientY));
+    if (this.changeSizeEntity !== null) {
+      const diff = pressWorldLocation.subtract(this.lastMoveLocation);
+      this.changeSizeEntity.resizeHandle(diff);
+      this.lastMoveLocation = pressWorldLocation.clone();
       return;
     }
-    const pressWorldLocation = this.project.renderer.transformView2World(new Vector(event.clientX, event.clientY));
-    const diff = pressWorldLocation.subtract(this.lastMoveLocation);
 
-    // 对所有支持缩放的实体类型调用resizeHandle方法
-    if (
-      this.changeSizeEntity instanceof TextNode ||
-      this.changeSizeEntity instanceof ImageNode ||
-      this.changeSizeEntity instanceof SvgNode ||
-      this.changeSizeEntity instanceof MediaNode ||
-      this.changeSizeEntity instanceof ReferenceBlockNode
-    ) {
-      this.changeSizeEntity.resizeHandle(diff);
+    if (event.buttons === 0) {
+      if (this.canResizeInteraction()) {
+        const hitEntity = this.findHitResizeEntity(pressWorldLocation);
+        if (hitEntity) {
+          this.isManagingResizeCursor = true;
+          this.project.controller.setCursorName(this.getResizeCursor(hitEntity));
+        } else {
+          this.resetResizeCursor();
+        }
+      } else {
+        this.isManagingResizeCursor = false;
+      }
     }
-
-    this.lastMoveLocation = pressWorldLocation.clone();
   };
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -83,6 +140,7 @@ export class ControllerEntityResizeClass extends ControllerClass {
     const prevCenters = this.resizePreviousCenters ?? undefined;
     this.changeSizeEntity = null;
     this.resizePreviousCenters = null;
+    this.resetResizeCursor();
     if (resizedEntity.parentSection) {
       this.project.stageManager.updateReferences();
     }
@@ -92,9 +150,30 @@ export class ControllerEntityResizeClass extends ControllerClass {
     this.project.historyManager.recordStep();
   };
 
+  public mouseDoubleClick: (event: MouseEvent) => void = (event) => {
+    if (event.button !== 0 || !this.canResizeInteraction()) {
+      return;
+    }
+    const worldLocation = this.project.renderer.transformView2World(new Vector(event.clientX, event.clientY));
+    const hitEntity = this.findHitResizeEntity(worldLocation);
+    if (!(hitEntity instanceof Section) || hitEntity.sizeAdjust !== "manual") {
+      return;
+    }
+    const prevCenters = this.collectCenters(hitEntity);
+    hitEntity.resetAutoSize();
+    if (hitEntity.parentSection) {
+      this.project.stageManager.updateReferences();
+    }
+    if (isPersistentMindMapDragEnabled()) {
+      reflowMindMapTreesForEntities(this.project, [hitEntity], prevCenters);
+    }
+    this.project.historyManager.recordStep();
+  };
+
   public mouseMoveOutWindowForcedShutdown(_outsideLocation: Vector) {
     super.mouseMoveOutWindowForcedShutdown(_outsideLocation);
     this.changeSizeEntity = null;
     this.resizePreviousCenters = null;
+    this.isManagingResizeCursor = false;
   }
 }

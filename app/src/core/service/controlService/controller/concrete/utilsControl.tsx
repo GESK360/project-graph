@@ -431,10 +431,19 @@ export class ControllerUtils {
         selectedEntity instanceof ImageNode ||
         selectedEntity instanceof SvgNode ||
         selectedEntity instanceof MediaNode ||
-        selectedEntity instanceof ReferenceBlockNode
+        selectedEntity instanceof ReferenceBlockNode ||
+        selectedEntity instanceof Section
       ) {
         // 对TextNode进行特殊处理，只在手动模式下允许缩放
         if (selectedEntity instanceof TextNode && selectedEntity.sizeAdjust === "auto") {
+          continue;
+        }
+        if (
+          selectedEntity instanceof Section &&
+          (selectedEntity.isCollapsed ||
+            selectedEntity.isEditingTitle ||
+            this.project.sectionMethods.isObjectBeLockedBySection(selectedEntity))
+        ) {
           continue;
         }
 

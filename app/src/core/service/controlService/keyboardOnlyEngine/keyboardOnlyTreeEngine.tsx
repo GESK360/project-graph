@@ -3,6 +3,8 @@ import { ConnectableEntity } from "@/core/stage/stageObject/abstract/Connectable
 import { Edge } from "@/core/stage/stageObject/association/Edge";
 import { toast } from "sonner";
 import { CollisionBox } from "@/core/stage/stageObject/collisionBox/collisionBox";
+import { ImageNode } from "@/core/stage/stageObject/entity/ImageNode";
+import { Section } from "@/core/stage/stageObject/entity/Section";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import { Direction } from "@/types/directions";
 import { showTreeValidationErrors } from "@/utils/treeValidation";
@@ -243,16 +245,47 @@ export class KeyboardOnlyTreeEngine {
     // 避免树形节点与包含它自己的框意外连接。
     const ancestorUUIDs = new Set(this.project.sectionMethods.getFatherSectionsList(node).map((s) => s.uuid));
 
+    let nearestHit: ConnectableEntity | null = null;
+    let nearestDistance = Infinity;
+
     for (const entity of this.project.stageManager.getConnectableEntity()) {
       if (entity === node) continue;
       if (entity.isHiddenBySectionCollapse) continue;
+      if (this.project.stageManager.isHiddenByBranchCollapse(entity)) continue;
+      if (this.project.sectionMethods.isEntityHiddenByBigTitleSection(entity)) continue;
+      if (this.project.sectionMethods.isEntityCoveredByBigTitleSection(entity)) continue;
+      if (entity instanceof ImageNode && entity.isBackground) continue;
+      if (entity.nearestLockedAncestorSection !== null) continue;
       if (ancestorUUIDs.has(entity.uuid)) continue;
+      if (node instanceof Section && this.project.sectionMethods.isEntityInSection(entity, node)) continue;
       if (!entity.collisionBox.isIntersectsWithLine(line)) continue;
-      // 已有连线则跳过（走新建节点流程）
-      if (this.project.graphMethods.getEdgesBetween(node, entity).length > 0) continue;
-      return entity;
+
+      const rect = entity.collisionBox.getRectangle();
+      let distance: number;
+      switch (direction) {
+        case "right":
+          distance = Math.max(0, rect.left - start.x);
+          break;
+        case "left":
+          distance = Math.max(0, start.x - rect.right);
+          break;
+        case "down":
+          distance = Math.max(0, rect.top - start.y);
+          break;
+        case "up":
+          distance = Math.max(0, start.y - rect.bottom);
+          break;
+      }
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestHit = entity;
+      }
     }
-    return null;
+
+    if (!nearestHit) return null;
+    // 最近的命中节点已存在连线时，不穿透到后方无关节点，改为走新建子节点流程。
+    if (this.project.graphMethods.getEdgesBetween(node, nearestHit).length > 0) return null;
+    return nearestHit;
   }
 
   /**
@@ -303,9 +336,10 @@ export class KeyboardOnlyTreeEngine {
 
     // 检测生长探测线上是否有可连接实体（线段相交检测，比点命中范围更大）
     {
-      const targetEntity = Settings.enableTreeGenerateConnectByProbe
-        ? this.findConnectTargetByGrowthLine(rootNode, direction)
-        : null;
+      const targetEntity =
+        defaultText === "" && Settings.enableTreeGenerateConnectByProbe
+          ? this.findConnectTargetByGrowthLine(rootNode, direction)
+          : null;
       if (targetEntity !== null) {
         // 有可连接实体且尚无连线：直接连线，不新建节点
         this.project.stageManager.connectEntity(rootNode, targetEntity);

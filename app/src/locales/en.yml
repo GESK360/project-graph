@@ -1123,12 +1123,12 @@ settings:
       While a text node is being edited, automatically formats the tree structure in real time as you type.
       The textarea overlaid on the canvas also follows the node position updates.
   treeGenerateCameraBehavior:
-    title: Camera Behavior After Tree Node Generation
+    title: Viewport Behavior After Tab / \ Node Generation
     description: |
-      Set the camera behavior after creating new nodes using tree depth or breadth generation functions.
+      Choose whether to keep the viewport fixed or move the camera after creating a new node with Tab (deep grow) or \ (broad grow).
     options:
-      none: Camera Remains Stationary
-      moveToNewNode: Move Camera to New Node
+      none: Fixed Viewport (Camera Remains Stationary)
+      moveToNewNode: Move Viewport to New Node
       resetToTree: Reset View to Cover Entire Tree Structure
   enableDragAutoAlign:
     title: Enable Automatic Alignment When Dragging Nodes

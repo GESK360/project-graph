@@ -259,12 +259,12 @@ export const settingsSchema = z.object({
   enableDragNodeShakeDetachFromEdge: z.boolean().default(false),
   autoLayoutWhenTreeGenerate: z.boolean().default(true),
   autoLayoutWhenSectionCollapseToggle: z.boolean().default(false),
-  enableTreeGenerateConnectByProbe: z.boolean().default(true),
+  enableTreeGenerateConnectByProbe: z.boolean().default(false),
   treeGenerateInheritParentColor: z.boolean().default(false),
   textNodeAutoFormatTreeWhenInput: z.boolean().default(false),
   treeGenerateCameraBehavior: z
     .union([z.literal("none"), z.literal("moveToNewNode"), z.literal("resetToTree")])
-    .default("moveToNewNode"),
+    .default("none"),
   enableTabGenerateNodeInInput: z.boolean().default(true),
   enableBackslashGenerateNodeInInput: z.boolean().default(false),
   gamepadDeadzone: z.number().min(0).max(1).default(0.1),

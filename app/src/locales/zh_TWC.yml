@@ -1404,11 +1404,11 @@ settings:
     title: 文字節點輸入時，即時格式化樹狀結構
     description: 文字節點處於編輯狀態並輸入內容時，即時對其所在的樹狀結構進行格式化佈局。疊放在畫布上的文字輸入框也會同步跟隨節點位置更新。
   treeGenerateCameraBehavior:
-    title: 樹狀生長節點後的鏡頭行為選項
-    description: 設定在使用樹狀深度生長或廣度生長功能建立新節點後，鏡頭的行為方式
+    title: Tab / \ 建立節點後的視野行為
+    description: 設定按下 Tab（深度生長）或 \（廣度生長）建立新節點後，視野是保持固定還是自動移動
     options:
-      none: 鏡頭不動
-      moveToNewNode: 鏡頭移動向新建立的節點
+      none: 固定視野（鏡頭不動）
+      moveToNewNode: 移動視野到新建立的節點
       resetToTree: 重置視野，使視野覆蓋目前樹狀結構的外接矩形
   enableDragAutoAlign:
     title: 滑鼠拖曳自動吸附對齊節點

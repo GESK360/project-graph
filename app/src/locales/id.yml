@@ -1376,12 +1376,12 @@ settings:
       Saat node teks sedang diedit dan isi teks berubah, struktur pohon akan diformat ulang secara realtime.
       Textarea yang ditumpuk di atas canvas juga akan mengikuti pembaruan posisi node.
   treeGenerateCameraBehavior:
-    title: Opsi Perilaku Kamera Setelah Node Pohon Tumbuh
+    title: Perilaku Tampilan Setelah Membuat Node dengan Tab / \
     description: |
-      Mengatur perilaku kamera setelah membuat node baru menggunakan fungsi pertumbuhan kedalaman pohon atau lebar pohon
+      Atur apakah tampilan tetap diam atau bergerak otomatis setelah membuat node baru dengan Tab (pertumbuhan kedalaman) atau \ (pertumbuhan lebar)
     options:
-      none: Kamera Tidak Bergerak
-      moveToNewNode: Kamera Bergerak ke Node Baru
+      none: Tampilan Tetap (Kamera Tidak Bergerak)
+      moveToNewNode: Gerakkan Kamera ke Node Baru
       resetToTree: Atur Ulang Tampilan, membuat tampilan mencakup persegi panjang bounding struktur pohon saat ini
   enableDragAutoAlign:
     title: Penjajaran Otomatis Saat Menyeret Node dengan Mouse

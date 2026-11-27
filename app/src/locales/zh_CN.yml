@@ -1401,12 +1401,12 @@ settings:
       当文本节点处于编辑状态并输入内容时，实时对其所在的树形结构进行格式化布局。
       叠放在画布上的文本输入框也会同步跟随节点位置更新。
   treeGenerateCameraBehavior:
-    title: 树形生长节点后的镜头行为选项
+    title: Tab / \ 创建节点后的视野行为
     description: |
-      设置在使用树形深度生长或广度生长功能创建新节点后，镜头的行为方式
+      设置按下 Tab（深度生长）或 \（广度生长）创建新节点后，视野是保持固定还是自动移动
     options:
-      none: 镜头不动
-      moveToNewNode: 镜头移动向新创建的节点
+      none: 固定视野（镜头不动）
+      moveToNewNode: 移动视野到新创建的节点
       resetToTree: 重置视野，使视野覆盖当前树形结构的外接矩形
   enableDragAutoAlign:
     title: 鼠标拖动自动吸附对齐节点

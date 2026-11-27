@@ -3,6 +3,7 @@ import { Renderer } from "@/core/render/canvas2d/renderer";
 import { Settings } from "@/core/service/Settings";
 import { ConnectableEntity } from "@/core/stage/stageObject/abstract/ConnectableEntity";
 import { Entity } from "@/core/stage/stageObject/abstract/StageEntity";
+import { ResizeAble } from "@/core/stage/stageObject/abstract/StageObjectInterface";
 import { CollisionBox } from "@/core/stage/stageObject/collisionBox/collisionBox";
 import { MultiTargetUndirectedEdge } from "@/core/stage/stageObject/association/MutiTargetUndirectedEdge";
 import { getTextSize } from "@/utils/font";
@@ -14,7 +15,11 @@ import type { TableFields } from "@/types/table";
 
 @passExtraAtArg1
 @passObject
-export class Section extends ConnectableEntity {
+export class Section extends ConnectableEntity implements ResizeAble {
+  static readonly AUTO_PADDING = 30;
+  static readonly MANUAL_MIN_PADDING = 10;
+  static readonly MIN_WIDTH = 100;
+  static readonly MIN_HEIGHT = 100;
   /**
    * 节点是否被选中
    */
@@ -85,6 +90,11 @@ export class Section extends ConnectableEntity {
    */
   @serializable
   borderStyle: "solid" | "dashed" | "none" = "solid";
+  /**
+   * 尺寸调整模式：auto 自动贴合内部内容；manual 保留用户拖拽调整后的自定义边框范围
+   */
+  @serializable
+  sizeAdjust: "auto" | "manual" = "auto";
   isHiddenBySectionCollapse = false;
 
   constructor(
@@ -100,6 +110,7 @@ export class Section extends ConnectableEntity {
       children = [] as Entity[],
       details = [] as Value,
       borderStyle = "solid" as "solid" | "dashed" | "none",
+      sizeAdjust = "auto" as "auto" | "manual",
       createdAt = undefined as number | undefined,
       updatedAt = undefined as number | undefined,
       tableFields = undefined as TableFields | undefined,
@@ -128,6 +139,7 @@ export class Section extends ConnectableEntity {
     this.details = details;
     this.children = children;
     this.borderStyle = borderStyle;
+    this.sizeAdjust = sizeAdjust;
     // 一定要放在最后
     this.adjustLocationAndSize();
   }
@@ -151,50 +163,54 @@ export class Section extends ConnectableEntity {
     this.adjustLocationAndSize();
   }
 
-  /**
-   * 根据子内容 自动调整分组框的位置和大小
-   * 如果没有子内容，则
-   *   自动调整大小为 标题+padding，位置为 当前碰撞箱外接矩形的左上角
-   */
-  adjustLocationAndSize() {
-    let rectangle: Rectangle;
-    const titleSize = getTextSize(this.text, Renderer.FONT_SIZE);
-
-    const titleBarHeight = this.text === "" ? 0 : 50;
-
-    if (this.children.length === 0) {
-      rectangle = new Rectangle(
-        this.collisionBox.getRectangle().location,
-        new Vector(Math.max(titleSize.x + Renderer.NODE_PADDING * 2, 100), 100),
-      );
-    } else {
-      const bounds = this.children.map((child) => child.collisionBox.getRectangle());
-      const descendants = new Set<Entity>();
-      const collect = (entity: Entity) => {
-        if (descendants.has(entity)) return;
-        descendants.add(entity);
-        if (entity instanceof Section && !entity.isCollapsed) entity.children.forEach(collect);
-      };
-      this.children.forEach(collect);
-      // 只包含端点全部在框内的包围线；跨分组连线不能反过来撑大两边的框。
-      for (const edge of this.project.stageManager.getAssociations()) {
-        if (
-          edge instanceof MultiTargetUndirectedEdge &&
-          edge.renderType !== "line" &&
-          edge.associationList.length >= 2 &&
-          edge.associationList.every((node) => descendants.has(node))
-        ) {
-          bounds.push(edge.collisionBox.getRectangle());
-        }
+  private getNormalRectangle(): Rectangle {
+    if (this._collisionBoxNormal.shapes.length >= 4) {
+      const topLine = this._collisionBoxNormal.shapes[0];
+      const rightLine = this._collisionBoxNormal.shapes[1];
+      const bottomLine = this._collisionBoxNormal.shapes[2];
+      const leftLine = this._collisionBoxNormal.shapes[3];
+      if (
+        topLine instanceof Line &&
+        rightLine instanceof Line &&
+        bottomLine instanceof Line &&
+        leftLine instanceof Line
+      ) {
+        return new Rectangle(
+          new Vector(leftLine.start.x, topLine.start.y),
+          new Vector(rightLine.end.x - leftLine.start.x, bottomLine.end.y - topLine.start.y),
+        );
       }
-      // 调整展开状态
-      rectangle = Rectangle.getBoundingRectangle(bounds, 30);
-      rectangle.size.x = Math.max(rectangle.size.x, titleSize.x + Renderer.NODE_PADDING * 2);
-      // 留白范围在上面调整
-      rectangle.location = rectangle.location.subtract(new Vector(0, titleBarHeight));
-      rectangle.size = rectangle.size.add(new Vector(0, titleBarHeight));
     }
+    return this._collisionBoxNormal.getRectangle();
+  }
 
+  private getContentBounds(padding: number): Rectangle | null {
+    if (this.children.length === 0) {
+      return null;
+    }
+    const bounds = this.children.map((child) => child.collisionBox.getRectangle());
+    const descendants = new Set<Entity>();
+    const collect = (entity: Entity) => {
+      if (descendants.has(entity)) return;
+      descendants.add(entity);
+      if (entity instanceof Section && !entity.isCollapsed) entity.children.forEach(collect);
+    };
+    this.children.forEach(collect);
+    // 只包含端点全部在框内的包围线；跨分组连线不能反过来撑大两边的框。
+    for (const edge of this.project.stageManager.getAssociations()) {
+      if (
+        edge instanceof MultiTargetUndirectedEdge &&
+        edge.renderType !== "line" &&
+        edge.associationList.length >= 2 &&
+        edge.associationList.every((node) => descendants.has(node))
+      ) {
+        bounds.push(edge.collisionBox.getRectangle());
+      }
+    }
+    return Rectangle.getBoundingRectangle(bounds, padding);
+  }
+
+  private applyNormalRectangle(rectangle: Rectangle, titleBarHeight: number) {
     this._collisionBoxNormal.shapes = rectangle.getBoundingLines();
     // 群友需求：希望分组框扩大交互范围，标题也能拖动
     if (titleBarHeight > 0) {
@@ -203,6 +219,96 @@ export class Section extends ConnectableEntity {
     }
     // 调整折叠状态
     this._collisionBoxWhenCollapsed = this.collapsedCollisionBox();
+  }
+
+  /**
+   * 根据子内容 自动调整分组框的位置和大小
+   * 如果没有子内容，则
+   *   自动调整大小为 标题+padding，位置为 当前碰撞箱外接矩形的左上角
+   */
+  adjustLocationAndSize() {
+    let rectangle: Rectangle;
+    const titleSize = getTextSize(this.text, Renderer.FONT_SIZE);
+    const titleBarHeight = this.text === "" ? 0 : 50;
+    const minWidth = Math.max(titleSize.x + Renderer.NODE_PADDING * 2, Section.MIN_WIDTH);
+
+    if (this.sizeAdjust === "manual") {
+      const currentRect = this.getNormalRectangle();
+      let left = currentRect.left;
+      let top = currentRect.top;
+      let right = Math.max(currentRect.right, left + minWidth);
+      let bottom = Math.max(currentRect.bottom, top + Section.MIN_HEIGHT);
+
+      const contentRect = this.getContentBounds(Section.MANUAL_MIN_PADDING);
+      if (contentRect) {
+        left = Math.min(left, contentRect.left);
+        top = Math.min(top, contentRect.top - titleBarHeight);
+        right = Math.max(right, contentRect.right, left + minWidth);
+        bottom = Math.max(bottom, contentRect.bottom, top + Section.MIN_HEIGHT);
+      }
+
+      rectangle = new Rectangle(new Vector(left, top), new Vector(right - left, bottom - top));
+    } else if (this.children.length === 0) {
+      rectangle = new Rectangle(this.getNormalRectangle().location, new Vector(minWidth, Section.MIN_HEIGHT));
+    } else {
+      rectangle = this.getContentBounds(Section.AUTO_PADDING)!;
+      rectangle.size.x = Math.max(rectangle.size.x, titleSize.x + Renderer.NODE_PADDING * 2);
+      // 留白范围在上面调整
+      rectangle.location = rectangle.location.subtract(new Vector(0, titleBarHeight));
+      rectangle.size = rectangle.size.add(new Vector(0, titleBarHeight));
+    }
+
+    this.applyNormalRectangle(rectangle, titleBarHeight);
+  }
+
+  resizeHandle(delta: Vector) {
+    if (this.isCollapsed || this.locked || this.nearestLockedAncestorSection !== null) {
+      return;
+    }
+    const titleSize = getTextSize(this.text, Renderer.FONT_SIZE);
+    const titleBarHeight = this.text === "" ? 0 : 50;
+    const minWidth = Math.max(titleSize.x + Renderer.NODE_PADDING * 2, Section.MIN_WIDTH);
+    const minHeight = Section.MIN_HEIGHT;
+
+    const currentRect = this.getNormalRectangle();
+    const left = currentRect.left;
+    const top = currentRect.top;
+    let minRight = left + minWidth;
+    let minBottom = top + minHeight;
+
+    const contentRect = this.getContentBounds(Section.MANUAL_MIN_PADDING);
+    if (contentRect) {
+      minRight = Math.max(minRight, contentRect.right);
+      minBottom = Math.max(minBottom, contentRect.bottom);
+    }
+
+    const newRight = Math.max(minRight, currentRect.right + delta.x);
+    const newBottom = Math.max(minBottom, currentRect.bottom + delta.y);
+    const grew = newRight > currentRect.right || newBottom > currentRect.bottom;
+
+    this.sizeAdjust = "manual";
+    this.applyNormalRectangle(
+      new Rectangle(new Vector(left, top), new Vector(newRight - left, newBottom - top)),
+      titleBarHeight,
+    );
+    this.updateFatherSectionByMove();
+    if (grew) {
+      this.project.sectionCollisionSolver?.solveOverlaps(this);
+    }
+  }
+
+  resetAutoSize() {
+    if (this.isCollapsed || this.locked || this.nearestLockedAncestorSection !== null) {
+      return;
+    }
+    this.sizeAdjust = "auto";
+    this.adjustLocationAndSize();
+    this.updateFatherSectionByMove();
+  }
+
+  getResizeHandleRect(): Rectangle {
+    const rect = this.rectangle;
+    return new Rectangle(new Vector(rect.right - 25, rect.bottom - 25), new Vector(25, 25));
   }
   /**
    * 根据自身的折叠状态调整子节点的状态
@@ -244,14 +350,7 @@ export class Section extends ConnectableEntity {
     if (this.isCollapsed) {
       return this._collisionBoxWhenCollapsed.getRectangle();
     } else {
-      const topLine: Line = this._collisionBoxNormal.shapes[0] as Line;
-      const rightLine: Line = this._collisionBoxNormal.shapes[1] as Line;
-      const bottomLine: Line = this._collisionBoxNormal.shapes[2] as Line;
-      const leftLine: Line = this._collisionBoxNormal.shapes[3] as Line;
-      return new Rectangle(
-        new Vector(leftLine.start.x, topLine.start.y),
-        new Vector(rightLine.end.x - leftLine.start.x, bottomLine.end.y - topLine.start.y),
-      );
+      return this.getNormalRectangle();
     }
   }
 

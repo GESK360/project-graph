@@ -43,7 +43,7 @@ export class InputElement {
       inputElement.autocomplete = "off";
       Object.assign(inputElement.style, style);
       document.body.appendChild(inputElement);
-      inputElement.focus();
+      inputElement.focus({ preventScroll: true });
       inputElement.select();
       const removeElement = () => {
         if (document.body.contains(inputElement)) {
@@ -105,7 +105,7 @@ export class InputElement {
           const onWindowFocus = () => {
             window.removeEventListener("focus", onWindowFocus);
             if (document.body.contains(inputElement)) {
-              inputElement.focus();
+              inputElement.focus({ preventScroll: true });
             }
           };
           window.addEventListener("focus", onWindowFocus);
@@ -244,7 +244,7 @@ export class InputElement {
       textareaElement.addEventListener("contextmenu", (event) => {
         event.preventDefault();
       });
-      textareaElement.focus();
+      textareaElement.focus({ preventScroll: true });
       if (selectAllWhenCreated) {
         textareaElement.select();
       }
@@ -282,7 +282,7 @@ export class InputElement {
           const onWindowFocus = () => {
             window.removeEventListener("focus", onWindowFocus);
             if (document.body.contains(textareaElement)) {
-              textareaElement.focus();
+              textareaElement.focus({ preventScroll: true });
             }
           };
           window.addEventListener("focus", onWindowFocus);
