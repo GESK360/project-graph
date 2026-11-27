@@ -24,6 +24,7 @@ const MockProjectClass = vi.hoisted(() => {
     private listeners = new Set<() => void>();
     private selectionListeners = new Set<(uuids: string[]) => void>();
     selectedCanvasRowIds: string[] = [];
+    attachments = new Map<string, Blob>();
     stageManager = {
       getEntities: () => [],
       getAssociations: () => [],
@@ -122,7 +123,19 @@ const MockProjectClass = vi.hoisted(() => {
                   },
                 }
               : {}),
+            ...(type === "spaced_repetition"
+              ? {
+                  spacedRepetition: {
+                    columns: 2,
+                    queueTab: "due",
+                    imageFit: "contain",
+                  },
+                }
+              : {}),
           };
+          if (type === "spaced_repetition") {
+            this.stageTable.ensureSpacedRepetitionColumns(false);
+          }
           this.table.views = [...this.table.views, nextView];
           this.table.activeViewId = nextView.id;
           this.listeners.forEach((fn) => fn());
@@ -180,6 +193,9 @@ const MockProjectClass = vi.hoisted(() => {
                   ...(patch.gantt ? { gantt: { ...(v.gantt ?? {}), ...patch.gantt } } : {}),
                   ...(patch.gallery ? { gallery: { ...(v.gallery ?? {}), ...patch.gallery } } : {}),
                   ...(patch.calendar ? { calendar: { ...(v.calendar ?? {}), ...patch.calendar } } : {}),
+                  ...(patch.spacedRepetition
+                    ? { spacedRepetition: { ...(v.spacedRepetition ?? {}), ...patch.spacedRepetition } }
+                    : {}),
                 }
               : v,
           );
@@ -381,7 +397,239 @@ const MockProjectClass = vi.hoisted(() => {
           return this.table.views[0].frozenColumnId ?? null;
         },
         getColumnGroups: () => this.table.views[0].columnGroups ?? [],
-        deleteCustomColumn: vi.fn(),
+        isColumnProtected: (colId: string) => {
+          const col: any = this.table.columns.find((c: any) => c.id === colId);
+          return Boolean(col?.protectedRole);
+        },
+        addSpacedRepetitionCustomColumn: ({
+          name,
+          type,
+          side,
+        }: {
+          name: string;
+          type: any;
+          side: "front" | "back";
+        }) => {
+          const col: any = {
+            id: `col_sr_custom_${this.table.columns.length + 1}`,
+            name: name.trim() || "未命名",
+            type,
+            ...(type === "select" || type === "multi_select" ? { options: [] } : {}),
+          };
+          this.table.columns = [...this.table.columns, col];
+          const active = this.stageTable.getActiveView();
+          if (active.type === "spaced_repetition") {
+            const sr = active.spacedRepetition ?? {};
+            if (side === "front") {
+              active.spacedRepetition = {
+                ...sr,
+                frontFieldIds: Array.from(new Set([...(sr.frontFieldIds ?? []), col.id])),
+              };
+            } else if (sr.backFieldIds !== undefined) {
+              active.spacedRepetition = {
+                ...sr,
+                backFieldIds: Array.from(new Set([...sr.backFieldIds, col.id])),
+              };
+            }
+          }
+          this.listeners.forEach((fn) => fn());
+          return col;
+        },
+        reorderSpacedRepetitionFields: vi.fn(
+          (
+            side: "front" | "back",
+            draggedColId: string,
+            targetColId: string,
+            position: "top" | "bottom" | "left" | "right" | "before" | "after",
+            currentRowsOrIds?: readonly string[][] | readonly string[],
+          ) => {
+            if (draggedColId === targetColId) return false;
+            const active = this.stageTable.getActiveView();
+            if (active.type !== "spaced_repetition") return false;
+            const sr = active.spacedRepetition ?? {};
+            const toRows = (input?: readonly string[][] | readonly string[]) =>
+              (input ?? []).map((x) => (Array.isArray(x) ? [...x] : [x])).filter((r) => r.length > 0);
+            const baseRows =
+              side === "front"
+                ? sr.frontFieldRows?.length
+                  ? toRows(sr.frontFieldRows)
+                  : toRows(currentRowsOrIds ?? sr.frontFieldIds)
+                : sr.backFieldRows?.length
+                  ? toRows(sr.backFieldRows)
+                  : toRows(currentRowsOrIds ?? sr.backFieldIds);
+            const withoutDragged = baseRows
+              .map((row) => row.filter((id) => id !== draggedColId))
+              .filter((row) => row.length > 0);
+            let rIdx = -1;
+            let cIdx = -1;
+            for (let r = 0; r < withoutDragged.length; r++) {
+              const c = withoutDragged[r].indexOf(targetColId);
+              if (c !== -1) {
+                rIdx = r;
+                cIdx = c;
+                break;
+              }
+            }
+            if (rIdx === -1) return false;
+            const nextRows = withoutDragged.map((row) => [...row]);
+            if (position === "left") nextRows[rIdx].splice(cIdx, 0, draggedColId);
+            else if (position === "right") nextRows[rIdx].splice(cIdx + 1, 0, draggedColId);
+            else if (position === "top" || position === "before") nextRows.splice(rIdx, 0, [draggedColId]);
+            else nextRows.splice(rIdx + 1, 0, [draggedColId]);
+            active.spacedRepetition = {
+              ...sr,
+              ...(side === "front"
+                ? { frontFieldIds: nextRows.flat(), frontFieldRows: nextRows }
+                : { backFieldIds: nextRows.flat(), backFieldRows: nextRows }),
+            };
+            this.listeners.forEach((fn) => fn());
+            return true;
+          },
+        ),
+        ensureSpacedRepetitionColumns: (notify = true) => {
+          const specs: Array<{ role: string; name: string; type: any; format?: string; opts?: any[] }> = [
+            { role: "source", name: "出处", type: "select", opts: [] },
+            { role: "notes", name: "备注", type: "text" },
+            { role: "knowledge", name: "知识点", type: "multi_select", opts: [] },
+            { role: "mastery", name: "掌握程度", type: "number" },
+            { role: "correctCount", name: "答对次数", type: "number" },
+            { role: "nextInterval", name: "下次作答", type: "formula", format: "0" },
+            { role: "delay", name: "延期", type: "number" },
+            { role: "answerDate", name: "作答日期", type: "date" },
+            { role: "nextDueDate", name: "下次要求作答时间", type: "formula", format: "YYYY-MM-DD" },
+            { role: "dueStatus", name: "是否到期", type: "formula" },
+            {
+              role: "archiveStatus",
+              name: "归档状态",
+              type: "select",
+              opts: [
+                { id: "opt_unarchived", name: "未归档", color: "gray" },
+                { id: "opt_archived", name: "已归档", color: "green" },
+              ],
+            },
+          ];
+          const ids: Record<string, string> = {};
+          let changed = false;
+          for (const spec of specs) {
+            let col = this.table.columns.find((c: any) => c.protectedRole === spec.role);
+            if (!col) {
+              col = {
+                id: `col_sr_${spec.role}`,
+                name: spec.name,
+                type: spec.type,
+                protectedRole: spec.role,
+                ...(spec.opts ? { options: spec.opts } : {}),
+                ...(spec.format ? { format: spec.format } : {}),
+              } as any;
+              this.table.columns = [...this.table.columns, col!];
+              changed = true;
+            }
+            ids[spec.role] = col!.id;
+          }
+          const setFormula = (role: string, formula: string) => {
+            const col = this.table.columns.find((c: any) => c.id === ids[role]);
+            if (col && !col.formula) {
+              col.formula = formula;
+              changed = true;
+            }
+          };
+          setFormula(
+            "nextInterval",
+            `POWER(2, IFBLANK({{${ids.correctCount}}}, 0)) - 1 + IFBLANK({{${ids.delay}}}, 0)`,
+          );
+          setFormula(
+            "nextDueDate",
+            `IF(ISBLANK({{${ids.answerDate}}}), "", TODATE({{${ids.answerDate}}}) + {{${ids.nextInterval}}})`,
+          );
+          setFormula(
+            "dueStatus",
+            `IF({{${ids.archiveStatus}}} = "已归档", "已归档", IF(ISBLANK({{${ids.answerDate}}}), "待复习", IF(TODATE({{${ids.nextDueDate}}}) <= TODAY(), "待复习", "未到期")))`,
+          );
+          if (changed && notify) {
+            this.listeners.forEach((fn) => fn());
+          }
+          return ids;
+        },
+        answerSpacedRepetitionRow: (uuid: string, choice: string, options?: { baseline?: any }) => {
+          const ids = this.stageTable.ensureSpacedRepetitionColumns(false);
+          const r = this.rows.find((item) => item.uuid === uuid);
+          if (!r) return null;
+          const snapshot = options?.baseline ?? {
+            mastery: r.tableFields[ids.mastery],
+            correctCount: r.tableFields[ids.correctCount],
+            delay: r.tableFields[ids.delay],
+            answerDate: r.tableFields[ids.answerDate],
+          };
+          const prevCorrect = typeof snapshot.correctCount === "number" ? snapshot.correctCount : 0;
+          const prevDelay = typeof snapshot.delay === "number" ? snapshot.delay : 0;
+          const now = new Date();
+          const pad = (n: number) => String(n).padStart(2, "0");
+          const todayKey = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+          r.tableFields = {
+            ...r.tableFields,
+            [ids.mastery]: choice === "correct_closed" ? 1 : choice === "correct_open" ? 2 : 3,
+            [ids.correctCount]: choice === "wrong" ? Math.max(0, prevCorrect - 1) : prevCorrect + 1,
+            [ids.delay]: choice === "wrong" ? prevDelay + 1 : 0,
+            [ids.answerDate]: todayKey,
+          };
+          this.listeners.forEach((fn) => fn());
+          return snapshot;
+        },
+        restoreSpacedRepetitionRow: (uuid: string, snapshot: any) => {
+          const ids = this.stageTable.ensureSpacedRepetitionColumns(false);
+          const r = this.rows.find((item) => item.uuid === uuid);
+          if (!r) return false;
+          const next = { ...r.tableFields };
+          for (const [role, val] of [
+            ["mastery", snapshot.mastery],
+            ["correctCount", snapshot.correctCount],
+            ["delay", snapshot.delay],
+            ["answerDate", snapshot.answerDate],
+          ] as const) {
+            if (val === undefined || val === null) delete next[ids[role]];
+            else next[ids[role]] = val;
+          }
+          r.tableFields = next;
+          this.listeners.forEach((fn) => fn());
+          return true;
+        },
+        deleteCustomColumn: vi.fn((colId: string) => {
+          const col: any = this.table.columns.find((c: any) => c.id === colId);
+          if (!col || col.protectedRole) return false;
+          this.table.columns = this.table.columns.filter((c: any) => c.id !== colId);
+          this.table.views = this.table.views.map((v: any) =>
+            v.spacedRepetition
+              ? {
+                  ...v,
+                  spacedRepetition: {
+                    ...v.spacedRepetition,
+                    ...(v.spacedRepetition.frontFieldIds
+                      ? { frontFieldIds: v.spacedRepetition.frontFieldIds.filter((id: string) => id !== colId) }
+                      : {}),
+                    ...(v.spacedRepetition.backFieldIds
+                      ? { backFieldIds: v.spacedRepetition.backFieldIds.filter((id: string) => id !== colId) }
+                      : {}),
+                    ...(v.spacedRepetition.frontFieldRows
+                      ? {
+                          frontFieldRows: v.spacedRepetition.frontFieldRows
+                            .map((r: string[]) => r.filter((id) => id !== colId))
+                            .filter((r: string[]) => r.length > 0),
+                        }
+                      : {}),
+                    ...(v.spacedRepetition.backFieldRows
+                      ? {
+                          backFieldRows: v.spacedRepetition.backFieldRows
+                            .map((r: string[]) => r.filter((id) => id !== colId))
+                            .filter((r: string[]) => r.length > 0),
+                        }
+                      : {}),
+                  },
+                }
+              : v,
+          );
+          this.listeners.forEach((fn) => fn());
+          return true;
+        }),
         updateColumn: (
           colId: string,
           patch: { name?: string; type?: any; formula?: string; format?: string | null },
@@ -408,8 +656,21 @@ const MockProjectClass = vi.hoisted(() => {
           this.listeners.forEach((fn) => fn());
           return opt;
         },
-        getRows: () => this.rows,
-        updateRowPrimaryText: vi.fn(),
+        getRows: () => {
+          const evaluatedMap = evaluateTableFormulas(this.rows, this.table.columns);
+          return this.rows.map((r) => ({
+            ...r,
+            formulaValues: evaluatedMap.get(r.uuid) ?? r.formulaValues ?? {},
+          }));
+        },
+        updateRowPrimaryText: vi.fn((uuid: string, nextText: string) => {
+          const r = this.rows.find((item) => item.uuid === uuid);
+          if (r) {
+            r.primaryText = nextText;
+            this.listeners.forEach((fn) => fn());
+          }
+          return true;
+        }),
         updateRowCustomField: (uuid: string, colId: string, val: any) => {
           const r = this.rows.find((item) => item.uuid === uuid);
           if (r) {
@@ -1491,5 +1752,300 @@ describe("Docked StageTablePanel split & sliders", () => {
       popover.querySelector<HTMLButtonElement>("[data-filter-clear-all]")!.click();
     });
     expect(container.querySelectorAll("tbody tr[data-stage-table-row-id]").length).toBe(3);
+  });
+
+  it("间隔重复视图：创建后自动补齐隐藏受保护列、支持单/双列切换、三按钮作答改选撤销、右上角翻转与正反面双击编辑", async () => {
+    const projectA = new MockProjectClass("sr-proj", ["线粒体双层膜结构", "高尔基体功能"]);
+    projectA.rows[0].images = [{ uuid: "img-1", attachmentId: "att-1" }];
+    const group = createTabGroup([projectA as never], projectA as never);
+    store.set(tabsAtom, [projectA as never]);
+    store.set(tabGroupRootAtom, group);
+    store.set(activeTabAtom, projectA as never);
+    store.set(stageTableOpenAtom, true);
+
+    await React.act(async () => {
+      root.render(
+        <Provider store={store}>
+          <DockedArea onTabClick={vi.fn()} onTabClose={vi.fn()} onTitleBarMouseDown={vi.fn()} isClassroomMode={false} />
+          <div data-pg-titlebar-tab-space />
+        </Provider>,
+      );
+    });
+
+    // 1. 点击 + 新建视图 -> 选择「间隔重复」
+    await React.act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-stage-table-add-view-btn]")!.click();
+    });
+    const srOption = document.body.querySelector<HTMLButtonElement>('[data-create-view-option="spaced_repetition"]')!;
+    expect(srOption).toBeTruthy();
+    await React.act(async () => {
+      srOption.click();
+    });
+
+    // 验证自动补齐 11 列且原始表默认仅可见 name 列
+    expect(projectA.table.columns.length).toBe(11);
+    expect(projectA.table.views[0].visibleColumnIds).toEqual(["name"]);
+    expect(container.querySelector("[data-stage-table-spaced-repetition-view]")).toBeTruthy();
+
+    // 2. 验证默认双列布局，切换到单列后网格列数变为 1
+    const grid = () => container.querySelector<HTMLElement>("[data-sr-card-grid]")!;
+    expect(grid().dataset.srColumnCount).toBe("2");
+    await React.act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-sr-cols="1"]')!.click();
+    });
+    expect(grid().dataset.srColumnCount).toBe("1");
+
+    // 3. 验证卡片正面：文字在上、图片在下、底部从左到右三个等大无文字图标按钮（对-闭卷 / 对-开卷 / 错）
+    const firstCard = () => container.querySelector<HTMLElement>('[data-sr-card="sr-proj-row-0"]')!;
+    expect(firstCard().dataset.srCardSide).toBe("front");
+    expect(firstCard().querySelector('[data-sr-front-text="sr-proj-row-0"]')?.textContent).toContain(
+      "线粒体双层膜结构",
+    );
+    expect(firstCard().querySelector('[data-sr-front-images="sr-proj-row-0"]')).toBeTruthy();
+    const answerButtons = Array.from(firstCard().querySelectorAll<HTMLButtonElement>("[data-sr-answer-btn]"));
+    expect(answerButtons.map((b) => b.dataset.srAnswerBtn)).toEqual(["correct_closed", "correct_open", "wrong"]);
+    // 三个按钮均为纯图标不含可见文字
+    for (const btn of answerButtons) {
+      expect(btn.textContent?.trim()).toBe("");
+      expect(btn.querySelector("svg")).toBeTruthy();
+    }
+
+    // 4. 点击左按钮「对-闭卷」：掌握程度=1，答对次数=1，延期=0，卡片原地保留并高亮
+    await React.act(async () => {
+      answerButtons[0].click();
+    });
+    expect(firstCard().dataset.srAnswered).toBe("correct_closed");
+    expect(projectA.rows[0].tableFields.col_sr_mastery).toBe(1);
+    expect(projectA.rows[0].tableFields.col_sr_correctCount).toBe(1);
+    expect(projectA.rows[0].tableFields.col_sr_delay).toBe(0);
+
+    // 改选中间按钮「对-开卷」：基于首次作答前快照计算，掌握程度=2，答对次数仍为 1
+    await React.act(async () => {
+      firstCard().querySelector<HTMLButtonElement>('[data-sr-answer-btn="correct_open"]')!.click();
+    });
+    expect(firstCard().dataset.srAnswered).toBe("correct_open");
+    expect(projectA.rows[0].tableFields.col_sr_mastery).toBe(2);
+    expect(projectA.rows[0].tableFields.col_sr_correctCount).toBe(1);
+
+    // 改选右按钮「错」：掌握程度=3，答对次数=0，延期=1
+    await React.act(async () => {
+      firstCard().querySelector<HTMLButtonElement>('[data-sr-answer-btn="wrong"]')!.click();
+    });
+    expect(firstCard().dataset.srAnswered).toBe("wrong");
+    expect(projectA.rows[0].tableFields.col_sr_mastery).toBe(3);
+    expect(projectA.rows[0].tableFields.col_sr_correctCount).toBe(0);
+    expect(projectA.rows[0].tableFields.col_sr_delay).toBe(1);
+
+    // 再次点击「错」撤销本次作答
+    await React.act(async () => {
+      firstCard().querySelector<HTMLButtonElement>('[data-sr-answer-btn="wrong"]')!.click();
+    });
+    expect(firstCard().dataset.srAnswered).toBe("");
+    expect(projectA.rows[0].tableFields.col_sr_mastery).toBeUndefined();
+
+    // 5. 正面添加自定义属性：同步到表格视图、默认隐藏、不可删除，并在卡片正面立即展示
+    await React.act(async () => {
+      firstCard().querySelector<HTMLButtonElement>('[data-sr-card-add-front-field="sr-proj-row-0"]')!.click();
+    });
+    const frontNameInput = document.body.querySelector<HTMLInputElement>('[data-sr-add-field-name-input="front"]')!;
+    expect(frontNameInput).toBeTruthy();
+    await React.act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(frontNameInput, "题干提示");
+      frontNameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await React.act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-sr-add-field-confirm="front"]')!.click();
+    });
+    const frontCustomCol = projectA.table.columns.find((c: any) => c.name === "题干提示")!;
+    expect(frontCustomCol).toBeTruthy();
+    expect(frontCustomCol.protectedRole).toBeUndefined();
+    expect(projectA.table.views[0].visibleColumnIds).not.toContain(frontCustomCol.id);
+    expect(firstCard().querySelector(`[data-sr-field-row="${frontCustomCol.id}"]`)).toBeTruthy();
+
+    // 6. 正面双击节点文字直接编辑
+    await React.act(async () => {
+      firstCard()
+        .querySelector<HTMLElement>('[data-sr-front-text="sr-proj-row-0"]')!
+        .dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    const titleInput = firstCard().querySelector<HTMLTextAreaElement>('[data-sr-title-input="sr-proj-row-0"]')!;
+    expect(titleInput).toBeTruthy();
+    await React.act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(titleInput, "线粒体双层膜与嵴");
+      titleInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await React.act(async () => {
+      titleInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
+    });
+    expect(projectA.stageTable.updateRowPrimaryText).toHaveBeenCalledWith("sr-proj-row-0", "线粒体双层膜与嵴");
+
+    // 7. 点击右上角翻转按钮进入背面，展示最后编辑时间与调度字段，支持背面添加自定义属性与双击编辑
+    await React.act(async () => {
+      firstCard().querySelector<HTMLButtonElement>('[data-sr-flip-btn="sr-proj-row-0"]')!.click();
+    });
+    expect(firstCard().dataset.srCardSide).toBe("back");
+    expect(firstCard().querySelector('[data-sr-back-updated-at="sr-proj-row-0"]')).toBeTruthy();
+
+    await React.act(async () => {
+      firstCard().querySelector<HTMLButtonElement>('[data-sr-card-add-back-field="sr-proj-row-0"]')!.click();
+    });
+    const backNameInput = document.body.querySelector<HTMLInputElement>('[data-sr-add-field-name-input="back"]')!;
+    await React.act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(backNameInput, "错因归类");
+      backNameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await React.act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-sr-add-field-confirm="back"]')!.click();
+    });
+    const backCustomCol = projectA.table.columns.find((c: any) => c.name === "错因归类")!;
+    expect(backCustomCol).toBeTruthy();
+    expect(backCustomCol.protectedRole).toBeUndefined();
+    expect(projectA.table.views[0].visibleColumnIds).not.toContain(backCustomCol.id);
+    expect(firstCard().querySelector(`[data-sr-field-row="${backCustomCol.id}"]`)).toBeTruthy();
+
+    // 在背面拖动排序属性：1) 将「延期」拖到第一行右侧并排（自动等分填满宽度）；2) 再拖到第一行上方独立成行
+    const backContainer = firstCard().querySelector<HTMLElement>('[data-sr-back-fields="sr-proj-row-0"]')!;
+    const mockBackItemRects = () => {
+      const items = Array.from(backContainer.querySelectorAll<HTMLElement>("[data-sr-sortable-item]"));
+      items.forEach((el, idx) => {
+        el.getBoundingClientRect = () =>
+          ({
+            top: idx * 40,
+            bottom: (idx + 1) * 40,
+            left: 0,
+            right: 320,
+            width: 320,
+            height: 40,
+            x: 0,
+            y: idx * 40,
+            toJSON: () => {},
+          }) as DOMRect;
+      });
+      return items;
+    };
+    const backItemsBefore = mockBackItemRects();
+    const firstBackColId = backItemsBefore[0].dataset.srSortableItem!;
+    const delayDragHandle = backContainer.querySelector<HTMLElement>('[data-sr-field-drag-handle="col_sr_delay"]')!;
+    expect(delayDragHandle).toBeTruthy();
+
+    // 拖到第一项的右半中间区域 (clientX: 280, clientY: 20) -> position === "right" -> 合并为同一行 [firstBackColId, col_sr_delay]
+    await React.act(async () => {
+      delayDragHandle.dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 20, clientY: 240 }),
+      );
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 280, clientY: 20 }));
+      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 280, clientY: 20 }));
+    });
+    expect(projectA.stageTable.reorderSpacedRepetitionFields).toHaveBeenCalledWith(
+      "back",
+      "col_sr_delay",
+      firstBackColId,
+      "right",
+      expect.any(Array),
+    );
+    const firstRowAfterRight = backContainer.querySelector<HTMLElement>("[data-sr-field-layout-row]")!;
+    expect(firstRowAfterRight.dataset.srFieldLayoutRow).toBe(`${firstBackColId},col_sr_delay`);
+    expect(firstRowAfterRight.style.gridTemplateColumns).toBe("repeat(2, minmax(0, 1fr))");
+
+    // 再将「延期」拖到第一项上边缘 (clientY: 4) -> position === "top" -> 独立成为第一行自动占满 100% 宽度
+    mockBackItemRects();
+    const delayDragHandle2 = backContainer.querySelector<HTMLElement>('[data-sr-field-drag-handle="col_sr_delay"]')!;
+    await React.act(async () => {
+      delayDragHandle2.dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 200, clientY: 60 }),
+      );
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 80, clientY: 4 }));
+      window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 80, clientY: 4 }));
+    });
+    const firstRowAfterTop = backContainer.querySelector<HTMLElement>("[data-sr-field-layout-row]")!;
+    expect(firstRowAfterTop.dataset.srFieldLayoutRow).toBe("col_sr_delay");
+    expect(firstRowAfterTop.style.gridTemplateColumns).toBe("repeat(1, minmax(0, 1fr))");
+
+    // 在视图设置中删除新增的自定义属性列：可正常删除，核心 11 列无删除按钮且不可删除
+    await React.act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-sr-settings-trigger]")!.click();
+    });
+    expect(document.body.querySelector('[data-sr-delete-custom-field="col_sr_delay"]')).toBeNull();
+    const deleteFrontBtn = document.body.querySelector<HTMLButtonElement>(
+      `[data-sr-delete-custom-field="${frontCustomCol.id}"]`,
+    )!;
+    expect(deleteFrontBtn).toBeTruthy();
+    await React.act(async () => {
+      deleteFrontBtn.click();
+    });
+    expect(projectA.table.columns.some((c: any) => c.id === frontCustomCol.id)).toBe(false);
+    expect(projectA.stageTable.deleteCustomColumn(backCustomCol.id)).toBe(true);
+    expect(projectA.stageTable.deleteCustomColumn("col_sr_delay")).toBe(false);
+    await React.act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-sr-settings-trigger]")!.click();
+    });
+
+    await React.act(async () => {
+      firstCard()
+        .querySelector<HTMLElement>('[data-sr-field-row="col_sr_delay"]')!
+        .dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    const delayInput = firstCard().querySelector<HTMLInputElement>('[data-sr-inline-input="col_sr_delay"]')!;
+    expect(delayInput).toBeTruthy();
+    await React.act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(delayInput, "4");
+      delayInput.dispatchEvent(new Event("input", { bubbles: true }));
+      delayInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(projectA.rows[0].tableFields.col_sr_delay).toBe(4);
+
+    // 8. 验证筛选与排序在间隔重复视图中可筛选/排序默认隐藏的间隔重复字段
+    await React.act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-stage-table-filter-toolbar]")!.click();
+    });
+    const filterPopover = document.body.querySelector<HTMLElement>("[data-stage-table-filter-popover]")!;
+    expect(filterPopover).toBeTruthy();
+    await React.act(async () => {
+      filterPopover.querySelector<HTMLButtonElement>("[data-filter-add-condition]")!.click();
+    });
+    const delayFilterOption = document.body.querySelector<HTMLButtonElement>(
+      '[data-filter-field-option="col_sr_delay"]',
+    )!;
+    expect(delayFilterOption).toBeTruthy();
+    await React.act(async () => {
+      delayFilterOption.click();
+    });
+    const condId =
+      filterPopover.querySelector<HTMLElement>("[data-filter-condition-card]")!.dataset.filterConditionCard!;
+    await React.act(async () => {
+      projectA.stageTable.updateFilterCondition(condId, { operator: "eq", value: "4" });
+    });
+    expect(container.querySelectorAll("[data-sr-card]").length).toBe(1);
+    await React.act(async () => {
+      projectA.stageTable.clearAllFilters();
+    });
+    expect(container.querySelectorAll("[data-sr-card]").length).toBe(2);
+
+    // 排序按延期降序：延期=4 的第 0 张卡排在首位，按名称降序可实时重排
+    await React.act(async () => {
+      projectA.stageTable.setSort({ columnId: "col_sr_delay", direction: "asc" });
+    });
+    const cardIdsAsc = Array.from(container.querySelectorAll<HTMLElement>("[data-sr-card]")).map(
+      (el) => el.dataset.srCard,
+    );
+    expect(cardIdsAsc).toEqual(["sr-proj-row-0", "sr-proj-row-1"]);
+    await React.act(async () => {
+      projectA.stageTable.setSort({ columnId: "name", direction: "desc" });
+    });
+    const cardIdsNameDesc = Array.from(container.querySelectorAll<HTMLElement>("[data-sr-card]")).map(
+      (el) => el.dataset.srCard,
+    );
+    expect(cardIdsNameDesc).toEqual(["sr-proj-row-0", "sr-proj-row-1"]);
+    await React.act(async () => {
+      projectA.stageTable.setSort({ columnId: "name", direction: "asc" });
+    });
+    const cardIdsNameAsc = Array.from(container.querySelectorAll<HTMLElement>("[data-sr-card]")).map(
+      (el) => el.dataset.srCard,
+    );
+    expect(cardIdsNameAsc).toEqual(["sr-proj-row-1", "sr-proj-row-0"]);
   });
 });

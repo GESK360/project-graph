@@ -46,6 +46,7 @@ import {
   Link2,
   ListChecks,
   Plus,
+  Repeat,
   Search,
   Sigma,
   SquareDashed,
@@ -150,6 +151,8 @@ export function ViewTypeIcon({ type, className }: { type: TableViewType; classNa
       return <LayoutGrid className={cls} />;
     case "calendar":
       return <CalendarDays className={cls} />;
+    case "spaced_repetition":
+      return <Repeat className={cls} />;
     case "table":
     default:
       return <Table2 className={cls} />;

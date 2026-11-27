@@ -1224,4 +1224,188 @@ describe("StageTableService & .prg v2.8.0", () => {
     expect(project.stageTable.getFilters()).toEqual([]);
     expect(project.stageTable.getFilterGroup().conditions).toEqual([]);
   });
+
+  it("间隔重复视图自动补齐 11 个默认隐藏且不可删除的列，并按作答日期与开卷/闭卷/错规则准确调度且不刷新最后编辑时间", () => {
+    const project = createTestHarness();
+    const initialUpdatedAt = new Date(2026, 9, 10, 10, 0, 0).getTime();
+    const nodeA = new TextNode(project as any, {
+      text: "线粒体结构与功能",
+      collisionBox: new CollisionBox([new Rectangle(new Vector(0, 0), new Vector(120, 60))]),
+      createdAt: initialUpdatedAt,
+      updatedAt: initialUpdatedAt,
+    });
+    project.stageManager.add(nodeA);
+    project.stageTable.captureBaselineDigests();
+
+    // 预先手工建一个同名同类型列（备注），验证创建间隔重复视图时会复用而不是重复创建
+    const existingNotes = project.stageTable.addCustomColumn({ name: "备注", type: "text" });
+    project.stageTable.setColumnVisible(existingNotes.id, false);
+
+    // 1. 创建间隔重复视图
+    const srView = project.stageTable.createView({ type: "spaced_repetition", name: "间隔重复" });
+    expect(srView.type).toBe("spaced_repetition");
+    expect(srView.spacedRepetition?.columns).toBe(2);
+    expect(srView.spacedRepetition?.queueTab).toBe("due");
+
+    const cols = project.stageTable.getColumns();
+    expect(cols.length).toBe(11);
+    const roleIds = project.stageTable.getSpacedRepetitionColumnIds();
+    expect(roleIds.notes).toBe(existingNotes.id);
+    expect(Object.keys(roleIds).length).toBe(11);
+
+    // 2. 所有自动补齐的列在表格视图中默认隐藏，但可展示、移动、重命名，且不可删除或改类型
+    const defaultView = project.table.views[0];
+    expect(defaultView.visibleColumnIds).toEqual(["name"]);
+    project.stageTable.setActiveView(defaultView.id);
+    project.stageTable.setColumnVisible(roleIds.correctCount!, true);
+    project.stageTable.setColumnVisible(roleIds.answerDate!, true);
+    expect(project.stageTable.isColumnVisible(roleIds.correctCount!)).toBe(true);
+    expect(project.stageTable.reorderColumn(roleIds.answerDate!, roleIds.correctCount!, "before")).toBe(true);
+    expect(project.stageTable.getVisibleColumnIds()).toEqual(["name", roleIds.answerDate!, roleIds.correctCount!]);
+    project.stageTable.setColumnVisible(roleIds.answerDate!, false);
+    expect(project.stageTable.isColumnVisible(roleIds.answerDate!)).toBe(false);
+
+    // 不可删除，也不可变更类型；但允许重命名
+    expect(project.stageTable.isColumnProtected(roleIds.correctCount!)).toBe(true);
+    expect(project.stageTable.deleteCustomColumn(roleIds.correctCount!)).toBe(false);
+    expect(project.stageTable.getColumns().some((c) => c.id === roleIds.correctCount)).toBe(true);
+    project.stageTable.updateColumn(roleIds.correctCount!, { name: "累计答对次数", type: "text" });
+    expect(project.stageTable.getColumnSchema(roleIds.correctCount!)?.name).toBe("累计答对次数");
+    expect(project.stageTable.getColumnSchema(roleIds.correctCount!)?.type).toBe("number");
+
+    // 3. 新节点尚未作答时：下次作答=0，下次要求作答时间为空，是否到期="待复习"
+    const getRowA = () => project.stageTable.getRows().find((r) => r.uuid === nodeA.uuid)!;
+    expect(getRowA().formulaValues[roleIds.nextInterval!]?.displayText).toBe("0");
+    expect(getRowA().formulaValues[roleIds.nextDueDate!]?.displayText).toBe("");
+    expect(getRowA().formulaValues[roleIds.dueStatus!]?.displayText).toBe("待复习");
+
+    // 4. 点击「对-闭卷」：掌握程度=1，答对次数+1 (=1)，延期=0，作答日期=today，且不刷新 updatedAt
+    const today = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const todayStr = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+    const snap1 = project.stageTable.answerSpacedRepetitionRow(nodeA.uuid, "correct_closed", { today })!;
+    expect(snap1).toBeTruthy();
+    expect(nodeA.tableFields[roleIds.mastery!]).toBe(1);
+    expect(nodeA.tableFields[roleIds.correctCount!]).toBe(1);
+    expect(nodeA.tableFields[roleIds.delay!]).toBe(0);
+    expect(nodeA.tableFields[roleIds.answerDate!]).toBe(todayStr);
+    expect(nodeA.updatedAt).toBe(initialUpdatedAt);
+    expect(getRowA().formulaValues[roleIds.nextInterval!]?.displayText).toBe("1");
+    expect(getRowA().formulaValues[roleIds.dueStatus!]?.displayText).toBe("未到期");
+
+    // 5. 基于同一次作答前快照改选「对-开卷」：不重复累加答对次数，掌握程度=2，答对次数仍为 1，延期=0
+    project.stageTable.answerSpacedRepetitionRow(nodeA.uuid, "correct_open", { baseline: snap1, today });
+    expect(nodeA.tableFields[roleIds.mastery!]).toBe(2);
+    expect(nodeA.tableFields[roleIds.correctCount!]).toBe(1);
+    expect(nodeA.tableFields[roleIds.delay!]).toBe(0);
+    expect(nodeA.updatedAt).toBe(initialUpdatedAt);
+
+    // 6. 第二次独立作答选「对-闭卷」：答对次数 1 -> 2，掌握程度=1，下次作答 = 2^2 - 1 + 0 = 3
+    project.stageTable.answerSpacedRepetitionRow(nodeA.uuid, "correct_closed", { today });
+    expect(nodeA.tableFields[roleIds.mastery!]).toBe(1);
+    expect(nodeA.tableFields[roleIds.correctCount!]).toBe(2);
+    expect(nodeA.tableFields[roleIds.delay!]).toBe(0);
+    expect(getRowA().formulaValues[roleIds.nextInterval!]?.displayText).toBe("3");
+
+    // 7. 点击「错」：掌握程度=3，答对次数 2 -> 1，延期 0 -> 1，下次作答 = 2^1 - 1 + 1 = 2
+    const snapWrong = project.stageTable.answerSpacedRepetitionRow(nodeA.uuid, "wrong", { today })!;
+    expect(nodeA.tableFields[roleIds.mastery!]).toBe(3);
+    expect(nodeA.tableFields[roleIds.correctCount!]).toBe(1);
+    expect(nodeA.tableFields[roleIds.delay!]).toBe(1);
+    expect(getRowA().formulaValues[roleIds.nextInterval!]?.displayText).toBe("2");
+    expect(nodeA.updatedAt).toBe(initialUpdatedAt);
+
+    // 8. 撤销本次「错」作答，完整恢复且仍不污染 updatedAt
+    expect(project.stageTable.restoreSpacedRepetitionRow(nodeA.uuid, snapWrong)).toBe(true);
+    expect(nodeA.tableFields[roleIds.mastery!]).toBe(1);
+    expect(nodeA.tableFields[roleIds.correctCount!]).toBe(2);
+    expect(nodeA.tableFields[roleIds.delay!]).toBe(0);
+    expect(nodeA.updatedAt).toBe(initialUpdatedAt);
+
+    // 9. 答对次数为 0 时再点「错」：答对次数下限钳制在 0，延期 +1，下次作答 = 1
+    project.stageTable.updateRowCustomFields(nodeA.uuid, {
+      [roleIds.correctCount!]: 0,
+      [roleIds.delay!]: 0,
+    });
+    project.stageTable.answerSpacedRepetitionRow(nodeA.uuid, "wrong", { today });
+    expect(nodeA.tableFields[roleIds.correctCount!]).toBe(0);
+    expect(nodeA.tableFields[roleIds.delay!]).toBe(1);
+    expect(getRowA().formulaValues[roleIds.nextInterval!]?.displayText).toBe("1");
+
+    // 10. 设为「已归档」后，是否到期立即变为「已归档」
+    const archiveCol = project.stageTable.getColumnSchema(roleIds.archiveStatus!)!;
+    const archivedOpt = archiveCol.options!.find((o) => o.name === "已归档")!;
+    project.stageTable.updateRowCustomField(nodeA.uuid, archiveCol.id, archivedOpt.id);
+    expect(getRowA().formulaValues[roleIds.dueStatus!]?.displayText).toBe("已归档");
+
+    // 11. 正面/背面新增自定义属性：同步到表格视图、默认隐藏，且可正常删除（同时清理视图引用）
+    project.stageTable.setActiveView(srView.id);
+    const frontCustom = project.stageTable.addSpacedRepetitionCustomColumn({
+      name: "题干提示",
+      type: "text",
+      side: "front",
+    });
+    const backCustom = project.stageTable.addSpacedRepetitionCustomColumn({
+      name: "错因分析",
+      type: "select",
+      side: "back",
+    });
+    expect(project.stageTable.isColumnProtected(frontCustom.id)).toBe(false);
+    expect(project.stageTable.isColumnProtected(backCustom.id)).toBe(false);
+    expect(project.table.views[0].visibleColumnIds).not.toContain(frontCustom.id);
+    expect(project.table.views[0].visibleColumnIds).not.toContain(backCustom.id);
+    expect(project.stageTable.getActiveView().spacedRepetition?.frontFieldIds).toContain(frontCustom.id);
+
+    // 12. normalizeTableData 完整保留 protectedRole 与 spacedRepetition 配置
+    project.stageTable.updateActiveViewConfig({ spacedRepetition: { columns: 1, queueTab: "all" } });
+    const roundTripped = normalizeTableData(JSON.parse(JSON.stringify(project.table)));
+    expect(roundTripped.columns.filter((c) => Boolean(c.protectedRole)).length).toBe(11);
+    const rtView = roundTripped.views.find((v) => v.id === srView.id);
+    expect(rtView?.type).toBe("spaced_repetition");
+    expect(rtView?.spacedRepetition?.columns).toBe(1);
+    expect(rtView?.spacedRepetition?.queueTab).toBe("all");
+    expect(rtView?.spacedRepetition?.frontFieldIds).toContain(frontCustom.id);
+
+    // 13. 正面与背面属性二维拖动排序（支持左右并排同行与上下独立成行）及持久化
+    const frontCustom2 = project.stageTable.addSpacedRepetitionCustomColumn({
+      name: "参考公式",
+      type: "text",
+      side: "front",
+    });
+    expect(project.stageTable.reorderSpacedRepetitionFields("front", frontCustom2.id, frontCustom.id, "right")).toBe(
+      true,
+    );
+    expect(project.stageTable.getActiveView().spacedRepetition?.frontFieldRows).toEqual([
+      [frontCustom.id, frontCustom2.id],
+    ]);
+    expect(project.stageTable.reorderSpacedRepetitionFields("front", frontCustom2.id, frontCustom.id, "top")).toBe(
+      true,
+    );
+    expect(project.stageTable.getActiveView().spacedRepetition?.frontFieldRows).toEqual([
+      [frontCustom2.id],
+      [frontCustom.id],
+    ]);
+    expect(
+      project.stageTable.reorderSpacedRepetitionFields("back", roleIds.delay!, roleIds.notes!, "left", [
+        [roleIds.notes!],
+        [roleIds.source!, roleIds.delay!],
+      ]),
+    ).toBe(true);
+    expect(project.stageTable.getActiveView().spacedRepetition?.backFieldRows).toEqual([
+      [roleIds.delay!, roleIds.notes!],
+      [roleIds.source!],
+    ]);
+    const rtRows = normalizeTableData(JSON.parse(JSON.stringify(project.table))).views.find((v) => v.id === srView.id);
+    expect(rtRows?.spacedRepetition?.backFieldRows).toEqual([[roleIds.delay!, roleIds.notes!], [roleIds.source!]]);
+
+    // 删除正/背面自定义属性列成功并同步清理 frontFieldIds 与 frontFieldRows；核心 11 列仍不可删除
+    expect(project.stageTable.deleteCustomColumn(frontCustom2.id)).toBe(true);
+    expect(project.stageTable.deleteCustomColumn(frontCustom.id)).toBe(true);
+    expect(project.stageTable.getActiveView().spacedRepetition?.frontFieldRows).toEqual([]);
+    expect(project.stageTable.deleteCustomColumn(backCustom.id)).toBe(true);
+    expect(project.stageTable.getColumnSchema(frontCustom.id)).toBeUndefined();
+    expect(project.stageTable.getColumnSchema(backCustom.id)).toBeUndefined();
+    expect(project.stageTable.getActiveView().spacedRepetition?.frontFieldIds).not.toContain(frontCustom.id);
+    expect(project.stageTable.deleteCustomColumn(roleIds.dueStatus!)).toBe(false);
+  });
 });

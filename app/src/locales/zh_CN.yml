@@ -101,6 +101,7 @@ stageTable:
     unfreeze: 取消冻结
     hide: 隐藏字段
     delete: 删除字段
+    protectedCannotDelete: 间隔重复所需列不可删除
   fieldTypePicker:
     title: 选择字段类型
     navHint: 选择
@@ -127,6 +128,8 @@ stageTable:
     nameLabel: 字段名称
     typeLabel: 字段类型
     systemLocked: 系统属性
+    spacedRepetitionLocked: 间隔重复视图所需列，可隐藏、展示、移动与重命名，不可删除或变更类型
+    spacedRepetitionCustomLocked: 间隔重复视图新增的自定义属性，可隐藏、展示、移动与重命名，不可删除
     delete: 删除字段
     confirm: 确定
     cancel: 取消
@@ -258,11 +261,13 @@ stageTable:
     type_gantt: 甘特视图
     type_gallery: 画册视图
     type_calendar: 日历视图
+    type_spaced_repetition: 间隔重复
     defaultName_table: 表格
     defaultName_kanban: 看板
     defaultName_gantt: 甘特
     defaultName_gallery: 画册
     defaultName_calendar: 日历
+    defaultName_spaced_repetition: 间隔重复
     manageView: 管理视图
     renameView: 重命名
     duplicateView: 复制视图
@@ -365,6 +370,60 @@ stageTable:
     wdFull_4: 周四
     wdFull_5: 周五
     wdFull_6: 周六
+  spacedRepetition:
+    queue_due: 待复习
+    queue_all: 全部
+    queue_upcoming: 未到期
+    queue_archived: 已归档
+    sessionAnsweredRefresh: "本次已答 {{count}} · 刷新"
+    refreshQueueHint: 清空本次留驻状态，刷新待复习队列
+    columnsLabel: 卡片列数
+    cols_1: 单列
+    cols_2: 双列
+    cols_3: 三列
+    cols_4: 四列
+    colsTooltip_1: 切换为单列布局
+    colsTooltip_2: 切换为双列布局
+    colsTooltip_3: 切换为三列布局
+    colsTooltip_4: 切换为四列布局
+    addCard: 添加卡片
+    settings: 视图设置
+    displaySettings: 展示设置
+    backFields: 背面展示字段
+    frontExtraFields: 正面附加字段
+    resetDefault: 恢复默认
+    emptyDue: 当前没有待复习的卡片
+    emptyQueue: 当前分组暂无卡片
+    viewAllCards: 查看全部卡片
+    emptyField: 未填写
+    doubleClickToEdit: 双击调整
+    dragFieldHint: 拖动调整属性顺序
+    inlineTextHint: Ctrl+Enter 保存 · Esc 取消
+    backDoubleClickHint: 双击字段可直接调整
+    flipToBack: 翻转至背面
+    flipToFront: 翻转至正面
+    undoAnswer: 撤销本次作答
+    mastery_1: 闭卷
+    mastery_2: 开卷
+    mastery_3: 错
+    answeredBadge_correct_open: 对-开卷
+    answeredBadge_correct_closed: 对-闭卷
+    answeredBadge_wrong: 错
+    answerCorrectOpen: 对-开卷
+    answerCorrectOpenTooltip: 对-开卷（掌握程度=2，答对次数+1，延期=0）
+    answerCorrectClosed: 对-闭卷
+    answerCorrectClosedTooltip: 对-闭卷（掌握程度=1，答对次数+1，延期=0）
+    answerWrong: 错
+    answerWrongTooltip: 错（掌握程度=3，答对次数-1，延期+1）
+    addCustomField: 新增属性
+    addFrontFieldTitle: 添加正面自定义属性
+    addBackFieldTitle: 添加背面自定义属性
+    addBackFieldBtn: 添加属性
+    addCustomFieldHint: 新属性会同步到表格视图中（默认隐藏，可随时删除）
+    sectionLearning: 自我理解与基础
+    sectionSchedule: 间隔重复数据
+    sectionCustom: 其他属性
+    sectionMeta: 节点信息与时间
   lightbox:
     prevImage: 上一张图片
     nextImage: 下一张图片

@@ -82,6 +82,33 @@ export function pickNextSelectOptionColor(existingOptions: readonly TableSelectO
   return best;
 }
 
+export type SpacedRepetitionColumnRole =
+  | "source"
+  | "notes"
+  | "knowledge"
+  | "mastery"
+  | "correctCount"
+  | "answerDate"
+  | "delay"
+  | "nextInterval"
+  | "nextDueDate"
+  | "dueStatus"
+  | "archiveStatus";
+
+export const SPACED_REPETITION_COLUMN_ROLES: readonly SpacedRepetitionColumnRole[] = [
+  "source",
+  "notes",
+  "knowledge",
+  "mastery",
+  "correctCount",
+  "answerDate",
+  "delay",
+  "nextInterval",
+  "nextDueDate",
+  "dueStatus",
+  "archiveStatus",
+];
+
 export interface TableColumnSchema {
   id: string;
   name: string;
@@ -90,15 +117,27 @@ export interface TableColumnSchema {
   options?: TableSelectOption[];
   format?: string;
   formula?: string;
+  protectedRole?: SpacedRepetitionColumnRole;
+}
+
+export function isProtectedTableColumn(column?: TableColumnSchema | null): boolean {
+  return Boolean(column?.protectedRole);
 }
 
 export type TableCellValue = string | number | string[] | null;
 
 export type TableFields = Record<string, TableCellValue>;
 
-export type TableViewType = "table" | "kanban" | "gantt" | "gallery" | "calendar";
+export type TableViewType = "table" | "kanban" | "gantt" | "gallery" | "calendar" | "spaced_repetition";
 
-export const TABLE_VIEW_TYPES: readonly TableViewType[] = ["table", "kanban", "gantt", "gallery", "calendar"];
+export const TABLE_VIEW_TYPES: readonly TableViewType[] = [
+  "table",
+  "kanban",
+  "gantt",
+  "gallery",
+  "calendar",
+  "spaced_repetition",
+];
 
 export type TableRowHeight = "compact" | "medium" | "tall";
 
@@ -145,6 +184,21 @@ export interface TableCalendarViewConfig {
   cellHeight?: CalendarCellHeight;
   weekStartsOn?: 0 | 1;
   showFieldNames?: boolean;
+}
+
+export type SpacedRepetitionColumns = 1 | 2 | 3 | 4;
+export type SpacedRepetitionQueueTab = "due" | "all" | "upcoming" | "archived";
+export type SpacedRepetitionAnswerChoice = "correct_open" | "correct_closed" | "wrong";
+export type SpacedRepetitionFieldDropPosition = "top" | "bottom" | "left" | "right" | "before" | "after";
+
+export interface TableSpacedRepetitionViewConfig {
+  columns?: SpacedRepetitionColumns;
+  queueTab?: SpacedRepetitionQueueTab;
+  imageFit?: "contain" | "cover";
+  frontFieldIds?: string[];
+  backFieldIds?: string[];
+  frontFieldRows?: string[][];
+  backFieldRows?: string[][];
 }
 
 export interface TableColumnGroup {
@@ -235,6 +289,7 @@ export interface TableViewSchema {
   gantt?: TableGanttViewConfig;
   gallery?: TableGalleryViewConfig;
   calendar?: TableCalendarViewConfig;
+  spacedRepetition?: TableSpacedRepetitionViewConfig;
 }
 
 export interface PrgTableData {
@@ -323,6 +378,12 @@ export function normalizeTableData(raw: unknown): PrgTableData {
             }))
         : undefined;
 
+      const protectedRole =
+        typeof col.protectedRole === "string" &&
+        SPACED_REPETITION_COLUMN_ROLES.includes(col.protectedRole as SpacedRepetitionColumnRole)
+          ? (col.protectedRole as SpacedRepetitionColumnRole)
+          : undefined;
+
       columns.push({
         id: col.id,
         name: col.name,
@@ -331,6 +392,7 @@ export function normalizeTableData(raw: unknown): PrgTableData {
         options,
         format: typeof col.format === "string" ? col.format : undefined,
         formula: typeof col.formula === "string" ? col.formula : undefined,
+        ...(protectedRole ? { protectedRole } : {}),
       });
     }
   }
@@ -562,6 +624,53 @@ export function normalizeTableData(raw: unknown): PrgTableData {
         };
       }
 
+      let spacedRepetition: TableSpacedRepetitionViewConfig | undefined;
+      if (view.spacedRepetition && typeof view.spacedRepetition === "object" && !Array.isArray(view.spacedRepetition)) {
+        const sr = view.spacedRepetition as Record<string, unknown>;
+        const normalizeFieldIdList = (val: unknown): string[] | undefined => {
+          if (!Array.isArray(val)) return undefined;
+          return Array.from(
+            new Set(val.filter((id): id is string => typeof id === "string" && validColumnIds.has(id))),
+          );
+        };
+        const normalizeFieldRows = (val: unknown): string[][] | undefined => {
+          if (!Array.isArray(val)) return undefined;
+          const seen = new Set<string>();
+          const rows: string[][] = [];
+          for (const rawRow of val) {
+            if (!Array.isArray(rawRow)) continue;
+            const cleaned: string[] = [];
+            for (const id of rawRow) {
+              if (typeof id === "string" && validColumnIds.has(id) && !seen.has(id)) {
+                seen.add(id);
+                cleaned.push(id);
+              }
+            }
+            if (cleaned.length > 0) {
+              rows.push(cleaned);
+            }
+          }
+          return rows;
+        };
+        const frontFieldIds = normalizeFieldIdList(sr.frontFieldIds);
+        const backFieldIds = normalizeFieldIdList(sr.backFieldIds);
+        const frontFieldRows = normalizeFieldRows(sr.frontFieldRows);
+        const backFieldRows = normalizeFieldRows(sr.backFieldRows);
+        spacedRepetition = {
+          ...(sr.columns === 1 || sr.columns === 2 || sr.columns === 3 || sr.columns === 4
+            ? { columns: sr.columns }
+            : {}),
+          ...(sr.queueTab === "due" || sr.queueTab === "all" || sr.queueTab === "upcoming" || sr.queueTab === "archived"
+            ? { queueTab: sr.queueTab }
+            : {}),
+          ...(sr.imageFit === "contain" || sr.imageFit === "cover" ? { imageFit: sr.imageFit } : {}),
+          ...(frontFieldIds !== undefined ? { frontFieldIds } : {}),
+          ...(backFieldIds !== undefined ? { backFieldIds } : {}),
+          ...(frontFieldRows !== undefined ? { frontFieldRows } : {}),
+          ...(backFieldRows !== undefined ? { backFieldRows } : {}),
+        };
+      }
+
       views.push({
         id: view.id,
         name: view.name,
@@ -579,6 +688,7 @@ export function normalizeTableData(raw: unknown): PrgTableData {
         ...(gantt && Object.keys(gantt).length > 0 ? { gantt } : {}),
         ...(gallery && Object.keys(gallery).length > 0 ? { gallery } : {}),
         ...(calendar && Object.keys(calendar).length > 0 ? { calendar } : {}),
+        ...(spacedRepetition && Object.keys(spacedRepetition).length > 0 ? { spacedRepetition } : {}),
       });
     }
   }

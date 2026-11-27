@@ -25,6 +25,7 @@ import { StageTableFilterToolbarPopover } from "@/components/stage-table-filter-
 import { StageTableGalleryView } from "@/components/stage-table-gallery-view";
 import { StageTableGanttView } from "@/components/stage-table-gantt-view";
 import { StageTableKanbanView } from "@/components/stage-table-kanban-view";
+import { StageTableSpacedRepetitionView } from "@/components/stage-table-spaced-repetition-view";
 import { StageTableRecordDialog, ViewTypeIcon } from "@/components/stage-table-views-shared";
 import { hasVolatileFormulas } from "@/core/service/dataManageService/stageTableService/formulaEngine";
 import type { Project } from "@/core/Project";
@@ -42,6 +43,7 @@ import {
   collectColumnFilterBuckets,
   countActiveFilterConditions,
   isFilterConditionActive,
+  isProtectedTableColumn,
   pickNextSelectOptionColor,
   type CustomColumnType,
   type SystemColumnId,
@@ -93,6 +95,7 @@ import {
   List,
   ListChecks,
   ListTree,
+  Lock,
   MoreVertical,
   Pencil,
   Plus,
@@ -3166,6 +3169,8 @@ export default function StageTablePanel({ project }: { project: Project }) {
   const renderEditFieldFormContent = (colId: string) => {
     const customCol = customColumnMap.get(colId);
     const isCustom = Boolean(customCol);
+    const isProtectedCol = isProtectedTableColumn(customCol);
+    const isTypeLockedCol = Boolean(customCol?.protectedRole);
     return (
       <div data-stage-table-edit-field-panel className="w-64 p-3 text-xs select-none">
         {/* 第一行：字段名称输入框（自动聚焦全选，蓝框高亮，对应图 1） */}
@@ -3186,9 +3191,9 @@ export default function StageTablePanel({ project }: { project: Project }) {
           className="border-primary/80 focus-visible:ring-primary/50 h-8 text-xs"
         />
 
-        {/* 第二行：字段类型下拉选择（点击展开图 2 双列面板；系统属性锁定类型） */}
+        {/* 第二行：字段类型下拉选择（点击展开图 2 双列面板；系统属性与间隔重复核心列锁定类型） */}
         <div className="mt-2.5">
-          {isCustom ? (
+          {isCustom && !isTypeLockedCol ? (
             <Popover open={editTypeDropdownOpen} onOpenChange={setEditTypeDropdownOpen}>
               <PopoverTrigger asChild>
                 <button
@@ -3223,10 +3228,21 @@ export default function StageTablePanel({ project }: { project: Project }) {
           ) : (
             <div className="border-border/70 bg-muted/40 text-muted-foreground flex h-8 w-full items-center justify-between rounded-md border px-2.5 text-xs">
               <span className="flex items-center gap-2 truncate">
-                <ColumnIcon columnId={colId} />
+                <ColumnIcon columnId={colId} customColumn={customCol} />
                 <span className="truncate">{getColumnTypeName(colId)}</span>
               </span>
-              <ChevronDown className="size-3.5 shrink-0 opacity-40" />
+              {isTypeLockedCol ? (
+                <Lock className="size-3.5 shrink-0 opacity-60" />
+              ) : (
+                <ChevronDown className="size-3.5 shrink-0 opacity-40" />
+              )}
+            </div>
+          )}
+          {isProtectedCol && (
+            <div className="text-muted-foreground mt-1.5 text-[11px] leading-snug">
+              {isTypeLockedCol
+                ? t("fieldDialog.spacedRepetitionLocked")
+                : t("fieldDialog.spacedRepetitionCustomLocked")}
             </div>
           )}
         </div>
@@ -3809,6 +3825,30 @@ export default function StageTablePanel({ project }: { project: Project }) {
           onSelectRows={handleViewSelectRows}
           onOpenRecord={(uuid) => setRecordDialogRowUuid(uuid)}
           onPreviewImage={(attId, rowUuid) => openImagePreview(attId, rowUuid)}
+          t={t}
+        />
+      )}
+
+      {activeViewType === "spaced_repetition" && (
+        <StageTableSpacedRepetitionView
+          project={project}
+          activeView={activeView}
+          allRows={allRows}
+          rows={rows}
+          allColumnIds={allPropertyIds}
+          filterableColumnIds={filterableColumnIds}
+          filterColumnGroups={filterColumnGroups}
+          customColumns={customColumns}
+          customColumnMap={customColumnMap}
+          activeFilters={activeFilters}
+          activeFilterGroup={activeFilterGroup}
+          activeSort={activeSort}
+          selectedRowIds={selectedRowIdsForViews}
+          getColumnLabel={getColumnLabel}
+          onSelectRows={handleViewSelectRows}
+          onOpenRecord={(uuid) => setRecordDialogRowUuid(uuid)}
+          onPreviewImage={(attId, rowUuid) => openImagePreview(attId, rowUuid)}
+          onOpenFormulaEditor={(colId, rowUuid) => openFormulaEditorForColumn(colId, rowUuid)}
           t={t}
         />
       )}
@@ -4750,15 +4790,23 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                       <Tooltip>
                                         <TooltipTrigger asChild>
                                           <ContextMenuPrimitive.Item
-                                            disabled={!customCol}
-                                            aria-label={t("headerMenu.delete")}
+                                            disabled={!customCol || isProtectedTableColumn(customCol)}
+                                            aria-label={
+                                              isProtectedTableColumn(customCol)
+                                                ? t("headerMenu.protectedCannotDelete")
+                                                : t("headerMenu.delete")
+                                            }
                                             onSelect={() => project.stageTable.deleteCustomColumn?.(colId)}
                                             className="text-muted-foreground hover:bg-destructive/15 hover:text-destructive focus:bg-destructive/15 focus:text-destructive flex size-7 cursor-pointer items-center justify-center rounded-md outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-35"
                                           >
                                             <Trash2 className="size-3.5" />
                                           </ContextMenuPrimitive.Item>
                                         </TooltipTrigger>
-                                        <TooltipContent side="bottom">{t("headerMenu.delete")}</TooltipContent>
+                                        <TooltipContent side="bottom">
+                                          {isProtectedTableColumn(customCol)
+                                            ? t("headerMenu.protectedCannotDelete")
+                                            : t("headerMenu.delete")}
+                                        </TooltipContent>
                                       </Tooltip>
                                     </div>
                                   </ContextMenuContent>

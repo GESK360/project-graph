@@ -97,6 +97,7 @@ stageTable:
     unfreeze: 取消凍結
     hide: 隱藏欄位
     delete: 刪除欄位
+    protectedCannotDelete: 間隔重複所需欄位不可刪除
   fieldTypePicker:
     title: 選擇欄位類型
     navHint: 選擇
@@ -123,6 +124,8 @@ stageTable:
     nameLabel: 欄位名稱
     typeLabel: 欄位類型
     systemLocked: 系統屬性
+    spacedRepetitionLocked: 間隔重複檢視所需欄位，可隱藏、顯示、移動與重新命名，不可刪除或變更類型
+    spacedRepetitionCustomLocked: 間隔重複檢視新增的自訂屬性，可隱藏、顯示、移動與重新命名，不可刪除
     delete: 刪除欄位
     confirm: 確定
     cancel: 取消
@@ -254,11 +257,13 @@ stageTable:
     type_gantt: 甘特檢視
     type_gallery: 畫冊檢視
     type_calendar: 行事曆檢視
+    type_spaced_repetition: 間隔重複
     defaultName_table: 表格
     defaultName_kanban: 看板
     defaultName_gantt: 甘特
     defaultName_gallery: 畫冊
     defaultName_calendar: 行事曆
+    defaultName_spaced_repetition: 間隔重複
     manageView: 管理檢視
     renameView: 重新命名
     duplicateView: 複製檢視
@@ -361,6 +366,60 @@ stageTable:
     wdFull_4: 週四
     wdFull_5: 週五
     wdFull_6: 週六
+  spacedRepetition:
+    queue_due: 待複習
+    queue_all: 全部
+    queue_upcoming: 未到期
+    queue_archived: 已封存
+    sessionAnsweredRefresh: "本次已答 {{count}} · 重新整理"
+    refreshQueueHint: 清空本次留駐狀態，重新整理待複習佇列
+    columnsLabel: 卡片欄數
+    cols_1: 單欄
+    cols_2: 雙欄
+    cols_3: 三欄
+    cols_4: 四欄
+    colsTooltip_1: 切換為單欄版面
+    colsTooltip_2: 切換為雙欄版面
+    colsTooltip_3: 切換為三欄版面
+    colsTooltip_4: 切換為四欄版面
+    addCard: 新增卡片
+    settings: 檢視設定
+    displaySettings: 顯示設定
+    backFields: 背面顯示欄位
+    frontExtraFields: 正面附加欄位
+    resetDefault: 恢復預設
+    emptyDue: 目前沒有待複習的卡片
+    emptyQueue: 目前分組暫無卡片
+    viewAllCards: 檢視全部卡片
+    emptyField: 未填寫
+    doubleClickToEdit: 連按兩下調整
+    dragFieldHint: 拖曳調整屬性順序
+    inlineTextHint: Ctrl+Enter 儲存 · Esc 取消
+    backDoubleClickHint: 連按兩下欄位可直接調整
+    flipToBack: 翻轉至背面
+    flipToFront: 翻轉至正面
+    undoAnswer: 復原本次作答
+    mastery_1: 閉卷
+    mastery_2: 開卷
+    mastery_3: 錯
+    answeredBadge_correct_open: 對-開卷
+    answeredBadge_correct_closed: 對-閉卷
+    answeredBadge_wrong: 錯
+    answerCorrectOpen: 對-開卷
+    answerCorrectOpenTooltip: 對-開卷（掌握程度=2，答對次數+1，延期=0）
+    answerCorrectClosed: 對-閉卷
+    answerCorrectClosedTooltip: 對-閉卷（掌握程度=1，答對次數+1，延期=0）
+    answerWrong: 錯
+    answerWrongTooltip: 錯（掌握程度=3，答對次數-1，延期+1）
+    addCustomField: 新增屬性
+    addFrontFieldTitle: 新增正面自訂屬性
+    addBackFieldTitle: 新增背面自訂屬性
+    addBackFieldBtn: 新增屬性
+    addCustomFieldHint: 新屬性會同步至表格檢視（預設隱藏，可隨時刪除）
+    sectionLearning: 自我理解與基礎
+    sectionSchedule: 間隔重複資料
+    sectionCustom: 其他屬性
+    sectionMeta: 節點資訊與時間
   lightbox:
     prevImage: 上一張圖片
     nextImage: 下一張圖片

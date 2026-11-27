@@ -35,9 +35,14 @@ import {
   getColumnFilterKind,
   getDefaultFilterOperator,
   getFilterOperatorsForKind,
+  isProtectedTableColumn,
   pickNextSelectOptionColor,
+  toLocalDateKey,
   type CustomColumnType,
   type FormulaEvaluatedCell,
+  type SpacedRepetitionAnswerChoice,
+  type SpacedRepetitionColumnRole,
+  type SpacedRepetitionFieldDropPosition,
   type SystemColumnId,
   type TableCalendarViewConfig,
   type TableCellValue,
@@ -56,6 +61,7 @@ import {
   type TableSelectOption,
   type TableSortConfig,
   type TableSortDirection,
+  type TableSpacedRepetitionViewConfig,
   type TableViewSchema,
   type TableViewType,
 } from "@/types/table";
@@ -175,11 +181,71 @@ export {
   type ColumnFilterBucket,
 } from "@/types/table";
 
+export interface SpacedRepetitionAnswerSnapshot {
+  mastery: TableCellValue | undefined;
+  correctCount: TableCellValue | undefined;
+  delay: TableCellValue | undefined;
+  answerDate: TableCellValue | undefined;
+}
+
+export type SpacedRepetitionColumnMap = Record<SpacedRepetitionColumnRole, string>;
+
+interface SpacedRepetitionColumnSpec {
+  role: SpacedRepetitionColumnRole;
+  name: string;
+  type: CustomColumnType;
+  format?: string;
+  defaultOptions?: ReadonlyArray<{ name: string; color: string }>;
+  buildFormula?: (roleIds: SpacedRepetitionColumnMap) => string;
+}
+
+const SPACED_REPETITION_COLUMN_SPECS: readonly SpacedRepetitionColumnSpec[] = [
+  { role: "source", name: "出处", type: "select" },
+  { role: "notes", name: "备注", type: "text" },
+  { role: "knowledge", name: "知识点", type: "multi_select" },
+  { role: "mastery", name: "掌握程度", type: "number" },
+  { role: "correctCount", name: "答对次数", type: "number" },
+  {
+    role: "nextInterval",
+    name: "下次作答",
+    type: "formula",
+    format: "0",
+    buildFormula: (ids) => `POWER(2, IFBLANK({{${ids.correctCount}}}, 0)) - 1 + IFBLANK({{${ids.delay}}}, 0)`,
+  },
+  { role: "delay", name: "延期", type: "number" },
+  { role: "answerDate", name: "作答日期", type: "date" },
+  {
+    role: "nextDueDate",
+    name: "下次要求作答时间",
+    type: "formula",
+    format: "YYYY-MM-DD",
+    buildFormula: (ids) =>
+      `IF(ISBLANK({{${ids.answerDate}}}), "", TODATE({{${ids.answerDate}}}) + {{${ids.nextInterval}}})`,
+  },
+  {
+    role: "dueStatus",
+    name: "是否到期",
+    type: "formula",
+    buildFormula: (ids) =>
+      `IF({{${ids.archiveStatus}}} = "已归档", "已归档", IF(ISBLANK({{${ids.answerDate}}}), "待复习", IF(TODATE({{${ids.nextDueDate}}}) <= TODAY(), "待复习", "未到期")))`,
+  },
+  {
+    role: "archiveStatus",
+    name: "归档状态",
+    type: "select",
+    defaultOptions: [
+      { name: "未归档", color: "gray" },
+      { name: "已归档", color: "green" },
+    ],
+  },
+];
+
 @service("stageTable")
 export class StageTableService implements Service {
   private readonly listeners = new Set<() => void>();
   private readonly selectionListeners = new Set<(selectedUUIDs: string[]) => void>();
   private readonly baselineDigests = new Map<string, string>();
+  private readonly suppressTimestampUuids = new Set<string>();
   private readonly detailsJsonCache = new WeakMap<object, string>();
   private readonly fieldsJsonCache = new WeakMap<object, string>();
   private baselineInitialized = false;
@@ -280,9 +346,13 @@ export class StageTableService implements Service {
       gantt: "甘特",
       gallery: "画册",
       calendar: "日历",
+      spaced_repetition: "间隔重复",
     };
     const baseName = input.name?.trim() || defaultLabels[input.type];
     const uniqueName = this.buildUniqueViewName(baseName);
+    if (input.type === "spaced_repetition") {
+      this.ensureSpacedRepetitionColumns(false);
+    }
     const activeView = this.getActiveView();
     const columns = this.project.table.columns;
     const selectCols = columns.filter((c) => c.type === "select");
@@ -350,6 +420,15 @@ export class StageTableService implements Service {
           showFieldNames: false,
         },
       };
+    } else if (input.type === "spaced_repetition") {
+      nextView = {
+        ...nextView,
+        spacedRepetition: {
+          columns: 2,
+          queueTab: "due",
+          imageFit: "contain",
+        },
+      };
     }
 
     this.project.table = {
@@ -407,6 +486,23 @@ export class StageTableService implements Service {
       gantt: source.gantt ? { ...source.gantt } : undefined,
       gallery: source.gallery ? { ...source.gallery } : undefined,
       calendar: source.calendar ? { ...source.calendar } : undefined,
+      spacedRepetition: source.spacedRepetition
+        ? {
+            ...source.spacedRepetition,
+            ...(source.spacedRepetition.frontFieldIds
+              ? { frontFieldIds: [...source.spacedRepetition.frontFieldIds] }
+              : {}),
+            ...(source.spacedRepetition.backFieldIds
+              ? { backFieldIds: [...source.spacedRepetition.backFieldIds] }
+              : {}),
+            ...(source.spacedRepetition.frontFieldRows
+              ? { frontFieldRows: source.spacedRepetition.frontFieldRows.map((row) => [...row]) }
+              : {}),
+            ...(source.spacedRepetition.backFieldRows
+              ? { backFieldRows: source.spacedRepetition.backFieldRows.map((row) => [...row]) }
+              : {}),
+          }
+        : undefined,
     };
 
     const nextViews = [...this.project.table.views];
@@ -470,6 +566,7 @@ export class StageTableService implements Service {
     gantt?: Partial<TableGanttViewConfig>;
     gallery?: Partial<TableGalleryViewConfig>;
     calendar?: Partial<TableCalendarViewConfig>;
+    spacedRepetition?: Partial<TableSpacedRepetitionViewConfig>;
   }): void {
     const activeView = this.getActiveView();
     this.project.table = {
@@ -483,6 +580,9 @@ export class StageTableService implements Service {
           ...(patch.gantt ? { gantt: { ...(view.gantt ?? {}), ...patch.gantt } } : {}),
           ...(patch.gallery ? { gallery: { ...(view.gallery ?? {}), ...patch.gallery } } : {}),
           ...(patch.calendar ? { calendar: { ...(view.calendar ?? {}), ...patch.calendar } } : {}),
+          ...(patch.spacedRepetition
+            ? { spacedRepetition: { ...(view.spacedRepetition ?? {}), ...patch.spacedRepetition } }
+            : {}),
         };
       }),
     };
@@ -546,12 +646,154 @@ export class StageTableService implements Service {
       if (changed) calendar = nextCal;
     }
 
+    let spacedRepetition = view.spacedRepetition;
+    if (spacedRepetition && removed) {
+      let changed = false;
+      const nextSr = { ...spacedRepetition };
+      if (nextSr.frontFieldIds?.includes(columnId)) {
+        nextSr.frontFieldIds = nextSr.frontFieldIds.filter((id) => id !== columnId);
+        changed = true;
+      }
+      if (nextSr.backFieldIds?.includes(columnId)) {
+        nextSr.backFieldIds = nextSr.backFieldIds.filter((id) => id !== columnId);
+        changed = true;
+      }
+      if (nextSr.frontFieldRows?.some((row) => row.includes(columnId))) {
+        nextSr.frontFieldRows = nextSr.frontFieldRows
+          .map((row) => row.filter((id) => id !== columnId))
+          .filter((row) => row.length > 0);
+        changed = true;
+      }
+      if (nextSr.backFieldRows?.some((row) => row.includes(columnId))) {
+        nextSr.backFieldRows = nextSr.backFieldRows
+          .map((row) => row.filter((id) => id !== columnId))
+          .filter((row) => row.length > 0);
+        changed = true;
+      }
+      if (changed) spacedRepetition = nextSr;
+    }
+
     return {
       ...view,
       ...(kanban ? { kanban } : {}),
       ...(gantt ? { gantt } : {}),
       ...(calendar ? { calendar } : {}),
+      ...(spacedRepetition ? { spacedRepetition } : {}),
     };
+  }
+
+  public isColumnProtected(columnId: string): boolean {
+    return isProtectedTableColumn(this.getColumnSchema(columnId));
+  }
+
+  public getSpacedRepetitionColumnIds(): Partial<SpacedRepetitionColumnMap> {
+    const result: Partial<SpacedRepetitionColumnMap> = {};
+    for (const col of this.project.table.columns) {
+      if (col.protectedRole) {
+        result[col.protectedRole] = col.id;
+      }
+    }
+    return result;
+  }
+
+  /**
+   * 补齐间隔重复所需的 11 个列（若已有同名同类型列则复用并标记为受保护不可删）。
+   * 新增列默认不写入任何视图的 visibleColumnIds，在表格视图中保持隐藏。
+   */
+  public ensureSpacedRepetitionColumns(notify: boolean = true): SpacedRepetitionColumnMap {
+    const nextColumns = this.project.table.columns.map((col) => ({
+      ...col,
+      ...(col.options ? { options: col.options.map((opt) => ({ ...opt })) } : {}),
+    }));
+    const claimedIds = new Set<string>();
+    const roleIds = {} as SpacedRepetitionColumnMap;
+    const newlyCreatedRoles = new Set<SpacedRepetitionColumnRole>();
+    let mutated = false;
+
+    for (const spec of SPACED_REPETITION_COLUMN_SPECS) {
+      let existing = nextColumns.find((col) => col.protectedRole === spec.role && !claimedIds.has(col.id));
+      if (!existing) {
+        existing = nextColumns.find(
+          (col) => !col.protectedRole && !claimedIds.has(col.id) && col.name === spec.name && col.type === spec.type,
+        );
+      }
+
+      if (existing) {
+        claimedIds.add(existing.id);
+        roleIds[spec.role] = existing.id;
+        if (existing.protectedRole !== spec.role) {
+          existing.protectedRole = spec.role;
+          mutated = true;
+        }
+        if (spec.defaultOptions) {
+          const opts = existing.options ? [...existing.options] : [];
+          let optsChanged = !existing.options;
+          for (const defOpt of spec.defaultOptions) {
+            if (!opts.some((o) => o.name === defOpt.name)) {
+              opts.push({ id: createSelectOptionId(), name: defOpt.name, color: defOpt.color });
+              optsChanged = true;
+            }
+          }
+          if (optsChanged) {
+            existing.options = opts;
+            mutated = true;
+          }
+        }
+      } else {
+        const newId = createCustomColumnId();
+        claimedIds.add(newId);
+        roleIds[spec.role] = newId;
+        newlyCreatedRoles.add(spec.role);
+        const created: TableColumnSchema = {
+          id: newId,
+          name: spec.name,
+          type: spec.type,
+          protectedRole: spec.role,
+          ...(spec.type === "select" || spec.type === "multi_select"
+            ? {
+                options: (spec.defaultOptions ?? []).map((opt) => ({
+                  id: createSelectOptionId(),
+                  name: opt.name,
+                  color: opt.color,
+                })),
+              }
+            : {}),
+          ...(spec.format ? { format: spec.format } : {}),
+        };
+        nextColumns.push(created);
+        mutated = true;
+      }
+    }
+
+    for (const spec of SPACED_REPETITION_COLUMN_SPECS) {
+      if (!spec.buildFormula) continue;
+      const col = nextColumns.find((c) => c.id === roleIds[spec.role]);
+      if (!col) continue;
+      const formulaText = spec.buildFormula(roleIds);
+      if (newlyCreatedRoles.has(spec.role) || !col.formula || !col.formula.trim()) {
+        if (col.formula !== formulaText) {
+          col.formula = formulaText;
+          mutated = true;
+        }
+      }
+      if (spec.format && !col.format) {
+        col.format = spec.format;
+        mutated = true;
+      }
+    }
+
+    if (mutated) {
+      this.project.table = {
+        ...this.project.table,
+        columns: nextColumns,
+      };
+      this.project.projectState = ProjectState.Unsaved;
+      if (notify) {
+        this.notifyChange();
+      }
+    }
+
+    return roleIds;
   }
 
   public getColumns(): TableColumnSchema[] {
@@ -647,6 +889,179 @@ export class StageTableService implements Service {
       ...this.project.table,
       views: this.project.table.views.map((view) =>
         view.id === activeView.id ? { ...view, visibleColumnIds: nextOrder } : view,
+      ),
+    };
+    this.project.projectState = ProjectState.Unsaved;
+    this.notifyChange();
+    return true;
+  }
+
+  /**
+   * 在间隔重复视图的正面或背面新增自定义属性列：
+   * 同步写入表格列集合，在表格视图中默认隐藏（不加入任何视图的 visibleColumnIds），支持删除。
+   */
+  public addSpacedRepetitionCustomColumn(input: {
+    name: string;
+    type: CustomColumnType;
+    side: "front" | "back";
+    formula?: string;
+    format?: string;
+  }): TableColumnSchema {
+    const id = createCustomColumnId();
+    const trimmedName = input.name.trim() || "未命名";
+    const newColumn: TableColumnSchema = {
+      id,
+      name: trimmedName,
+      type: input.type,
+      ...(input.type === "select" || input.type === "multi_select" ? { options: [] } : {}),
+      ...(input.type === "formula" && input.formula !== undefined ? { formula: input.formula } : {}),
+      ...(input.type === "formula" && input.format ? { format: input.format } : {}),
+    };
+
+    const activeView = this.getActiveView();
+    this.project.table = {
+      ...this.project.table,
+      columns: [...this.project.table.columns, newColumn],
+      views: this.project.table.views.map((view) => {
+        if (view.id !== activeView.id || view.type !== "spaced_repetition") {
+          return view;
+        }
+        const sr = view.spacedRepetition ?? {};
+        if (input.side === "front") {
+          const nextFront = Array.from(new Set([...(sr.frontFieldIds ?? []), id]));
+          const nextFrontRows =
+            sr.frontFieldRows !== undefined ? [...sr.frontFieldRows.map((r) => [...r]), [id]] : undefined;
+          return {
+            ...view,
+            spacedRepetition: {
+              ...sr,
+              frontFieldIds: nextFront,
+              ...(nextFrontRows !== undefined ? { frontFieldRows: nextFrontRows } : {}),
+            },
+          };
+        }
+        const nextBackIds = sr.backFieldIds !== undefined ? Array.from(new Set([...sr.backFieldIds, id])) : undefined;
+        const nextBackRows =
+          sr.backFieldRows !== undefined ? [...sr.backFieldRows.map((r) => [...r]), [id]] : undefined;
+        if (nextBackIds !== undefined || nextBackRows !== undefined) {
+          return {
+            ...view,
+            spacedRepetition: {
+              ...sr,
+              ...(nextBackIds !== undefined ? { backFieldIds: nextBackIds } : {}),
+              ...(nextBackRows !== undefined ? { backFieldRows: nextBackRows } : {}),
+            },
+          };
+        }
+        return view;
+      }),
+    };
+    this.project.projectState = ProjectState.Unsaved;
+    this.notifyChange();
+    return newColumn;
+  }
+
+  /**
+   * 调整间隔重复视图正面或背面属性的二维行排布与顺序（支持拖到上/下独立成行，或拖到左/右同行并排自动填满宽度）。
+   */
+  public reorderSpacedRepetitionFields(
+    side: "front" | "back",
+    draggedColId: string,
+    targetColId: string,
+    position: SpacedRepetitionFieldDropPosition,
+    currentRowsOrIds?: readonly string[][] | readonly string[],
+  ): boolean {
+    if (draggedColId === targetColId) return false;
+    const activeView = this.getActiveView();
+    if (activeView.type !== "spaced_repetition") return false;
+
+    const sr = activeView.spacedRepetition ?? {};
+    const validIds = new Set<string>([...ALL_SYSTEM_COLUMN_IDS, ...this.project.table.columns.map((c) => c.id)]);
+
+    const toRows = (input?: readonly string[][] | readonly string[]): string[][] => {
+      if (!input || input.length === 0) return [];
+      const seen = new Set<string>();
+      const rows: string[][] = [];
+      for (const entry of input) {
+        const items = Array.isArray(entry) ? entry : [entry];
+        const cleaned: string[] = [];
+        for (const id of items) {
+          if (typeof id === "string" && validIds.has(id) && !seen.has(id)) {
+            seen.add(id);
+            cleaned.push(id);
+          }
+        }
+        if (cleaned.length > 0) rows.push(cleaned);
+      }
+      return rows;
+    };
+
+    const storedRows = side === "front" ? sr.frontFieldRows : sr.backFieldRows;
+    const storedIds = side === "front" ? sr.frontFieldIds : sr.backFieldIds;
+    const baseRows =
+      storedRows && storedRows.length > 0
+        ? toRows(storedRows)
+        : currentRowsOrIds && currentRowsOrIds.length > 0
+          ? toRows(currentRowsOrIds)
+          : toRows(storedIds);
+
+    const flatBase = baseRows.flat();
+    if (!flatBase.includes(draggedColId) || !flatBase.includes(targetColId)) {
+      return false;
+    }
+
+    // 先从原位置移除被拖动的属性，若原行变空则自动移除，同行的其他属性将自动等分填满宽度
+    const withoutDragged = baseRows
+      .map((row) => row.filter((id) => id !== draggedColId))
+      .filter((row) => row.length > 0);
+
+    let targetRowIdx = -1;
+    let targetColIdx = -1;
+    for (let r = 0; r < withoutDragged.length; r++) {
+      const c = withoutDragged[r].indexOf(targetColId);
+      if (c !== -1) {
+        targetRowIdx = r;
+        targetColIdx = c;
+        break;
+      }
+    }
+    if (targetRowIdx === -1) return false;
+
+    const nextRows = withoutDragged.map((row) => [...row]);
+    if (position === "left") {
+      nextRows[targetRowIdx].splice(targetColIdx, 0, draggedColId);
+    } else if (position === "right") {
+      nextRows[targetRowIdx].splice(targetColIdx + 1, 0, draggedColId);
+    } else if (position === "top" || position === "before") {
+      nextRows.splice(targetRowIdx, 0, [draggedColId]);
+    } else {
+      nextRows.splice(targetRowIdx + 1, 0, [draggedColId]);
+    }
+
+    const unchanged =
+      nextRows.length === baseRows.length &&
+      nextRows.every(
+        (row, rIdx) => row.length === baseRows[rIdx].length && row.every((id, cIdx) => id === baseRows[rIdx][cIdx]),
+      );
+    if (unchanged) {
+      return false;
+    }
+
+    const nextFlat = nextRows.flat();
+    this.project.table = {
+      ...this.project.table,
+      views: this.project.table.views.map((view) =>
+        view.id === activeView.id
+          ? {
+              ...view,
+              spacedRepetition: {
+                ...sr,
+                ...(side === "front"
+                  ? { frontFieldIds: nextFlat, frontFieldRows: nextRows }
+                  : { backFieldIds: nextFlat, backFieldRows: nextRows }),
+              },
+            }
+          : view,
       ),
     };
     this.project.projectState = ProjectState.Unsaved;
@@ -840,7 +1255,7 @@ export class StageTableService implements Service {
     if (!existingCol) return false;
 
     const nextName = patch.name !== undefined && patch.name.trim().length > 0 ? patch.name.trim() : existingCol.name;
-    const nextType = patch.type ?? existingCol.type;
+    const nextType = existingCol.protectedRole ? existingCol.type : (patch.type ?? existingCol.type);
     const nextFormula =
       nextType === "formula" ? (patch.formula !== undefined ? patch.formula : existingCol.formula) : undefined;
     const nextFormat =
@@ -1029,7 +1444,8 @@ export class StageTableService implements Service {
   }
 
   public deleteCustomColumn(columnId: string): boolean {
-    if (!this.project.table.columns.some((col) => col.id === columnId)) {
+    const targetCol = this.project.table.columns.find((col) => col.id === columnId);
+    if (!targetCol || isProtectedTableColumn(targetCol)) {
       return false;
     }
 
@@ -1931,7 +2347,7 @@ export class StageTableService implements Service {
 
     for (const [uuid, { entity, digest }] of current) {
       const prevDigest = this.baselineDigests.get(uuid);
-      if (prevDigest !== undefined && prevDigest !== digest) {
+      if (prevDigest !== undefined && prevDigest !== digest && !this.suppressTimestampUuids.has(uuid)) {
         entity.updatedAt = Math.trunc(now);
         anyTimestampUpdated = true;
       }
@@ -2013,6 +2429,83 @@ export class StageTableService implements Service {
     }
     entity.tableFields = nextFields;
     this.project.historyManager.recordStep();
+    this.notifyChange();
+    return true;
+  }
+
+  /**
+   * 间隔重复互动作答：更新 掌握程度 / 答对次数 / 延期 / 作答日期，且不刷新节点的最后编辑时间（updatedAt）。
+   */
+  public answerSpacedRepetitionRow(
+    uuid: string,
+    choice: SpacedRepetitionAnswerChoice,
+    options?: { baseline?: SpacedRepetitionAnswerSnapshot; today?: Date },
+  ): SpacedRepetitionAnswerSnapshot | null {
+    const entity = this.project.stageManager.get(uuid);
+    if (!entity || !isTableRowEntity(entity)) {
+      return null;
+    }
+    const roleIds = this.ensureSpacedRepetitionColumns(false);
+    const snapshot: SpacedRepetitionAnswerSnapshot = options?.baseline ?? {
+      mastery: entity.tableFields[roleIds.mastery],
+      correctCount: entity.tableFields[roleIds.correctCount],
+      delay: entity.tableFields[roleIds.delay],
+      answerDate: entity.tableFields[roleIds.answerDate],
+    };
+
+    const prevCorrect =
+      typeof snapshot.correctCount === "number" && Number.isFinite(snapshot.correctCount) ? snapshot.correctCount : 0;
+    const prevDelay = typeof snapshot.delay === "number" && Number.isFinite(snapshot.delay) ? snapshot.delay : 0;
+    const todayKey = toLocalDateKey(options?.today ?? new Date());
+
+    const nextMastery = choice === "correct_closed" ? 1 : choice === "correct_open" ? 2 : 3;
+    const nextCorrectCount = choice === "wrong" ? Math.max(0, prevCorrect - 1) : prevCorrect + 1;
+    const nextDelay = choice === "wrong" ? prevDelay + 1 : 0;
+
+    const nextFields = cloneTableFields(entity.tableFields);
+    nextFields[roleIds.mastery] = nextMastery;
+    nextFields[roleIds.correctCount] = nextCorrectCount;
+    nextFields[roleIds.delay] = nextDelay;
+    nextFields[roleIds.answerDate] = todayKey;
+
+    entity.tableFields = nextFields;
+    this.suppressTimestampUuids.add(entity.uuid);
+    try {
+      this.project.historyManager.recordStep();
+    } finally {
+      this.suppressTimestampUuids.delete(entity.uuid);
+    }
+    this.notifyChange();
+    return snapshot;
+  }
+
+  public restoreSpacedRepetitionRow(uuid: string, snapshot: SpacedRepetitionAnswerSnapshot): boolean {
+    const entity = this.project.stageManager.get(uuid);
+    if (!entity || !isTableRowEntity(entity)) {
+      return false;
+    }
+    const roleIds = this.ensureSpacedRepetitionColumns(false);
+    const nextFields = cloneTableFields(entity.tableFields);
+
+    const restoreOne = (colId: string, val: TableCellValue | undefined) => {
+      if (val === undefined || val === null || val === "" || (Array.isArray(val) && val.length === 0)) {
+        delete nextFields[colId];
+      } else {
+        nextFields[colId] = Array.isArray(val) ? [...val] : val;
+      }
+    };
+    restoreOne(roleIds.mastery, snapshot.mastery);
+    restoreOne(roleIds.correctCount, snapshot.correctCount);
+    restoreOne(roleIds.delay, snapshot.delay);
+    restoreOne(roleIds.answerDate, snapshot.answerDate);
+
+    entity.tableFields = nextFields;
+    this.suppressTimestampUuids.add(entity.uuid);
+    try {
+      this.project.historyManager.recordStep();
+    } finally {
+      this.suppressTimestampUuids.delete(entity.uuid);
+    }
     this.notifyChange();
     return true;
   }

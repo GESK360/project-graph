@@ -101,6 +101,7 @@ stageTable:
     unfreeze: Unfreeze columns
     hide: Hide field
     delete: Delete field
+    protectedCannotDelete: Required by Spaced Repetition and cannot be deleted
   fieldTypePicker:
     title: Select field type
     navHint: Select
@@ -127,6 +128,8 @@ stageTable:
     nameLabel: Field name
     typeLabel: Field type
     systemLocked: System
+    spacedRepetitionLocked: Required by Spaced Repetition. Can be hidden, shown, moved, or renamed, but not deleted or changed in type.
+    spacedRepetitionCustomLocked: Custom field added in Spaced Repetition. Can be hidden, shown, moved, or renamed, but cannot be deleted.
     delete: Delete field
     confirm: Confirm
     cancel: Cancel
@@ -258,11 +261,13 @@ stageTable:
     type_gantt: Gantt View
     type_gallery: Gallery View
     type_calendar: Calendar View
+    type_spaced_repetition: Spaced Repetition
     defaultName_table: Table
     defaultName_kanban: Kanban
     defaultName_gantt: Gantt
     defaultName_gallery: Gallery
     defaultName_calendar: Calendar
+    defaultName_spaced_repetition: Spaced Repetition
     manageView: Manage view
     renameView: Rename
     duplicateView: Duplicate view
@@ -365,6 +370,60 @@ stageTable:
     wdFull_4: Thu
     wdFull_5: Fri
     wdFull_6: Sat
+  spacedRepetition:
+    queue_due: Due
+    queue_all: All
+    queue_upcoming: Upcoming
+    queue_archived: Archived
+    sessionAnsweredRefresh: "Answered {{count}} · Refresh"
+    refreshQueueHint: Refresh the due queue and move answered cards out
+    columnsLabel: Card columns
+    cols_1: 1 Col
+    cols_2: 2 Cols
+    cols_3: 3 Cols
+    cols_4: 4 Cols
+    colsTooltip_1: Single-column layout
+    colsTooltip_2: Two-column layout
+    colsTooltip_3: Three-column layout
+    colsTooltip_4: Four-column layout
+    addCard: Add card
+    settings: View settings
+    displaySettings: Display
+    backFields: Back side fields
+    frontExtraFields: Extra front fields
+    resetDefault: Reset default
+    emptyDue: No cards due for review
+    emptyQueue: No cards in this queue
+    viewAllCards: View all cards
+    emptyField: Empty
+    doubleClickToEdit: Double-click to edit
+    dragFieldHint: Drag to reorder field
+    inlineTextHint: Ctrl+Enter to save · Esc to cancel
+    backDoubleClickHint: Double-click any field to edit
+    flipToBack: Flip to back
+    flipToFront: Flip to front
+    undoAnswer: Undo answer
+    mastery_1: Closed-book
+    mastery_2: Open-book
+    mastery_3: Wrong
+    answeredBadge_correct_open: Correct (Open-book)
+    answeredBadge_correct_closed: Correct (Closed-book)
+    answeredBadge_wrong: Wrong
+    answerCorrectOpen: Correct (Open-book)
+    answerCorrectOpenTooltip: "Correct (Open-book): Mastery=2, Correct+1, Delay=0"
+    answerCorrectClosed: Correct (Closed-book)
+    answerCorrectClosedTooltip: "Correct (Closed-book): Mastery=1, Correct+1, Delay=0"
+    answerWrong: Wrong
+    answerWrongTooltip: "Wrong: Mastery=3, Correct-1, Delay+1"
+    addCustomField: New field
+    addFrontFieldTitle: Add front custom field
+    addBackFieldTitle: Add back custom field
+    addBackFieldBtn: Add field
+    addCustomFieldHint: Synced to table views (hidden by default) and can be deleted anytime.
+    sectionLearning: Notes & Context
+    sectionSchedule: Spaced Repetition
+    sectionCustom: Custom Fields
+    sectionMeta: Node Info & Timestamps
   lightbox:
     prevImage: Previous image
     nextImage: Next image

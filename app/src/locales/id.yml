@@ -97,6 +97,7 @@ stageTable:
     unfreeze: Lepas pembekuan
     hide: Sembunyikan kolom
     delete: Hapus kolom
+    protectedCannotDelete: Diperlukan oleh Pengulangan Berjarak dan tidak dapat dihapus
   fieldTypePicker:
     title: Pilih jenis kolom
     navHint: Pilih
@@ -123,6 +124,8 @@ stageTable:
     nameLabel: Nama kolom
     typeLabel: Jenis kolom
     systemLocked: Sistem
+    spacedRepetitionLocked: Kolom wajib Pengulangan Berjarak. Dapat disembunyikan, ditampilkan, dipindah, atau diganti nama, tetapi tidak dapat dihapus atau diubah jenisnya.
+    spacedRepetitionCustomLocked: Kolom khusus dari Pengulangan Berjarak. Dapat disembunyikan, ditampilkan, dipindah, atau diganti nama, tetapi tidak dapat dihapus.
     delete: Hapus kolom
     confirm: Konfirmasi
     cancel: Batal
@@ -254,11 +257,13 @@ stageTable:
     type_gantt: Tampilan Gantt
     type_gallery: Tampilan Galeri
     type_calendar: Tampilan Kalender
+    type_spaced_repetition: Pengulangan Berjarak
     defaultName_table: Tabel
     defaultName_kanban: Kanban
     defaultName_gantt: Gantt
     defaultName_gallery: Galeri
     defaultName_calendar: Kalender
+    defaultName_spaced_repetition: Pengulangan Berjarak
     manageView: Kelola tampilan
     renameView: Ganti nama
     duplicateView: Duplikat tampilan
@@ -361,6 +366,60 @@ stageTable:
     wdFull_4: Kamis
     wdFull_5: Jumat
     wdFull_6: Sabtu
+  spacedRepetition:
+    queue_due: Perlu Ditinjau
+    queue_all: Semua
+    queue_upcoming: Belum Jatuh Tempo
+    queue_archived: Diarsipkan
+    sessionAnsweredRefresh: "Dijawab {{count}} · Segarkan"
+    refreshQueueHint: Segarkan antrean tinjauan
+    columnsLabel: Kolom kartu
+    cols_1: 1 Kolom
+    cols_2: 2 Kolom
+    cols_3: 3 Kolom
+    cols_4: 4 Kolom
+    colsTooltip_1: Tata letak 1 kolom
+    colsTooltip_2: Tata letak 2 kolom
+    colsTooltip_3: Tata letak 3 kolom
+    colsTooltip_4: Tata letak 4 kolom
+    addCard: Tambah kartu
+    settings: Pengaturan tampilan
+    displaySettings: Tampilan
+    backFields: Kolom sisi belakang
+    frontExtraFields: Kolom tambahan sisi depan
+    resetDefault: Kembalikan default
+    emptyDue: Tidak ada kartu yang jatuh tempo
+    emptyQueue: Tidak ada kartu di grup ini
+    viewAllCards: Lihat semua kartu
+    emptyField: Kosong
+    doubleClickToEdit: Klik ganda untuk mengubah
+    dragFieldHint: Seret untuk mengurutkan kolom
+    inlineTextHint: Ctrl+Enter simpan · Esc batal
+    backDoubleClickHint: Klik ganda kolom untuk langsung mengubah
+    flipToBack: Balik ke belakang
+    flipToFront: Balik ke depan
+    undoAnswer: Batalkan jawaban
+    mastery_1: Buku tertutup
+    mastery_2: Buku terbuka
+    mastery_3: Salah
+    answeredBadge_correct_open: Benar (Terbuka)
+    answeredBadge_correct_closed: Benar (Tertutup)
+    answeredBadge_wrong: Salah
+    answerCorrectOpen: Benar (Terbuka)
+    answerCorrectOpenTooltip: "Benar (Terbuka): Penguasaan=2, Benar+1, Tunda=0"
+    answerCorrectClosed: Benar (Tertutup)
+    answerCorrectClosedTooltip: "Benar (Tertutup): Penguasaan=1, Benar+1, Tunda=0"
+    answerWrong: Salah
+    answerWrongTooltip: "Salah: Penguasaan=3, Benar-1, Tunda+1"
+    addCustomField: Kolom baru
+    addFrontFieldTitle: Tambah kolom khusus sisi depan
+    addBackFieldTitle: Tambah kolom khusus sisi belakang
+    addBackFieldBtn: Tambah kolom
+    addCustomFieldHint: Disinkronkan ke tampilan tabel (tersembunyi secara default) dan dapat dihapus kapan saja.
+    sectionLearning: Catatan & Konteks
+    sectionSchedule: Data Pengulangan Berjarak
+    sectionCustom: Kolom Khusus
+    sectionMeta: Info Simpul & Waktu
   lightbox:
     prevImage: Gambar sebelumnya
     nextImage: Gambar berikutnya
