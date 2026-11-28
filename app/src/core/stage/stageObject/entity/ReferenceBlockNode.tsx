@@ -1,7 +1,6 @@
 import { Project } from "@/core/Project";
 import { RecentFileManager } from "@/core/service/dataFileService/RecentFileManager";
 import { GenerateScreenshot } from "@/core/service/dataGenerateService/generateScreenshot";
-import { onOpenFile } from "@/core/service/GlobalMenu";
 import { ConnectableEntity } from "@/core/stage/stageObject/abstract/ConnectableEntity";
 import { ResizeAble } from "@/core/stage/stageObject/abstract/StageObjectInterface";
 import { CollisionBox } from "@/core/stage/stageObject/collisionBox/collisionBox";
@@ -77,6 +76,11 @@ export class ReferenceBlockNode extends ConnectableEntity implements ResizeAble 
     this.details = details;
     this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
 
+    if (project.isOffscreen) {
+      this.state = "loading";
+      return;
+    }
+
     // 如果已经有attachmentId，直接加载图片
     if (attachmentId) {
       this.loadImageFromAttachment();
@@ -95,16 +99,29 @@ export class ReferenceBlockNode extends ConnectableEntity implements ResizeAble 
   }
 
   private loadImageFromAttachment() {
-    const blob = this.project.attachments.get(this.attachmentId);
-    if (!blob) {
+    const blob = this.project.attachments?.get?.(this.attachmentId);
+    const mediaUrl = !blob ? this.project.getAttachmentMediaUrl?.(this.attachmentId) : null;
+    if (!blob && !mediaUrl) {
       this.state = "notFound";
       return;
     }
-    createImageBitmap(blob).then((bitmap) => {
-      this.bitmap = bitmap;
-      this.state = "success";
-      this.updateCollisionBox();
-    });
+    const bitmapPromise = blob
+      ? createImageBitmap(blob)
+      : fetch(mediaUrl!)
+          .then((res) => {
+            if (!res.ok) throw new Error(`flux-media failed (${res.status})`);
+            return res.blob();
+          })
+          .then((fetched) => createImageBitmap(fetched));
+    bitmapPromise
+      .then((bitmap) => {
+        this.bitmap = bitmap;
+        this.state = "success";
+        this.updateCollisionBox();
+      })
+      .catch(() => {
+        this.state = "notFound";
+      });
   }
 
   private async generateScreenshot() {
@@ -211,6 +228,7 @@ export class ReferenceBlockNode extends ConnectableEntity implements ResizeAble 
       return;
     }
     // 跳转到源头：对应的源头Section
+    const { onOpenFile } = await import("@/core/service/GlobalMenu");
     const project = await onOpenFile(file.uri, "ReferenceBlockNode跳转打开-prg文件");
     if (!project) {
       return;

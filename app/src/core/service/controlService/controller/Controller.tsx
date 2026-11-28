@@ -25,6 +25,16 @@ import { Settings } from "../../Settings";
 import { ControllerClass } from "./ControllerClass";
 import { ControllerInput } from "./ControllerInput";
 
+const CONCRETE_CONTROLLER_ENTRIES: ReadonlyArray<{ id: string; Ctor: new (project: Project) => ControllerClass }> =
+  Object.values(import.meta.glob("./concrete/*.tsx", { eager: true }))
+    .map((module) => Object.entries(module as Record<string, unknown>).find(([k]) => k.includes("Class")))
+    .filter((entry): entry is [string, unknown] => Boolean(entry))
+    .map(([k, v]) => {
+      const rawId = k.replace("Controller", "").replace("Class", "");
+      const id = rawId[0].toLowerCase() + rawId.slice(1);
+      return { id, Ctor: v as new (project: Project) => ControllerClass };
+    });
+
 /**
  * 控制器，控制鼠标、键盘事件
  *
@@ -188,30 +198,29 @@ export class Controller {
   }
 
   constructor(private readonly project: Project) {
-    // 所有的具体的功能逻辑封装成控制器对象
-    // 当有新功能时新建控制器对象，并在这里初始化
-    Object.values(import.meta.glob("./concrete/*.tsx", { eager: true }))
-      .map((module) => Object.entries(module as any).find(([k]) => k.includes("Class"))!)
-      .filter(Boolean)
-      .map(([k, v]) => {
-        const inst = new (v as any)(this.project);
-        let id = k.replace("Controller", "").replace("Class", "");
-        id = id[0].toLowerCase() + id.slice(1);
-        this[id as keyof this] = inst;
-        this.controllers.push(inst);
-      });
+    // 所有的具体的功能逻辑封装成控制器对象（模块级预扫描一次，避免每次打开页面重复扫描 glob）
+    for (const { id, Ctor } of CONCRETE_CONTROLLER_ENTRIES) {
+      const inst = new Ctor(this.project);
+      (this as Record<string, unknown>)[id] = inst;
+      this.controllers.push(inst);
+    }
+    let initializing = true;
+    const syncCursorIfReady = () => {
+      if (!initializing) this.syncCanvasCursor();
+    };
     this.settingsUnwatchers.push(
       Settings.watch("mouseLeftMode", () => {
         if (!this.settingModeFromPointer) this.autoStylusDrawMode = false;
-        this.syncCanvasCursor();
+        syncCursorIfReady();
       }),
-      Settings.watch("handwritingActiveTool", () => this.syncCanvasCursor()),
-      Settings.watch("handwritingPens", () => this.syncCanvasCursor()),
-      Settings.watch("autoFillPenStrokeColor", () => this.syncCanvasCursor()),
-      Settings.watch("autoFillPenStrokeColorEnable", () => this.syncCanvasCursor()),
-      Settings.watch("viewerMode", () => this.syncCanvasCursor()),
-      Settings.watch("theme", () => this.syncCanvasCursor()),
+      Settings.watch("handwritingActiveTool", syncCursorIfReady),
+      Settings.watch("handwritingPens", syncCursorIfReady),
+      Settings.watch("autoFillPenStrokeColor", syncCursorIfReady),
+      Settings.watch("autoFillPenStrokeColorEnable", syncCursorIfReady),
+      Settings.watch("viewerMode", syncCursorIfReady),
+      Settings.watch("theme", syncCursorIfReady),
     );
+    initializing = false;
     this.syncCanvasCursor();
     this.input = new ControllerInput(project.canvas.element, (x, y) => project.canvas.clientToView(x, y), {
       down: (event) => {

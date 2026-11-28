@@ -39,6 +39,7 @@ export class SectionPackManager {
       }
       this.modifyHiddenDfs(section, true);
       section.isCollapsed = true;
+      this.project.docCommandBus?.markCollapseDirty(section);
     }
     this.project.stageManager.updateReferences();
     // 折叠后，对有连线的分组框触发所在节点树的格式化
@@ -73,6 +74,7 @@ export class SectionPackManager {
       }
       this.modifyHiddenDfs(section, false);
       section.isCollapsed = false;
+      this.project.docCommandBus?.markCollapseDirty(section);
     }
     this.project.stageManager.updateReferences();
     // 展开后，对有连线的分组框触发所在节点树的格式化
@@ -86,9 +88,11 @@ export class SectionPackManager {
     if (section.isCollapsed) {
       this.modifyHiddenDfs(section, false);
       section.isCollapsed = false;
+      this.project.docCommandBus?.markCollapseDirty(section);
     } else {
       this.modifyHiddenDfs(section, true);
       section.isCollapsed = true;
+      this.project.docCommandBus?.markCollapseDirty(section);
     }
     this.project.stageManager.updateReferences();
     this.autoLayoutConnectedSections([section]);
@@ -237,12 +241,7 @@ export class SectionPackManager {
     newSection.adjustLocationAndSize();
 
     // 原地替换原来的 textNode，保持 UUID 与表格行身份一致
-    const stageIndex = this.project.stage.indexOf(textNode);
-    if (stageIndex !== -1) {
-      this.project.stage[stageIndex] = newSection;
-    } else {
-      this.project.stage.push(newSection);
-    }
+    this.project.stageManager.replaceStageObject(textNode, newSection);
     if (fatherSection) {
       const childIdx = fatherSection.children.indexOf(textNode);
       if (childIdx !== -1) {

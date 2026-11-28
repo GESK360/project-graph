@@ -10,6 +10,26 @@ import { FileSystemProvider, Service } from "./interfaces/Service";
 import { Settings } from "./service/Settings";
 import { Telemetry } from "./service/Telemetry";
 
+let osWindowMoving = false;
+const activeMovingPauseTabs = new Set<Tab>();
+
+/**
+ * Windows 窗口拖动期间临时暂停 Canvas 2D 120FPS 重绘，释放 DWM/GPU 合成带宽，
+ * 避免与 TidyTabs 等多标签窗口工具抢占合成帧导致拖动掉帧；拖动结束立即恢复并补画一帧。
+ */
+export function setOsWindowMoving(moving: boolean): void {
+  if (osWindowMoving === moving) return;
+  osWindowMoving = moving;
+  if (!moving) {
+    for (const tab of activeMovingPauseTabs) {
+      if (!tab.closing && tab.isRunning) {
+        (tab as unknown as { tick: () => void }).tick();
+      }
+    }
+    activeMovingPauseTabs.clear();
+  }
+}
+
 export abstract class Tab extends React.Component<Record<string, never>, Record<string, never>> {
   readonly id = crypto.randomUUID();
   layout: "docked" | "floating" = "docked";
@@ -126,6 +146,13 @@ export abstract class Tab extends React.Component<Record<string, never>, Record<
     let previousMaxFps = 0;
 
     const animationFrame = (time: number) => {
+      if (osWindowMoving) {
+        activeMovingPauseTabs.add(this);
+        nextTickTime = undefined;
+        if (this.rafHandle === -1) return;
+        this.rafHandle = requestAnimationFrame(animationFrame);
+        return;
+      }
       const isFocused = document.hasFocus();
       const maxFps = Math.max(1, isFocused ? Settings.maxFps : Settings.maxFpsUnfocused);
       const timeStep = 1000 / maxFps;
@@ -145,6 +172,7 @@ export abstract class Tab extends React.Component<Record<string, never>, Record<
   }
 
   pause() {
+    activeMovingPauseTabs.delete(this);
     if (this.rafHandle === -1) return;
     cancelAnimationFrame(this.rafHandle);
     this.rafHandle = -1;

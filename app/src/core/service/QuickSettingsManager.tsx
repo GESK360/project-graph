@@ -51,11 +51,16 @@ export namespace QuickSettingsManager {
 
   export async function init() {
     store = await createStore("quick-settings.json");
+    const stored = (await store.get<QuickSettingItem[]>("quickSettings")) ?? [];
     const sidebar = await getSidebarItems();
     if (sidebar.every(({ settingKey }) => isBranchControl(settingKey))) {
       await saveSidebarItems([...sidebar, ...DEFAULT_QUICK_SETTINGS]);
     } else {
-      await saveSidebarItems(sidebar);
+      const changed =
+        stored.length !== sidebar.length || stored.some((item, index) => item.settingKey !== sidebar[index].settingKey);
+      if (changed) {
+        await saveSidebarItems(sidebar);
+      }
       await migrateMinimapQuickSetting();
     }
   }

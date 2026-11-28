@@ -4,6 +4,7 @@ import { FileSystemProviderFile } from "./ClosedProjectFileSystemProvider";
 import { ClosedProjectEffects } from "./ClosedProjectEffects";
 import { finalizeRuntimeCleanup, runtimeCleanupFailure, RuntimeCleanupError } from "@/core/RuntimeCleanup";
 import { compareProjectVersions, LATEST_PROJECT_VERSION, parseProjectFile } from "@/core/ProjectFile";
+import { createClosedSqliteV3Project, isSqliteV3Buffer, saveClosedV3SqliteProject } from "./ClosedProjectSqliteV3";
 import {
   AIObjectReferenceRegistry,
   type AIObjectReferenceSnapshot,
@@ -265,53 +266,83 @@ async function executeClosedProjectTool(
     }
     return { ok: false, error: { code: "TOOL_EXECUTION_FAILED", message: "Built-in tool execution failed." } };
   }
-  let parsed;
+  let rawBytes: Uint8Array;
   try {
-    parsed = await parseProjectFile(new Uint8Array(await readFile(options.canonicalPath)), new Decoder(), attachments);
+    rawBytes = new Uint8Array(await readFile(options.canonicalPath));
   } catch {
     return { ok: false, error: { code: "PROJECT_LOAD_FAILED", message: "Project file could not be loaded." } };
   }
 
-  const versionComparison = compareProjectVersions(parsed.metadata.version, LATEST_PROJECT_VERSION);
-  if (versionComparison > 0) {
-    return {
-      ok: false,
-      error: {
-        code: "PROJECT_VERSION_UNSUPPORTED",
-        message: "Project version is newer than this Project Graph runtime.",
-      },
-    };
-  }
-  if (versionComparison < 0 && !options.allowUpgrade) {
-    return {
-      ok: false,
-      error: { code: "PROJECT_UPGRADE_REQUIRED", message: "Project must be upgraded before it can be invoked." },
-    };
-  }
-  if (versionComparison < 0) {
+  let loadedProject: { project: Project; dispose(): Promise<void> };
+  const isV3Sqlite = isSqliteV3Buffer(rawBytes);
+
+  if (isV3Sqlite) {
     try {
-      const fileInfo = await stat(options.canonicalPath).catch(() => undefined);
-      const { ProjectUpgrader } = await import("@/core/stage/ProjectUpgrader");
-      [parsed.serializedStageObjects, parsed.metadata] = ProjectUpgrader.upgradeNAnyToNLatest(
-        parsed.serializedStageObjects,
-        parsed.metadata,
-        {
-          defaultCreatedAt:
-            fileInfo && Number.isFinite(fileInfo.birthtimeMs) && fileInfo.birthtimeMs > 0
-              ? Math.trunc(fileInfo.birthtimeMs)
-              : undefined,
-          defaultUpdatedAt:
-            fileInfo && Number.isFinite(fileInfo.mtimeMs) && fileInfo.mtimeMs > 0
-              ? Math.trunc(fileInfo.mtimeMs)
-              : undefined,
-        },
-      );
+      const v3 = await createClosedSqliteV3Project(options.canonicalPath, attachments);
+      const v3Cmp = compareProjectVersions(v3.formatVersion, "3.0.0");
+      if (v3Cmp > 0) {
+        await v3.dispose();
+        return {
+          ok: false,
+          error: {
+            code: "PROJECT_VERSION_UNSUPPORTED",
+            message: "Project version is newer than this Project Graph runtime.",
+          },
+        };
+      }
+      loadedProject = { project: v3.project, dispose: v3.dispose };
     } catch {
       return { ok: false, error: { code: "PROJECT_LOAD_FAILED", message: "Project file could not be loaded." } };
     }
-  }
+  } else {
+    let parsed;
+    try {
+      parsed = await parseProjectFile(rawBytes, new Decoder(), attachments);
+    } catch {
+      return { ok: false, error: { code: "PROJECT_LOAD_FAILED", message: "Project file could not be loaded." } };
+    }
 
-  const loadedProject = createClosedProject(parsed, attachments, options.canonicalPath);
+    const versionComparison = compareProjectVersions(parsed.metadata.version, LATEST_PROJECT_VERSION);
+    if (versionComparison > 0) {
+      return {
+        ok: false,
+        error: {
+          code: "PROJECT_VERSION_UNSUPPORTED",
+          message: "Project version is newer than this Project Graph runtime.",
+        },
+      };
+    }
+    if (versionComparison < 0 && !options.allowUpgrade) {
+      return {
+        ok: false,
+        error: { code: "PROJECT_UPGRADE_REQUIRED", message: "Project must be upgraded before it can be invoked." },
+      };
+    }
+    if (versionComparison < 0) {
+      try {
+        const fileInfo = await stat(options.canonicalPath).catch(() => undefined);
+        const { ProjectUpgrader } = await import("@/core/stage/ProjectUpgrader");
+        [parsed.serializedStageObjects, parsed.metadata] = ProjectUpgrader.upgradeNAnyToNLatest(
+          parsed.serializedStageObjects,
+          parsed.metadata,
+          {
+            defaultCreatedAt:
+              fileInfo && Number.isFinite(fileInfo.birthtimeMs) && fileInfo.birthtimeMs > 0
+                ? Math.trunc(fileInfo.birthtimeMs)
+                : undefined,
+            defaultUpdatedAt:
+              fileInfo && Number.isFinite(fileInfo.mtimeMs) && fileInfo.mtimeMs > 0
+                ? Math.trunc(fileInfo.mtimeMs)
+                : undefined,
+          },
+        );
+      } catch {
+        return { ok: false, error: { code: "PROJECT_LOAD_FAILED", message: "Project file could not be loaded." } };
+      }
+    }
+
+    loadedProject = createClosedProject(parsed, attachments, options.canonicalPath);
+  }
   const project = loadedProject.project;
   lifecycle.disposeProject = loadedProject.dispose;
   let pendingReferenceSnapshot: AIObjectReferenceSnapshot | undefined;
@@ -360,7 +391,11 @@ async function executeClosedProjectTool(
   let projectSaved = false;
   if (project.projectState === ProjectState.Unsaved) {
     try {
-      await project.save({ includeThumbnail: false });
+      if (isV3Sqlite) {
+        await saveClosedV3SqliteProject(options.canonicalPath, project);
+      } else {
+        await project.save({ includeThumbnail: false });
+      }
       projectSaved = true;
     } catch (error) {
       if (error instanceof RuntimeCleanupError) {

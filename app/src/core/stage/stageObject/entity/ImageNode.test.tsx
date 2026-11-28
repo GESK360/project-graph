@@ -77,4 +77,32 @@ describe("ImageNode cleanup", () => {
 
     window.removeEventListener("error", onError);
   });
+
+  it("loads bitmap from flux-media URL when blob is not kept in project.attachments", async () => {
+    const bitmap = { close: vi.fn(), width: 320, height: 180 } as unknown as ImageBitmap;
+    const createBitmap = vi.fn(async () => bitmap);
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      blob: async () => new Blob(["png-bytes"], { type: "image/png" }),
+    }));
+    vi.stubGlobal("createImageBitmap", createBitmap);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const project = {
+      addAttachment: vi.fn(),
+      attachments: new Map<string, Blob>(),
+      getAttachmentMediaUrl: vi.fn(() => "http://flux-media.localhost/doc/doc-1/img-v3"),
+    };
+    const node = new ImageNode(project as never, { attachmentId: "img-v3" });
+
+    await vi.waitFor(() => expect(node.state).toBe("success"));
+    expect(project.getAttachmentMediaUrl).toHaveBeenCalledWith("img-v3");
+    expect(fetchMock).toHaveBeenCalledWith("http://flux-media.localhost/doc/doc-1/img-v3");
+    expect(node.bitmap).toBe(bitmap);
+    expect(project.attachments.size).toBe(0);
+
+    await node.dispose();
+    expect(bitmap.close).toHaveBeenCalledOnce();
+  });
 });

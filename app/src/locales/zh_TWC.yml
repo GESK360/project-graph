@@ -47,6 +47,8 @@ nodeDetailsWindow:
 findWindow:
   useRegex: 使用正規表示式
   invalidRegex: 正規表示式無效
+  scopeWorkspace: 搜尋整個工作空間
+  workspacePlaceholder: 在整個工作空間中搜尋節點與詳情...
 
 stageTable:
   expandPanel: 展開多維表格
@@ -71,6 +73,8 @@ stageTable:
     searchPlaceholder: 尋找屬性...
   columns:
     name: 名稱
+    sourceFile: 來源檔案
+    sourceFolder: 來源資料夾
     images: 圖片
     createdAt: 建立時間
     updatedAt: 最後編輯時間
@@ -428,6 +432,38 @@ stageTable:
     resetZoom: 重設縮放
     currentNodeScope: "目前節點 ({{count}})"
     allImagesScope: "全部圖片 ({{count}})"
+  workspaceTab:
+    title: 工作空間多維表格
+  scope:
+    currentDoc: 目前畫布
+    currentFolder: 目前資料夾
+    allWorkspace: 整個工作空間
+    selectedFolders: "已選 {{count}} 個資料夾"
+    selectedDocs: "已選 {{count}} 個畫布"
+    mode_all: 全部
+    mode_folders: 資料夾
+    mode_docs: 畫布
+    allSummary: "包含目前工作空間內全部 {{count}} 個畫布"
+    noFolders: 目前工作空間沒有子資料夾
+  workspaceColumns:
+    button: 共享欄位
+    title: 工作空間共享欄位管理
+    description: 顯式共享欄位在跨檔案重新命名時仍保持對齊；同名自動對齊欄位可一鍵升級或合併。
+    newColumnPlaceholder: 輸入新共享欄位名稱...
+    createShared: 新增共享欄位
+    empty: 目前工作空間暫無自訂欄位
+    badgeProtected: 受保護
+    badgeShared: 共享欄位
+    badgeAuto: 同名自動對齊
+    docCount: "{{count}} 個檔案"
+    promote: 升級共享
+    mergeSelectedCount: "已選 {{count}} 欄合併為:"
+    mergeTargetPlaceholder: 目標共享欄位名稱
+    mergeAction: 合併欄位
+    mergeTypeMismatch: 只能合併相同類型且非受保護的欄位
+    createdToast: "已建立共享欄位「{{name}}」"
+    promotedToast: "已將「{{name}}」升級為跨檔案共享欄位"
+    mergedToast: "已合併為共享欄位「{{name}}」"
 
 projectStatus:
   nodes: "{{count}} 節點"
@@ -3096,6 +3132,22 @@ workspace:
   versionSnapshotFailed: 寫入歷史版本快照失敗
   notAWorkspace: 所選資料夾用唔到
   rootMissing: 工作空間資料夾已經唔存在
+  v3CheckpointSaved: 已同步合併並儲存歷史快照
+  openGlobalTable: 工作空間多維表格
+  openGlobalSpacedRepetition: 全局間隔重複
+  upgradeV3:
+    title: 一鍵備份並升級至 .prg v3.0.0
+    description: 偵測到工作空間入面有 {{count}} 個舊版 v2.x 專案檔案（總共 {{size}}）。升級做 SQLite v3.0.0 後開圖更快，而且會即時自動存檔。
+    backupHint: 升級前會保留完整目錄結構，自動備份所有舊檔到：
+    moreFiles: 仲有 {{count}} 個檔案未展開顯示
+    backingUp: 正在完整備份舊版檔案…
+    migratingFile: 正在升級（{{completed}}/{{total}}）：{{file}}
+    summary: 升級完成：成功 {{succeeded}} 個，失敗 {{failed}} 個。
+    backupSavedAt: 原始檔案已備份喺：{{dir}}
+    later: 遲啲再講
+    confirmUpgrade: 一鍵備份並升級
+    upgrading: 正在升級…
+    done: 完成
 
 common:
   editModeHint:

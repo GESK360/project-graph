@@ -18,7 +18,6 @@ export namespace StartFilesManager {
 
   export async function init() {
     store = await createStore("start-files.json");
-    store.save();
   }
 
   export async function clearStartFiles() {

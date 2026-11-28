@@ -51,12 +51,16 @@ export class SvgNode extends ConnectableEntity implements ResizeAble {
     this.collisionBox = collisionBox;
     this.color = color;
 
-    const blob = project.attachments.get(attachmentId);
-    if (!blob) {
+    const blob = project.attachments?.get?.(attachmentId);
+    const mediaUrl = !blob ? project.getAttachmentMediaUrl?.(attachmentId) : null;
+    if (!blob && !mediaUrl) {
       return;
     }
-    const url = URL.createObjectURL(blob);
+    const url = blob ? URL.createObjectURL(blob) : mediaUrl!;
     this.image = new Image();
+    if (!blob) {
+      this.image.crossOrigin = "anonymous";
+    }
     this.image.src = url;
     this.image.onload = () => {
       this.originalSize = new Vector(this.image.naturalWidth, this.image.naturalHeight);
@@ -105,12 +109,17 @@ export class SvgNode extends ConnectableEntity implements ResizeAble {
    * 并将修改后的SVG内容保存到project.attachments中，实现持久化存储
    */
   async changeColor(newColor: Color, mode: "fill" | "stroke" = "fill") {
-    // 先释放原来的objecturl
-    URL.revokeObjectURL(this.image.src);
+    // 先释放原来的 objecturl（flux-media:// 协议 URL 无需 revoke）
+    if (this.image.src.startsWith("blob:")) {
+      URL.revokeObjectURL(this.image.src);
+    }
     this.color = newColor;
     const hexColor = newColor.toHexStringWithoutAlpha();
     // 先转换回svg代码
-    const svgCode = await this.project.attachments.get(this.attachmentId)?.text();
+    const sourceBlob =
+      this.project.attachments?.get?.(this.attachmentId) ??
+      (await this.project.readAttachmentBlob?.(this.attachmentId));
+    const svgCode = await sourceBlob?.text();
     if (!svgCode) {
       return;
     }

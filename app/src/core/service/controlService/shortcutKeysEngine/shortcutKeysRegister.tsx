@@ -1714,7 +1714,11 @@ export const allKeyBinds: KeyBindItem[] = [
       const activeProject = tab instanceof Project ? tab : undefined;
       if (activeProject) {
         activeProject.camera.clearMoveCommander();
+        const isV3 = activeProject.isSqliteV3 && !activeProject.isDraft;
         await activeProject.save();
+        if (isV3) {
+          toast.success(i18next.t("workspace.v3CheckpointSaved", { defaultValue: "已同步合并并保存历史快照" }));
+        }
         if (Settings.clearHistoryWhenManualSave) {
           activeProject.historyManager.clearHistory();
         }
@@ -1765,8 +1769,8 @@ export const allKeyBinds: KeyBindItem[] = [
     id: "openCursorChat",
     defaultKey: "/",
     icon: MessageCircleWarning,
-    when: (project) => !!project?.collaboration.isActive,
-    onPress: (project) => project!.collaboration.openCursorChat(),
+    when: (project) => !!project?.collaboration?.isActive,
+    onPress: (project) => project?.collaboration?.openCursorChat(),
   },
   {
     id: "leaveCollaboration",
@@ -2465,7 +2469,7 @@ export const allKeyBinds: KeyBindItem[] = [
       }
 
       const imageNode = selectedImageNodes[0];
-      const blob = project!.attachments.get(imageNode.attachmentId);
+      const blob = await project!.readAttachmentBlob(imageNode.attachmentId);
       if (!blob) {
         toast.error("无法获取图片数据");
         return;

@@ -26,7 +26,6 @@ export namespace ColorManager {
 
   export async function init() {
     store = await createStore("colors.json");
-    store.save();
   }
 
   export async function getUserEntityFillColors(): Promise<Color[]> {

@@ -15,8 +15,13 @@ import WorkspaceTree, {
   type WorkspaceRowClick,
 } from "@/components/workspace/WorkspaceTree";
 import WorkspaceVersionsDialog from "@/components/workspace/WorkspaceVersionsDialog";
+import UpgradeV3Dialog from "@/components/workspace/UpgradeV3Dialog";
 import { flattenWorkspaceTree } from "@/components/workspace/workspaceFlat";
 import { isSameWorkspacePath, reportWorkspaceError } from "@/components/workspace/workspacePath";
+import { DocClient, type LegacyScanReport } from "@/core/sqlite/DocClient";
+import { WorkspaceClient } from "@/core/sqlite/WorkspaceClient";
+import type { WorkspaceMigrationResult } from "@/core/sqlite/V2ToV3Migrator";
+import { openWorkspaceTableTab } from "@/core/WorkspaceTableTab";
 import { createPageDeepLink } from "@/core/service/dataFileService/DeepLinkHandler";
 import { Settings } from "@/core/service/Settings";
 import {
@@ -54,7 +59,9 @@ import {
   FolderOpen,
   FolderPlus,
   RefreshCcw,
+  Repeat,
   SquareArrowOutUpRight,
+  Table2,
   Trash2,
   FolderInput,
 } from "lucide-react";
@@ -63,6 +70,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 const COLLAPSED_KEY_PREFIX = "workspace:collapsed:";
+const dismissedLegacyUpgradeRoots = new Set<string>();
 
 function readCollapsedDirs(root: string): string[] {
   const raw = localStorage.getItem(COLLAPSED_KEY_PREFIX + root);
@@ -132,6 +140,7 @@ export default function WorkspaceWindow() {
     mode: WorkspaceMoveCopyMode;
   } | null>(null);
   const [versionsTarget, setVersionsTarget] = useState<WorkspacePageNode | null>(null);
+  const [legacyScanReport, setLegacyScanReport] = useState<LegacyScanReport | null>(null);
   const anchorPathRef = useRef<string | undefined>(undefined);
   const dragPathsRef = useRef<string[]>([]);
   const dragOccurredRef = useRef(false);
@@ -227,6 +236,31 @@ export default function WorkspaceWindow() {
     WorkspaceManager.ensureWatching().catch(reportWorkspaceError);
     refresh().catch(reportWorkspaceError);
   }, [refresh, root]);
+
+  // 打开工作空间时探测是否存在旧版 v2.x ZIP `.prg`，存在则引导一键备份并升级至 SQLite v3.0.0
+  useEffect(() => {
+    const normalizedRoot = root ? WorkspacePaths.normalize(root) : "";
+    if (!normalizedRoot || !DocClient.isAvailable() || dismissedLegacyUpgradeRoots.has(normalizedRoot)) {
+      setLegacyScanReport(null);
+      return;
+    }
+    let cancelled = false;
+    DocClient.scanWorkspaceLegacyPrg(normalizedRoot)
+      .then((report) => {
+        if (cancelled) return;
+        if (report.files.length > 0) {
+          setLegacyScanReport(report);
+        } else {
+          setLegacyScanReport(null);
+        }
+      })
+      .catch(() => {
+        // 扫描失败不阻断目录树正常浏览
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [root]);
 
   useEffect(() => {
     const onChange = () => {
@@ -821,6 +855,34 @@ export default function WorkspaceWindow() {
         </DropdownMenu>
         <Tooltip>
           <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-6"
+              data-workspace-open-global-table
+              onClick={() => openWorkspaceTableTab()}
+            >
+              <Table2 className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{t("openGlobalTable")}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-6"
+              data-workspace-open-global-sr
+              onClick={() => openWorkspaceTableTab({ initialViewType: "spaced_repetition" })}
+            >
+              <Repeat className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{t("openGlobalSpacedRepetition")}</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
             <Button size="icon" variant="ghost" className="size-6" onClick={() => actions.refresh()}>
               <RefreshCcw className="size-3.5" />
             </Button>
@@ -937,6 +999,23 @@ export default function WorkspaceWindow() {
         pagePath={versionsTarget?.path ?? null}
         pageName={versionsTarget?.name ?? ""}
         onClose={() => setVersionsTarget(null)}
+      />
+      <UpgradeV3Dialog
+        report={legacyScanReport}
+        onClose={() => {
+          if (root) {
+            dismissedLegacyUpgradeRoots.add(WorkspacePaths.normalize(root));
+          }
+          setLegacyScanReport(null);
+        }}
+        onCompleted={(res: WorkspaceMigrationResult) => {
+          if (res.succeeded.length > 0) {
+            if (WorkspaceClient.isAvailable()) {
+              void WorkspaceClient.syncIncremental().catch(() => {});
+            }
+            refresh().catch(reportWorkspaceError);
+          }
+        }}
       />
     </div>
   );

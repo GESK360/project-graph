@@ -71,9 +71,11 @@ export const isAuthLoadingAtom = atom(true);
 export const commandPaletteVisibleAtom = atom(false);
 
 export interface GlobalImageLightboxState {
-  project: unknown;
+  project: unknown | null;
+  resolveMediaUrl?: (attachmentId: string, docId?: string | null, options?: { thumb?: boolean }) => string | null;
   items: Array<{
     attachmentId: string;
+    docId?: string | null;
     label?: string;
     rowUuid?: string;
     imageNodeUuid?: string;
@@ -81,6 +83,7 @@ export interface GlobalImageLightboxState {
   initialIndex: number;
   allItems?: Array<{
     attachmentId: string;
+    docId?: string | null;
     label?: string;
     rowUuid?: string;
     imageNodeUuid?: string;

@@ -37,10 +37,25 @@ export class TagManager {
     }
   }
 
+  private persistTags(): void {
+    this.project.docCommandBus?.dispatchCommands(
+      [
+        {
+          type: "update_doc_metadata",
+          tags: [...this.project.tags],
+          references: this.project.references ?? { sections: {}, files: [] },
+          readme: this.project.readme ?? null,
+        },
+      ],
+      { label: "tags", recordHistory: false, emitStageCommit: false },
+    );
+    this.project.emit("document-commit");
+  }
+
   addTag(uuid: string) {
     this.project.tags.push(uuid);
     this.tagSet.add(uuid);
-    this.project.emit("document-commit");
+    this.persistTags();
   }
 
   removeTag(uuid: string) {
@@ -48,7 +63,7 @@ export class TagManager {
     if (index !== -1) {
       this.project.tags.splice(index, 1);
       this.tagSet.delete(uuid);
-      this.project.emit("document-commit");
+      this.persistTags();
     }
   }
 
@@ -80,7 +95,7 @@ export class TagManager {
       const temp = this.project.tags[index - 1];
       this.project.tags[index - 1] = uuid;
       this.project.tags[index] = temp;
-      this.project.emit("document-commit");
+      this.persistTags();
     }
   }
 
@@ -90,7 +105,7 @@ export class TagManager {
       const temp = this.project.tags[index + 1];
       this.project.tags[index + 1] = uuid;
       this.project.tags[index] = temp;
-      this.project.emit("document-commit");
+      this.persistTags();
     }
   }
 

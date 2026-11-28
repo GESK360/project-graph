@@ -90,17 +90,24 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
     this.title = title;
     this.aspectRatio = mediaKind === "audio" ? 640 / 160 : 16 / 9;
 
-    const blob = project.attachments.get(attachmentId);
-    if (!blob) {
+    const blob = project.attachments?.get?.(attachmentId);
+    const mediaUrl = !blob ? project.getAttachmentMediaUrl?.(attachmentId) : null;
+    if (!blob && !mediaUrl) {
       this.state = "notFound";
+      return;
+    }
+    if (project.isOffscreen) {
+      this.state = "loading";
       return;
     }
     this.loadMedia();
   }
 
   async loadMedia(): Promise<void> {
-    const blob = this.project.attachments.get(this.attachmentId);
-    if (!blob) {
+    if (this.project.isOffscreen) return;
+    const blob = this.project.attachments?.get?.(this.attachmentId);
+    const mediaUrl = !blob ? this.project.getAttachmentMediaUrl?.(this.attachmentId) : null;
+    if (!blob && !mediaUrl) {
       this.state = "notFound";
       return;
     }
@@ -114,19 +121,23 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
 
     try {
       if (this.mediaKind === "video") {
-        await this.loadVideo(blob);
+        await this.loadVideo(blob ? { blob } : { url: mediaUrl! });
       } else {
-        await this.loadAudio(blob);
+        await this.loadAudio(blob ? { blob } : { url: mediaUrl! });
       }
     } catch {
       this.state = "unsupported";
     }
   }
 
-  private loadVideo(blob: Blob): Promise<void> {
+  private loadVideo(source: { blob: Blob } | { url: string }): Promise<void> {
     return new Promise<void>((resolve) => {
-      const url = URL.createObjectURL(blob);
+      const shouldRevoke = "blob" in source;
+      const url = "blob" in source ? URL.createObjectURL(source.blob) : source.url;
       const el = document.createElement("video");
+      if (!shouldRevoke) {
+        el.crossOrigin = "anonymous";
+      }
       el.muted = true;
       el.preload = "auto";
       el.playsInline = true;
@@ -145,7 +156,9 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
         if (finished) return;
         finished = true;
         clearTimeout(timer);
-        URL.revokeObjectURL(url);
+        if (shouldRevoke) {
+          URL.revokeObjectURL(url);
+        }
         el.remove();
         if (this.disposed) {
           resolve();
@@ -207,10 +220,14 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
     });
   }
 
-  private loadAudio(blob: Blob): Promise<void> {
+  private loadAudio(source: { blob: Blob } | { url: string }): Promise<void> {
     return new Promise<void>((resolve) => {
-      const url = URL.createObjectURL(blob);
+      const shouldRevoke = "blob" in source;
+      const url = "blob" in source ? URL.createObjectURL(source.blob) : source.url;
       const el = document.createElement("audio");
+      if (!shouldRevoke) {
+        el.crossOrigin = "anonymous";
+      }
       el.preload = "auto";
       el.style.display = "none";
       document.body.appendChild(el);
@@ -226,7 +243,9 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
         if (finished) return;
         finished = true;
         clearTimeout(timer);
-        URL.revokeObjectURL(url);
+        if (shouldRevoke) {
+          URL.revokeObjectURL(url);
+        }
         el.remove();
         if (this.disposed) {
           resolve();
@@ -289,10 +308,13 @@ export class MediaNode extends ConnectableEntity implements ResizeAble {
 
   getMediaUrl(): string {
     if (this._cachedMediaUrl) return this._cachedMediaUrl;
-    const blob = this.project.attachments.get(this.attachmentId);
-    if (!blob) return "";
-    this._cachedMediaUrl = URL.createObjectURL(blob);
-    return this._cachedMediaUrl;
+    const blob = this.project.attachments?.get?.(this.attachmentId);
+    if (blob) {
+      this._cachedMediaUrl = URL.createObjectURL(blob);
+      return this._cachedMediaUrl;
+    }
+    const mediaUrl = this.project.getAttachmentMediaUrl?.(this.attachmentId);
+    return mediaUrl ?? "";
   }
 
   async dispose(): Promise<void> {

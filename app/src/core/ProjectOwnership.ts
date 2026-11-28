@@ -301,7 +301,7 @@ export async function loadWithProjectOwnership<T>(
   }
 }
 
-function toProjectOwnershipError(error: unknown): ProjectOwnershipError {
+export function toProjectOwnershipError(error: unknown): ProjectOwnershipError {
   if (typeof error === "object" && error !== null && "code" in error) {
     const code = error.code;
     if (code === "PROJECT_NOT_FOUND" || code === "PROJECT_LOAD_FAILED" || code === "PROJECT_BUSY") {

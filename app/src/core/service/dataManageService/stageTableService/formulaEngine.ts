@@ -123,6 +123,8 @@ export interface FormulaEvalOptions {
   now?: Date;
   systemColumnNames?: Partial<Record<SystemColumnId, string>>;
   systemColumnLabels?: Partial<Record<SystemColumnId, string>>;
+  /** 可选行索引表，调用方复用可避免单行增量重算时 O(N) 重建 Map */
+  rowByUuid?: ReadonlyMap<string, TableFilterSortRow>;
 }
 
 export interface FormulaValidationResult {
@@ -793,6 +795,33 @@ class ParseFailure extends Error {
   }
 }
 
+const MAX_FORMULA_AST_CACHE = 512;
+const formulaAstCache = new Map<string, FormulaParseResult>();
+
+/**
+ * 按公式源码文本缓存 AST 解析结果（FIFO 限容），消除高频重复词法与语法分析开销。
+ */
+export function parseFormulaCached(rawSource: string): FormulaParseResult {
+  const key = rawSource.trim();
+  const cached = formulaAstCache.get(key);
+  if (cached) {
+    return cached;
+  }
+  const parsed = parseFormula(key);
+  if (formulaAstCache.size >= MAX_FORMULA_AST_CACHE) {
+    const oldestKey = formulaAstCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      formulaAstCache.delete(oldestKey);
+    }
+  }
+  formulaAstCache.set(key, parsed);
+  return parsed;
+}
+
+export function clearFormulaAstCache(): void {
+  formulaAstCache.clear();
+}
+
 export function parseFormula(rawSource: string): FormulaParseResult {
   const source = rawSource.trim();
   if (!source) {
@@ -1298,20 +1327,44 @@ export function normalizeFormulaColumnRefs(source: string, lookup: FormulaColumn
   return out;
 }
 
+const RELATION_SYSTEM_COLUMNS = new Set<string>(["parents", "children", "outer", "inner"]);
+
 export function analyzeFormulaAst(
   ast: FormulaAstNode | null,
   lookup: FormulaColumnLookup,
-): { dependencies: string[]; missingRefs: string[]; volatile: boolean } {
+): {
+  dependencies: string[];
+  missingRefs: string[];
+  volatile: boolean;
+  usesTableRef: boolean;
+  usesRelationTraversal: boolean;
+  dependsOnRelations: boolean;
+} {
   const dependencies = new Set<string>();
   const missingRefs = new Set<string>();
   let volatile = false;
-  if (!ast) return { dependencies: [], missingRefs: [], volatile: false };
+  let usesTableRef = false;
+  let usesRelationTraversal = false;
+  if (!ast) {
+    return {
+      dependencies: [],
+      missingRefs: [],
+      volatile: false,
+      usesTableRef: false,
+      usesRelationTraversal: false,
+      dependsOnRelations: false,
+    };
+  }
 
   const validIds = new Set<string>([...ALL_SYSTEM_COLUMN_IDS, ...lookup.columns.map((c) => c.id)]);
   const nameToId = buildColumnNameToIdMap(lookup);
 
   const walk = (node: FormulaAstNode, inFilterScope: boolean) => {
     switch (node.type) {
+      case "tableRef": {
+        usesTableRef = true;
+        break;
+      }
       case "colRef": {
         if (validIds.has(node.refId)) {
           dependencies.add(node.refId);
@@ -1337,6 +1390,7 @@ export function analyzeFormulaAst(
         break;
       }
       case "member": {
+        usesRelationTraversal = true;
         walk(node.receiver, inFilterScope);
         const refCandidate = node.propRefId ?? node.propName;
         const resolved = resolveColumnRefId(refCandidate, validIds, nameToId);
@@ -1376,17 +1430,22 @@ export function analyzeFormulaAst(
   };
 
   walk(ast, false);
+  const depArr = Array.from(dependencies);
+  const dependsOnRelations = depArr.some((id) => RELATION_SYSTEM_COLUMNS.has(id));
   return {
-    dependencies: Array.from(dependencies),
+    dependencies: depArr,
     missingRefs: Array.from(missingRefs),
     volatile,
+    usesTableRef,
+    usesRelationTraversal,
+    dependsOnRelations,
   };
 }
 
 export function hasVolatileFormulas(columns: readonly TableColumnSchema[]): boolean {
   for (const col of columns) {
     if (col.type !== "formula" || !col.formula?.trim()) continue;
-    const parsed = parseFormula(col.formula);
+    const parsed = parseFormulaCached(col.formula);
     if (!parsed.ast) continue;
     const analysis = analyzeFormulaAst(parsed.ast, { columns });
     if (analysis.volatile) return true;
@@ -2882,12 +2941,39 @@ export function evaluateTableFormulas(
   columns: readonly TableColumnSchema[],
   options: FormulaEvalOptions = {},
 ): Map<string, Record<string, FormulaEvaluatedCell>> {
+  const formulaCols = columns.filter((col) => col.type === "formula");
+  if (formulaCols.length === 0) return new Map();
+  return evaluateFormulaSubset(
+    rows.map((r) => r.uuid),
+    formulaCols.map((c) => c.id),
+    rows,
+    columns,
+    options,
+  );
+}
+
+/**
+ * 仅对指定的 `(targetRowUuids × targetColIds)` 子集执行公式求值（共享单次求值上下文、AST 缓存与循环保护），
+ * 供增量公式 DAG 引擎以 O(dirty) 完成局部更新。
+ */
+export function evaluateFormulaSubset(
+  targetRowUuids: Iterable<string>,
+  targetColIds: Iterable<string>,
+  rows: readonly TableFilterSortRow[],
+  columns: readonly TableColumnSchema[],
+  options: FormulaEvalOptions = {},
+): Map<string, Record<string, FormulaEvaluatedCell>> {
   const result = new Map<string, Record<string, FormulaEvaluatedCell>>();
   const formulaCols = columns.filter((col) => col.type === "formula");
   if (formulaCols.length === 0) return result;
 
+  const targetColIdSet = new Set(targetColIds);
+  const targetCols = formulaCols.filter((c) => targetColIdSet.has(c.id));
+  if (targetCols.length === 0) return result;
+
   const now = options.now ?? new Date();
-  const rowByUuid = new Map<string, TableFilterSortRow>(rows.map((r) => [r.uuid, r]));
+  const rowByUuid: ReadonlyMap<string, TableFilterSortRow> =
+    options.rowByUuid ?? new Map<string, TableFilterSortRow>(rows.map((r) => [r.uuid, r]));
   const colById = new Map<string, TableColumnSchema>(columns.map((c) => [c.id, c]));
   const validColumnIds = new Set<string>([...ALL_SYSTEM_COLUMN_IDS, ...columns.map((c) => c.id)]);
   const nameToId = buildColumnNameToIdMap({
@@ -2896,10 +2982,10 @@ export function evaluateTableFormulas(
     systemColumnLabels: options.systemColumnLabels,
   });
 
-  // Pre-parse every formula column once
+  // 复用全局 AST 缓存，避免每次变更重复词法/语法分析
   const parsedByColId = new Map<string, FormulaParseResult>();
   for (const col of formulaCols) {
-    parsedByColId.set(col.id, parseFormula(col.formula ?? ""));
+    parsedByColId.set(col.id, parseFormulaCached(col.formula ?? ""));
   }
 
   // Memoize raw FormulaValue by `${rowUuid}\0${colId}`
@@ -2953,13 +3039,14 @@ export function evaluateTableFormulas(
     return evaluated;
   };
 
-  for (const row of rows) {
+  for (const rowUuid of targetRowUuids) {
+    if (!rowByUuid.has(rowUuid)) continue;
     const rowRecord: Record<string, FormulaEvaluatedCell> = {};
-    for (const col of formulaCols) {
-      const rawVal = readCellValue(row.uuid, col.id);
+    for (const col of targetCols) {
+      const rawVal = readCellValue(rowUuid, col.id);
       rowRecord[col.id] = formatFormulaValueToCell(rawVal, col.format);
     }
-    result.set(row.uuid, rowRecord);
+    result.set(rowUuid, rowRecord);
   }
 
   return result;

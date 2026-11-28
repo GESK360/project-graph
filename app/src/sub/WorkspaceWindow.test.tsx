@@ -27,7 +27,7 @@ const { rootDir, pageA, pageB, dirNode, listeners, stateRef } = vi.hoisted(() =>
 });
 
 vi.mock("@/core/loadAllServices", () => ({}));
-vi.mock("@/core/Project", () => ({}));
+vi.mock("@/core/Project", () => ({ Project: class {}, ProjectState: { Saved: 0, Stashed: 1, Unsaved: 2 } }));
 vi.mock("@/core/stage/stageObject/entity/TextNode", () => ({}));
 vi.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("i18next", () => ({ default: { t: (key: string) => key } }));
@@ -49,6 +49,20 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
 }));
 vi.mock("@/components/workspace/WorkspaceMoveCopyDialog", () => ({ default: () => null }));
 vi.mock("@/components/workspace/WorkspaceVersionsDialog", () => ({ default: () => null }));
+vi.mock("@/components/workspace/UpgradeV3Dialog", () => ({ default: () => null }));
+vi.mock("@/core/WorkspaceTableTab", () => ({ openWorkspaceTableTab: vi.fn() }));
+vi.mock("@/core/sqlite/DocClient", () => ({
+  DocClient: {
+    isAvailable: () => false,
+    scanWorkspaceLegacyPrg: vi.fn(async () => ({ root: "", files: [], totalBytes: 0 })),
+  },
+}));
+vi.mock("@/core/sqlite/WorkspaceClient", () => ({
+  WorkspaceClient: {
+    isAvailable: () => false,
+    syncIncremental: vi.fn(async () => ({ scannedDocs: 0, indexedDocs: 0, removedDocs: 0, skippedDocs: 0 })),
+  },
+}));
 vi.mock("@/core/service/dataFileService/DeepLinkHandler", () => ({ createPageDeepLink: vi.fn(() => "") }));
 vi.mock("@/core/Tab", () => ({ ComponentTab: class {}, Tab: class {} }));
 vi.mock("@/core/TabWorkspace", () => ({
@@ -297,11 +311,11 @@ it("commits the newly created page atomically with the refreshed tree and respec
   );
   await vi.waitFor(() => expect(rowButton(pageB.path)).toBeTruthy());
 
-  // 顶部工具栏有 5 个图标按钮，第 4 个是新建页面
+  // 顶部工具栏有 7 个图标按钮（含全局多维表格与全局间隔重复），第 6 个（下标 5）是新建页面
   const toolbarButtons = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).filter(
     (button) => !button.hasAttribute("data-pg-workspace-row"),
   );
-  const newPageButton = toolbarButtons[3]!;
+  const newPageButton = toolbarButtons[5]!;
   await act(async () => {
     newPageButton.click();
   });

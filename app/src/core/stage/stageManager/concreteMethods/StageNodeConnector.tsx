@@ -105,7 +105,9 @@ export class NodeConnector {
   reverseEdges(edges: LineEdge[]) {
     edges.forEach((edge) => {
       const oldSource = edge.source;
-      edge.source = edge.target;
+      const oldTarget = edge.target;
+      this.project.docCommandBus?.markEdgeTopologyDirty(edge, oldSource.uuid, oldTarget.uuid);
+      edge.source = oldTarget;
       edge.target = oldSource;
       const oldSourceRectRage = edge.sourceRectangleRate;
       edge.sourceRectangleRate = edge.targetRectangleRate;
@@ -124,6 +126,7 @@ export class NodeConnector {
     if (edge.target.uuid === newTarget.uuid) {
       return;
     }
+    this.project.docCommandBus?.markEdgeTopologyDirty(edge, edge.source.uuid, edge.target.uuid);
     edge.target = newTarget;
     this.project.stageManager.updateReferences();
   }
@@ -138,6 +141,7 @@ export class NodeConnector {
     if (edge.source.uuid === newSource.uuid) {
       return;
     }
+    this.project.docCommandBus?.markEdgeTopologyDirty(edge, edge.source.uuid, edge.target.uuid);
     edge.source = newSource;
     this.project.stageManager.updateReferences();
   }

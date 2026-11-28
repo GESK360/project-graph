@@ -7,14 +7,24 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager, Runtime, State, WebviewWindow, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, Manager, Runtime, State, WebviewWindow,
+    WebviewWindowBuilder,
+};
 use tokio::sync::oneshot;
 
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(5);
 const WORKSPACE_ACK_TIMEOUT: Duration = Duration::from_secs(8);
+const STANDBY_REPLENISH_DELAY: Duration = Duration::from_millis(1200);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StandbyWindowState {
+    Warming,
+    Ready,
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -133,6 +143,8 @@ pub struct WindowManagerState {
     next_request_id: AtomicU64,
     window_routes: Mutex<HashMap<String, WindowRoutingState>>,
     pending_init_payloads: Mutex<HashMap<String, WindowInitPayload>>,
+    standby_windows: Mutex<HashMap<String, StandbyWindowState>>,
+    standby_spawning: AtomicBool,
     doc_revisions: Mutex<HashMap<String, u64>>,
     pending_snapshots: Mutex<HashMap<String, oneshot::Sender<Option<Value>>>>,
     pending_workspace_acks: Mutex<HashMap<String, oneshot::Sender<bool>>>,
@@ -148,6 +160,8 @@ impl Default for WindowManagerState {
             next_request_id: AtomicU64::new(1),
             window_routes: Mutex::new(HashMap::new()),
             pending_init_payloads: Mutex::new(HashMap::new()),
+            standby_windows: Mutex::new(HashMap::new()),
+            standby_spawning: AtomicBool::new(false),
             doc_revisions: Mutex::new(HashMap::new()),
             pending_snapshots: Mutex::new(HashMap::new()),
             pending_workspace_acks: Mutex::new(HashMap::new()),
@@ -157,7 +171,67 @@ impl Default for WindowManagerState {
 }
 
 impl WindowManagerState {
+    pub fn is_standby(&self, label: &str) -> bool {
+        self.standby_windows
+            .lock()
+            .ok()
+            .map(|guard| guard.contains_key(label))
+            .unwrap_or(false)
+    }
+
+    pub fn has_any_standby(&self) -> bool {
+        self.standby_windows
+            .lock()
+            .ok()
+            .map(|guard| !guard.is_empty())
+            .unwrap_or(false)
+    }
+
+    fn register_warming_standby(&self, label: &str) {
+        if let Ok(mut guard) = self.standby_windows.lock() {
+            guard.insert(label.to_owned(), StandbyWindowState::Warming);
+        }
+    }
+
+    pub fn mark_standby_ready(&self, label: &str) -> bool {
+        if let Ok(mut guard) = self.standby_windows.lock() {
+            if let Some(entry) = guard.get_mut(label) {
+                *entry = StandbyWindowState::Ready;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn take_ready_standby(&self) -> Option<String> {
+        let mut guard = self.standby_windows.lock().ok()?;
+        let ready_label = guard
+            .iter()
+            .find_map(|(label, state)| (*state == StandbyWindowState::Ready).then(|| label.clone()))?;
+        guard.remove(&ready_label);
+        Some(ready_label)
+    }
+
+    fn remove_standby(&self, label: &str) -> bool {
+        self.standby_windows
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.remove(label))
+            .is_some()
+    }
+
+    fn take_all_standby_labels(&self) -> Vec<String> {
+        self.standby_windows
+            .lock()
+            .ok()
+            .map(|mut guard| guard.drain().map(|(label, _)| label).collect())
+            .unwrap_or_default()
+    }
+
     pub fn record_focus(&self, label: &str) {
+        if self.is_standby(label) {
+            return;
+        }
         if let Ok(mut guard) = self.last_focused_label.lock() {
             *guard = label.to_owned();
         }
@@ -256,13 +330,19 @@ impl WindowManagerState {
         app: &AppHandle<R>,
     ) -> Option<WebviewWindow<R>> {
         let preferred = self.last_focused_label();
-        if let Some(win) = app.get_webview_window(&preferred) {
-            return Some(win);
+        if !self.is_standby(&preferred) {
+            if let Some(win) = app.get_webview_window(&preferred) {
+                return Some(win);
+            }
         }
-        if let Some(main) = app.get_webview_window("main") {
-            return Some(main);
+        if !self.is_standby("main") {
+            if let Some(main) = app.get_webview_window("main") {
+                return Some(main);
+            }
         }
-        app.webview_windows().into_values().next()
+        app.webview_windows()
+            .into_iter()
+            .find_map(|(label, win)| (!self.is_standby(&label)).then_some(win))
     }
 
     pub fn on_window_destroyed<R: Runtime>(
@@ -271,11 +351,15 @@ impl WindowManagerState {
         ownership: &DesktopProjectOwnershipManager,
         label: &str,
     ) {
+        let was_standby = self.remove_standby(label);
         if let Ok(mut guard) = self.pending_init_payloads.lock() {
             guard.remove(label);
         }
         if let Ok(mut routes) = self.window_routes.lock() {
             routes.remove(label);
+        }
+        if was_standby {
+            return;
         }
         let affected_paths = ownership.release_all_for_window(label);
         for path in affected_paths {
@@ -285,9 +369,20 @@ impl WindowManagerState {
         let remaining_labels: Vec<String> = app
             .webview_windows()
             .keys()
-            .filter(|candidate| candidate.as_str() != label)
+            .filter(|candidate| candidate.as_str() != label && !self.is_standby(candidate))
             .cloned()
             .collect();
+
+        // 最后一个可见窗口关闭时，立即销毁隐藏的预热窗口，确保进程干净退出不残留后台窗口
+        if remaining_labels.is_empty() {
+            for standby_label in self.take_all_standby_labels() {
+                if let Some(standby_win) = app.get_webview_window(&standby_label) {
+                    let _ = standby_win.destroy();
+                }
+            }
+            return;
+        }
+
         let fallback = remaining_labels
             .iter()
             .find(|candidate| candidate.as_str() == "main")
@@ -402,6 +497,100 @@ pub fn route_opened_urls(app: &AppHandle, urls: Vec<String>) {
     }
 }
 
+fn install_platform_window_hooks(app: &AppHandle, label: &str, window: &WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = crate::macos_resize_cursor::install(window);
+        let _ = (app, label);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = window;
+        let app_for_hooks = app.clone();
+        let label_for_hooks = label.to_owned();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(win) = app_for_hooks.get_webview_window(&label_for_hooks) {
+                crate::custom_drag_drop::install_for_window(app_for_hooks.clone(), &win);
+                crate::windows_drag_compat::install_for_window(app_for_hooks.clone(), &win);
+            }
+        });
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (app, label, window);
+    }
+}
+
+fn spawn_standby_window_inner(app: &AppHandle, state: &Arc<WindowManagerState>) -> Result<(), String> {
+    if state.has_any_standby() {
+        return Ok(());
+    }
+    // 无活跃可见窗口时不要继续补充后台预热窗口
+    let has_visible_window = app
+        .webview_windows()
+        .keys()
+        .any(|label| !state.is_standby(label));
+    if !has_visible_window {
+        return Ok(());
+    }
+    if state.standby_spawning.swap(true, Ordering::AcqRel) {
+        return Ok(());
+    }
+
+    let result = (|| -> Result<(), String> {
+        let base_config = app
+            .config()
+            .app
+            .windows
+            .first()
+            .cloned()
+            .ok_or_else(|| "Missing base window config".to_owned())?;
+
+        let label = state.allocate_window_label();
+        let mut conf = base_config;
+        conf.label = label.clone();
+        conf.visible = false;
+        conf.skip_taskbar = true;
+
+        state.register_warming_standby(&label);
+
+        let builder = WebviewWindowBuilder::from_config(app, &conf)
+            .map_err(|e| {
+                state.remove_standby(&label);
+                e.to_string()
+            })?
+            .initialization_script("window.__PG_STANDBY__ = true;");
+
+        let window = builder.build().map_err(|e| {
+            state.remove_standby(&label);
+            e.to_string()
+        })?;
+
+        install_platform_window_hooks(app, &label, &window);
+        Ok(())
+    })();
+
+    state.standby_spawning.store(false, Ordering::Release);
+    result
+}
+
+fn schedule_standby_replenish(app: &AppHandle, state: &Arc<WindowManagerState>) {
+    let app_clone = app.clone();
+    let state_clone = Arc::clone(state);
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(STANDBY_REPLENISH_DELAY).await;
+        let pool = Arc::clone(
+            app_clone
+                .state::<Arc<crate::sqlite_engine::DocumentActorPool>>()
+                .inner(),
+        );
+        tauri::async_runtime::spawn_blocking(move || {
+            pool.prewarm_temp_draft();
+        });
+        let _ = spawn_standby_window_inner(&app_clone, &state_clone);
+    });
+}
+
 async fn create_new_window_inner(
     app: &AppHandle,
     state: &Arc<WindowManagerState>,
@@ -409,6 +598,54 @@ async fn create_new_window_inner(
     deep_link_url: Option<String>,
     workspace_root: Option<String>,
 ) -> Result<String, String> {
+    // 相对当前焦点窗口做轻微偏移并同步参考尺寸，避免两个窗口完全重叠让用户以为没打开
+    let target_geometry = state.resolve_target_window(app).and_then(|focused| {
+        let pos = focused.outer_position().ok()?;
+        let scale = focused.scale_factor().ok().unwrap_or(1.0);
+        let logical_x = pos.x as f64 / scale + 36.0;
+        let logical_y = pos.y as f64 / scale + 36.0;
+        let is_maximized = focused.is_maximized().unwrap_or(false);
+        let size = if !is_maximized {
+            focused.inner_size().ok()
+        } else {
+            None
+        };
+        Some((logical_x, logical_y, size))
+    });
+
+    // 快路径：优先直接弹出已预热完毕的隐藏窗口（省去 HWND + WebView2 + JS/React/CSS 全量冷启动，耗时 < 20ms）
+    if let Some(standby_label) = state.take_ready_standby() {
+        if let Some(win) = app.get_webview_window(&standby_label) {
+            let payload = WindowInitPayload {
+                file_path: file_path.clone(),
+                deep_link_url: deep_link_url.clone(),
+                workspace_root: workspace_root.clone(),
+            };
+            let _ = app.emit_to(&standby_label, "pg-standby-activate", payload);
+
+            let (tx, rx) = oneshot::channel::<()>();
+            let win_for_show = win.clone();
+            let _ = app.run_on_main_thread(move || {
+                if let Some((x, y, maybe_size)) = target_geometry {
+                    if let Some(size) = maybe_size {
+                        let _ = win_for_show.set_size(size);
+                    }
+                    let _ = win_for_show.set_position(LogicalPosition::new(x, y));
+                }
+                let _ = win_for_show.set_skip_taskbar(false);
+                let _ = win_for_show.show();
+                let _ = win_for_show.unminimize();
+                let _ = win_for_show.set_focus();
+                let _ = tx.send(());
+            });
+            let _ = rx.await;
+
+            state.record_focus(&standby_label);
+            schedule_standby_replenish(app, state);
+            return Ok(standby_label);
+        }
+    }
+
     let base_config = app
         .config()
         .app
@@ -422,15 +659,6 @@ async fn create_new_window_inner(
     conf.label = label.clone();
     conf.visible = false;
 
-    // 相对当前焦点窗口做轻微偏移，避免两个窗口完全重叠让用户以为没打开
-    let cascade_offset = state.resolve_target_window(app).and_then(|focused| {
-        let pos = focused.outer_position().ok()?;
-        let scale = focused.scale_factor().ok().unwrap_or(1.0);
-        let logical_x = pos.x as f64 / scale + 36.0;
-        let logical_y = pos.y as f64 / scale + 36.0;
-        Some((logical_x, logical_y))
-    });
-
     if file_path.is_some() || deep_link_url.is_some() || workspace_root.is_some() {
         state.store_init_payload(
             &label,
@@ -443,7 +671,7 @@ async fn create_new_window_inner(
     }
 
     let mut builder = WebviewWindowBuilder::from_config(app, &conf).map_err(|e| e.to_string())?;
-    if let Some((x, y)) = cascade_offset {
+    if let Some((x, y, _)) = target_geometry {
         builder = builder.position(x, y);
     }
 
@@ -452,24 +680,32 @@ async fn create_new_window_inner(
         e.to_string()
     })?;
 
-    #[cfg(target_os = "macos")]
-    {
-        let _ = crate::macos_resize_cursor::install(&window);
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let app_for_drop = app.clone();
-        let label_for_drop = label.clone();
-        let _ = app.run_on_main_thread(move || {
-            if let Some(win) = app_for_drop.get_webview_window(&label_for_drop) {
-                crate::custom_drag_drop::install_for_window(app_for_drop.clone(), &win);
-            }
-        });
-    }
-    let _ = window;
+    install_platform_window_hooks(app, &label, &window);
 
     state.record_focus(&label);
+    schedule_standby_replenish(app, state);
     Ok(label)
+}
+
+#[tauri::command]
+pub async fn ensure_standby_window(
+    app: AppHandle,
+    state: State<'_, Arc<WindowManagerState>>,
+    pool: State<'_, Arc<crate::sqlite_engine::DocumentActorPool>>,
+) -> Result<(), String> {
+    let pool_clone = Arc::clone(pool.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        pool_clone.prewarm_temp_draft();
+    });
+    spawn_standby_window_inner(&app, state.inner())
+}
+
+#[tauri::command]
+pub fn mark_standby_window_ready(
+    window: WebviewWindow,
+    state: State<'_, Arc<WindowManagerState>>,
+) -> bool {
+    state.mark_standby_ready(window.label())
 }
 
 #[tauri::command]
@@ -538,8 +774,15 @@ pub fn focus_window_by_label(app: AppHandle, label: String) -> Result<(), String
 }
 
 #[tauri::command]
-pub fn list_open_windows(app: AppHandle) -> Vec<String> {
-    app.webview_windows().keys().cloned().collect()
+pub fn list_open_windows(
+    app: AppHandle,
+    state: State<'_, Arc<WindowManagerState>>,
+) -> Vec<String> {
+    app.webview_windows()
+        .keys()
+        .filter(|label| !state.is_standby(label))
+        .cloned()
+        .collect()
 }
 
 #[tauri::command]
@@ -663,7 +906,7 @@ pub async fn coordinate_workspace_action(
     let peers: Vec<String> = app
         .webview_windows()
         .keys()
-        .filter(|label| label.as_str() != source_window.as_str())
+        .filter(|label| label.as_str() != source_window.as_str() && !state.is_standby(label))
         .cloned()
         .collect();
     if peers.is_empty() {
@@ -740,6 +983,7 @@ pub fn respond_workspace_action(
 pub fn broadcast_workspace_event(
     app: AppHandle,
     window: WebviewWindow,
+    state: State<'_, Arc<WindowManagerState>>,
     payload: Value,
 ) -> Result<(), String> {
     let source_window = window.label().to_owned();
@@ -748,7 +992,7 @@ pub fn broadcast_workspace_event(
         payload,
     };
     for label in app.webview_windows().keys() {
-        if label.as_str() != source_window.as_str() {
+        if label.as_str() != source_window.as_str() && !state.is_standby(label) {
             let _ = app.emit_to(label, "pg-workspace-sync", event.clone());
         }
     }
@@ -916,5 +1160,37 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "temp file must be cleaned up");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn standby_window_pool_lifecycle_and_focus_isolation() {
+        let state = WindowManagerState::default();
+        assert!(!state.has_any_standby());
+        assert_eq!(state.take_ready_standby(), None);
+
+        state.register_warming_standby("window-2");
+        assert!(state.has_any_standby());
+        assert!(state.is_standby("window-2"));
+        // 预热期间尚未 ready，不能被弹出，也不应污染焦点记录
+        assert_eq!(state.take_ready_standby(), None);
+        state.record_focus("window-2");
+        assert_eq!(state.last_focused_label(), "main");
+
+        // 就绪后仅弹出一次
+        assert!(state.mark_standby_ready("window-2"));
+        assert_eq!(state.take_ready_standby().as_deref(), Some("window-2"));
+        assert!(!state.is_standby("window-2"));
+        assert!(!state.has_any_standby());
+        assert_eq!(state.take_ready_standby(), None);
+
+        // 成为正式窗口后可以正常记录焦点
+        state.record_focus("window-2");
+        assert_eq!(state.last_focused_label(), "window-2");
+
+        // 批量销毁清空剩余预热窗口
+        state.register_warming_standby("window-3");
+        let drained = state.take_all_standby_labels();
+        assert_eq!(drained, vec!["window-3".to_owned()]);
+        assert!(!state.has_any_standby());
     }
 }

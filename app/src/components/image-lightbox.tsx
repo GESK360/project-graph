@@ -9,17 +9,33 @@ import { useTranslation } from "react-i18next";
 
 export interface ImageLightboxItem {
   attachmentId: string;
+  docId?: string | null;
   label?: string;
   rowUuid?: string;
   imageNodeUuid?: string;
 }
 
-function useAttachmentObjectUrl(project: Project | null, attachmentId: string | null): string | null {
-  const blob = project && attachmentId ? project.attachments?.get?.(attachmentId) : undefined;
+export type ImageLightboxMediaResolver = (
+  attachmentId: string,
+  docId?: string | null,
+  options?: { thumb?: boolean },
+) => string | null;
+
+function useAttachmentObjectUrl(
+  project: Project | null,
+  attachmentId: string | null,
+  options?: { thumb?: boolean; docId?: string | null; resolveMediaUrl?: ImageLightboxMediaResolver },
+): string | null {
+  const mediaUrl = attachmentId
+    ? (options?.resolveMediaUrl?.(attachmentId, options?.docId ?? null, { thumb: options?.thumb }) ??
+      project?.getAttachmentMediaUrl?.(attachmentId, options) ??
+      null)
+    : null;
+  const blob = !mediaUrl && project && attachmentId ? project.attachments?.get?.(attachmentId) : undefined;
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!blob || typeof URL.createObjectURL !== "function") {
+    if (mediaUrl || !blob || typeof URL.createObjectURL !== "function") {
       setObjectUrl(null);
       return;
     }
@@ -28,25 +44,31 @@ function useAttachmentObjectUrl(project: Project | null, attachmentId: string | 
     return () => {
       URL.revokeObjectURL?.(url);
     };
-  }, [blob]);
+  }, [mediaUrl, blob]);
 
-  return objectUrl;
+  return mediaUrl ?? objectUrl;
 }
 
 function LightboxThumbnailButton({
   project,
+  resolveMediaUrl,
   item,
   index,
   isActive,
   onSelect,
 }: {
-  project: Project;
+  project: Project | null;
+  resolveMediaUrl?: ImageLightboxMediaResolver;
   item: ImageLightboxItem;
   index: number;
   isActive: boolean;
   onSelect: () => void;
 }) {
-  const url = useAttachmentObjectUrl(project, item.attachmentId);
+  const url = useAttachmentObjectUrl(project, item.attachmentId, {
+    thumb: true,
+    docId: item.docId,
+    resolveMediaUrl,
+  });
   const btnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -86,6 +108,7 @@ function LightboxThumbnailButton({
 
 export function ImageLightbox({
   project,
+  resolveMediaUrl,
   open,
   items,
   initialIndex,
@@ -94,6 +117,7 @@ export function ImageLightbox({
   onClose,
 }: {
   project: Project | null;
+  resolveMediaUrl?: ImageLightboxMediaResolver;
   open: boolean;
   items: readonly ImageLightboxItem[];
   initialIndex: number;
@@ -133,7 +157,11 @@ export function ImageLightbox({
 
   const safeIndex = activeItems.length > 0 ? Math.max(0, Math.min(activeItems.length - 1, currentIndex)) : 0;
   const currentItem = activeItems[safeIndex] ?? null;
-  const mainImageUrl = useAttachmentObjectUrl(project, open && currentItem ? currentItem.attachmentId : null);
+  const mainImageUrl = useAttachmentObjectUrl(project, open && currentItem ? currentItem.attachmentId : null, {
+    thumb: false,
+    docId: currentItem?.docId,
+    resolveMediaUrl,
+  });
 
   const goPrev = useCallback(() => {
     if (activeItems.length <= 1) return;
@@ -214,7 +242,7 @@ export function ImageLightbox({
     window.addEventListener("pointerup", onUp);
   };
 
-  if (!project || !open || activeItems.length === 0) {
+  if ((!project && !resolveMediaUrl) || !open || activeItems.length === 0) {
     return null;
   }
 
@@ -419,6 +447,7 @@ export function ImageLightbox({
                 <LightboxThumbnailButton
                   key={`${item.attachmentId}-${idx}`}
                   project={project}
+                  resolveMediaUrl={resolveMediaUrl}
                   item={item}
                   index={idx}
                   isActive={idx === safeIndex}
@@ -434,7 +463,8 @@ export function ImageLightbox({
 }
 
 export function openGlobalImageLightbox(req: {
-  project: Project;
+  project: Project | null;
+  resolveMediaUrl?: ImageLightboxMediaResolver;
   items: ImageLightboxItem[];
   initialIndex: number;
   allItems?: ImageLightboxItem[];
@@ -443,6 +473,7 @@ export function openGlobalImageLightbox(req: {
   if (req.items.length === 0) return;
   store.set(imageLightboxAtom, {
     project: req.project,
+    resolveMediaUrl: req.resolveMediaUrl,
     items: req.items,
     initialIndex: req.initialIndex,
     allItems: req.allItems,
@@ -455,7 +486,8 @@ export function GlobalImageLightbox() {
   if (!state) return null;
   return (
     <ImageLightbox
-      project={state.project as Project}
+      project={(state.project as Project | null) ?? null}
+      resolveMediaUrl={state.resolveMediaUrl}
       open={Boolean(state)}
       items={state.items}
       initialIndex={state.initialIndex}

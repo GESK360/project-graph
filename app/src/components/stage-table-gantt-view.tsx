@@ -13,6 +13,7 @@ import {
 } from "@/components/stage-table-views-shared";
 import type { Project } from "@/core/Project";
 import type { StageTableRow } from "@/core/service/dataManageService/stageTableService/StageTableService";
+import type { TableDataSource } from "@/core/service/dataManageService/stageTableService/TableDataSource";
 import {
   addDaysToDateKey,
   diffCalendarDays,
@@ -31,6 +32,8 @@ import {
   type TableViewSchema,
 } from "@/types/table";
 import { cn } from "@/utils/cn";
+import { createSafeObserveElementRect } from "@/components/stage-table-scroll-container";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ChartGantt,
   Check,
@@ -46,6 +49,8 @@ import {
   PlusCircle,
 } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
+
+const OBSERVE_GANTT_RECT = createSafeObserveElementRect({ width: 900, height: 600 });
 
 const ROW_HEIGHT = 36;
 const GROUP_ROW_HEIGHT = 30;
@@ -76,6 +81,8 @@ interface GanttDragState {
 
 export function StageTableGanttView({
   project,
+  dataSource,
+  dataRevision = 0,
   activeView,
   allRows,
   rows,
@@ -95,7 +102,9 @@ export function StageTableGanttView({
   onPreviewImage,
   t,
 }: {
-  project: Project;
+  project?: Project | null;
+  dataSource: TableDataSource;
+  dataRevision?: number;
   activeView: TableViewSchema;
   allRows: readonly StageTableRow[];
   rows: readonly StageTableRow[];
@@ -111,14 +120,16 @@ export function StageTableGanttView({
   selectedRowIds: ReadonlySet<string>;
   getColumnLabel: (colId: string) => string;
   onSelectRows: (uuids: string[], focusCamera?: boolean) => void;
-  onOpenRecord: (rowUuid: string) => void;
-  onPreviewImage: (attachmentId: string, rowUuid?: string) => void;
+  onOpenRecord: (rowUuid: string, row?: StageTableRow) => void;
+  onPreviewImage: (attachmentId: string, rowUuid?: string, docId?: string) => void;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
   const todayKey = useMemo(() => toLocalDateKey(new Date()), []);
   const [anchorKey, setAnchorKey] = useState<string>(todayKey);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const [dragState, setDragState] = useState<GanttDragState | null>(null);
+  const isWorkspaceMode = dataSource.scopeKind === "workspace";
+  const [wsRows, setWsRows] = useState<StageTableRow[]>([]);
 
   const leftScrollRef = useRef<HTMLDivElement>(null);
   const rightScrollRef = useRef<HTMLDivElement>(null);
@@ -155,9 +166,13 @@ export function StageTableGanttView({
     for (const col of customColumns) {
       if (col.type === "select") list.push({ id: col.id, label: col.name, customCol: col });
     }
+    if (isWorkspaceMode) {
+      list.push({ id: "sourceFile", label: getColumnLabel("sourceFile") });
+      list.push({ id: "sourceFolder", label: getColumnLabel("sourceFolder") });
+    }
     list.push({ id: "outer", label: getColumnLabel("outer") });
     return list;
-  }, [customColumns, getColumnLabel]);
+  }, [customColumns, isWorkspaceMode, getColumnLabel]);
 
   const startDateColId = config.startDateColumnId ?? customColumns.find((c) => c.type === "date")?.id ?? "createdAt";
   const endDateColId = config.endDateColumnId ?? null;
@@ -200,7 +215,47 @@ export function StageTableGanttView({
   }, [anchorKey, scaleMeta.daysBefore, scaleMeta.daysAfter, todayKey]);
 
   const timelineStartKey = timelineDays[0]?.key ?? todayKey;
+  const timelineEndKey = timelineDays[timelineDays.length - 1]?.key ?? todayKey;
   const totalTimelineWidth = timelineDays.length * dayWidth;
+
+  useEffect(() => {
+    if (!isWorkspaceMode) return;
+    let cancelled = false;
+    void dataSource
+      .queryDateRange({
+        startColumnId: startDateColId,
+        endColumnId: endDateColId,
+        minDate: timelineStartKey,
+        maxDate: timelineEndKey,
+        filters: activeFilters,
+        filterGroup: activeFilterGroup,
+        sort: activeSort,
+        includeUndated: true,
+        undatedLimit: 200,
+      })
+      .then((res) => {
+        if (!cancelled) {
+          setWsRows([...res.rows, ...res.undatedRows]);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isWorkspaceMode,
+    dataSource,
+    dataRevision,
+    startDateColId,
+    endDateColId,
+    timelineStartKey,
+    timelineEndKey,
+    activeFilters,
+    activeFilterGroup,
+    activeSort,
+  ]);
+
+  const effectiveRows = isWorkspaceMode ? wsRows : rows;
 
   const todayOffsetPx = useMemo(() => {
     const diff = diffCalendarDays(timelineStartKey, todayKey);
@@ -248,15 +303,30 @@ export function StageTableGanttView({
 
   const flatItems = useMemo<GanttFlatItem[]>(() => {
     if (!groupByColumnId) {
-      return rows.map((row, idx) => ({ kind: "row", row, rowIndex: idx }));
+      return effectiveRows.map((row, idx) => ({ kind: "row", row, rowIndex: idx }));
     }
 
     const groupsMap = new Map<string, { label: string; color?: string; rows: StageTableRow[] }>();
     const ungroupedKey = "__ungrouped__";
     groupsMap.set(ungroupedKey, { label: t("kanban.ungrouped"), rows: [] });
 
-    if (groupByColumnId === "outer") {
-      for (const row of rows) {
+    if (groupByColumnId === "sourceFile" || groupByColumnId === "sourceFolder") {
+      for (const row of effectiveRows) {
+        const key =
+          groupByColumnId === "sourceFile"
+            ? row.sourceRelPath || row.sourceFile || ungroupedKey
+            : row.sourceFolder || "/";
+        const label =
+          groupByColumnId === "sourceFile" ? row.sourceFile || t("kanban.ungrouped") : row.sourceFolder || "/";
+        let g = groupsMap.get(key);
+        if (!g) {
+          g = { label, rows: [] };
+          groupsMap.set(key, g);
+        }
+        g.rows.push(row);
+      }
+    } else if (groupByColumnId === "outer") {
+      for (const row of effectiveRows) {
         if (row.outer) {
           let g = groupsMap.get(row.outer.uuid);
           if (!g) {
@@ -274,7 +344,7 @@ export function StageTableGanttView({
         for (const opt of col.options ?? []) {
           groupsMap.set(opt.id, { label: opt.name, color: opt.color, rows: [] });
         }
-        for (const row of rows) {
+        for (const row of effectiveRows) {
           const raw = row.tableFields?.[col.id];
           const optId = typeof raw === "string" ? raw : undefined;
           const g = optId ? groupsMap.get(optId) : undefined;
@@ -282,7 +352,7 @@ export function StageTableGanttView({
           else groupsMap.get(ungroupedKey)!.rows.push(row);
         }
       } else {
-        return rows.map((row, idx) => ({ kind: "row", row, rowIndex: idx }));
+        return effectiveRows.map((row, idx) => ({ kind: "row", row, rowIndex: idx }));
       }
     }
 
@@ -298,7 +368,23 @@ export function StageTableGanttView({
       }
     }
     return result;
-  }, [rows, groupByColumnId, customColumnMap, collapsedGroups, t]);
+  }, [effectiveRows, groupByColumnId, customColumnMap, collapsedGroups, t]);
+
+  const rowVirtualizer = useVirtualizer({
+    count: flatItems.length,
+    getScrollElement: () => rightScrollRef.current,
+    estimateSize: (index) => (flatItems[index]?.kind === "group" ? GROUP_ROW_HEIGHT : ROW_HEIGHT),
+    overscan: 8,
+    initialRect: { width: 900, height: 600 },
+    observeElementRect: OBSERVE_GANTT_RECT,
+  });
+
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [flatItems, rowVirtualizer]);
+
+  const virtualFlatItems = rowVirtualizer.getVirtualItems();
+  const totalVirtualHeight = rowVirtualizer.getTotalSize();
 
   const handleLeftScroll = () => {
     if (syncingScrollRef.current === "right") return;
@@ -327,26 +413,29 @@ export function StageTableGanttView({
     if (startColEditable) {
       fields[startDateColId] = todayKey;
     }
-    const created = project.stageTable.createRow?.({
-      text: "",
-      tableFields: fields,
+    void Promise.resolve(
+      dataSource.createRow({
+        text: "",
+        tableFields: fields,
+      }),
+    ).then((created) => {
+      if (created) {
+        onSelectRows([created.uuid], false);
+      }
     });
-    if (created) {
-      onSelectRows([created.uuid], false);
-    }
   };
 
   const handleQuickCreateDateColumns = () => {
-    const startCol = project.stageTable.addCustomColumn?.({
+    const startCol = dataSource.addCustomColumn({
       name: t("gantt.defaultStartColName"),
       type: "date",
     });
-    const endCol = project.stageTable.addCustomColumn?.({
+    const endCol = dataSource.addCustomColumn({
       name: t("gantt.defaultEndColName"),
       type: "date",
     });
     if (startCol) {
-      project.stageTable.updateActiveViewConfig?.({
+      dataSource.updateActiveViewConfig({
         gantt: {
           startDateColumnId: startCol.id,
           endDateColumnId: endCol?.id ?? null,
@@ -361,6 +450,7 @@ export function StageTableGanttView({
     mode: "move" | "resize-start" | "resize-end",
     origStartKey: string,
     origEndKey: string,
+    docId?: string,
   ) => {
     if (event.button !== 0) return;
     if (mode === "move" && !startColEditable) return;
@@ -397,15 +487,15 @@ export function StageTableGanttView({
         if (endColEditable && endDateColId) {
           patch[endDateColId] = addDaysToDateKey(origEndKey, latestDelta);
         }
-        project.stageTable.updateRowCustomFields?.(rowUuid, patch);
+        void dataSource.updateRowCustomFields(rowUuid, patch, docId);
       } else if (mode === "resize-start") {
         const candidateStart = addDaysToDateKey(origStartKey, latestDelta);
         const clampedStart = diffCalendarDays(candidateStart, origEndKey) < 0 ? origEndKey : candidateStart;
-        project.stageTable.updateRowCustomField(rowUuid, startDateColId, clampedStart);
+        void dataSource.updateRowCustomField(rowUuid, startDateColId, clampedStart, docId);
       } else if (mode === "resize-end" && endDateColId) {
         const candidateEnd = addDaysToDateKey(origEndKey, latestDelta);
         const clampedEnd = diffCalendarDays(origStartKey, candidateEnd) < 0 ? origStartKey : candidateEnd;
-        project.stageTable.updateRowCustomField(rowUuid, endDateColId, clampedEnd);
+        void dataSource.updateRowCustomField(rowUuid, endDateColId, clampedEnd, docId);
       }
     };
 
@@ -422,7 +512,7 @@ export function StageTableGanttView({
 
     const onPointerMove = (moveEvent: PointerEvent) => {
       const next = Math.max(180, Math.min(560, origWidth + (moveEvent.clientX - startX)));
-      project.stageTable.updateActiveViewConfig?.({ gantt: { leftPaneWidth: next } });
+      dataSource.updateActiveViewConfig({ gantt: { leftPaneWidth: next } });
     };
 
     const onPointerUp = () => {
@@ -486,8 +576,8 @@ export function StageTableGanttView({
               allColumnIds={allColumnIds}
               customColumnMap={customColumnMap}
               getColumnLabel={getColumnLabel}
-              isColumnVisible={(cid) => project.stageTable.isColumnVisible(cid)}
-              onToggleColumn={(cid, visible) => project.stageTable.setColumnVisible(cid, visible)}
+              isColumnVisible={(cid) => dataSource.isColumnVisible(cid)}
+              onToggleColumn={(cid, visible) => dataSource.setColumnVisible(cid, visible)}
               t={t}
             />
           </PopoverContent>
@@ -518,9 +608,7 @@ export function StageTableGanttView({
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() =>
-                      project.stageTable.updateActiveViewConfig?.({ gantt: { startDateColumnId: item.id } })
-                    }
+                    onClick={() => dataSource.updateActiveViewConfig({ gantt: { startDateColumnId: item.id } })}
                     className="hover:bg-accent flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1 text-left"
                   >
                     <StageTableColumnIcon columnId={item.id} customColumn={item.customCol} />
@@ -536,7 +624,7 @@ export function StageTableGanttView({
               <div className="max-h-32 space-y-0.5 overflow-y-auto rounded-md border p-1">
                 <button
                   type="button"
-                  onClick={() => project.stageTable.updateActiveViewConfig?.({ gantt: { endDateColumnId: null } })}
+                  onClick={() => dataSource.updateActiveViewConfig({ gantt: { endDateColumnId: null } })}
                   className="hover:bg-accent flex w-full cursor-pointer items-center justify-between rounded px-2 py-1 text-left"
                 >
                   <span className="text-muted-foreground">{t("gantt.singleDayMode")}</span>
@@ -546,7 +634,7 @@ export function StageTableGanttView({
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() => project.stageTable.updateActiveViewConfig?.({ gantt: { endDateColumnId: item.id } })}
+                    onClick={() => dataSource.updateActiveViewConfig({ gantt: { endDateColumnId: item.id } })}
                     className="hover:bg-accent flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1 text-left"
                   >
                     <StageTableColumnIcon columnId={item.id} customColumn={item.customCol} />
@@ -576,7 +664,7 @@ export function StageTableGanttView({
                 <div className="max-h-28 space-y-0.5 overflow-y-auto rounded-md border p-1">
                   <button
                     type="button"
-                    onClick={() => project.stageTable.updateActiveViewConfig?.({ gantt: { colorColumnId: null } })}
+                    onClick={() => dataSource.updateActiveViewConfig({ gantt: { colorColumnId: null } })}
                     className="hover:bg-accent flex w-full cursor-pointer items-center justify-between rounded px-2 py-1 text-left"
                   >
                     <span className="text-muted-foreground">{t("views.defaultColor")}</span>
@@ -586,7 +674,7 @@ export function StageTableGanttView({
                     <button
                       key={col.id}
                       type="button"
-                      onClick={() => project.stageTable.updateActiveViewConfig?.({ gantt: { colorColumnId: col.id } })}
+                      onClick={() => dataSource.updateActiveViewConfig({ gantt: { colorColumnId: col.id } })}
                       className="hover:bg-accent flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1 text-left"
                     >
                       <StageTableColumnIcon columnId={col.id} customColumn={col} />
@@ -602,18 +690,14 @@ export function StageTableGanttView({
               <label className="hover:bg-accent flex cursor-pointer items-center gap-2 rounded px-1.5 py-1">
                 <Checkbox
                   checked={showBarLabel}
-                  onCheckedChange={(v) =>
-                    project.stageTable.updateActiveViewConfig?.({ gantt: { showBarLabel: Boolean(v) } })
-                  }
+                  onCheckedChange={(v) => dataSource.updateActiveViewConfig({ gantt: { showBarLabel: Boolean(v) } })}
                 />
                 <span>{t("gantt.showBarLabel")}</span>
               </label>
               <label className="hover:bg-accent flex cursor-pointer items-center gap-2 rounded px-1.5 py-1">
                 <Checkbox
                   checked={showDuration}
-                  onCheckedChange={(v) =>
-                    project.stageTable.updateActiveViewConfig?.({ gantt: { showDuration: Boolean(v) } })
-                  }
+                  onCheckedChange={(v) => dataSource.updateActiveViewConfig({ gantt: { showDuration: Boolean(v) } })}
                 />
                 <span>{t("gantt.showDuration")}</span>
               </label>
@@ -621,7 +705,7 @@ export function StageTableGanttView({
                 <Checkbox
                   checked={highlightWeekends}
                   onCheckedChange={(v) =>
-                    project.stageTable.updateActiveViewConfig?.({ gantt: { highlightWeekends: Boolean(v) } })
+                    dataSource.updateActiveViewConfig({ gantt: { highlightWeekends: Boolean(v) } })
                   }
                 />
                 <span>{t("gantt.highlightWeekends")}</span>
@@ -637,20 +721,19 @@ export function StageTableGanttView({
           columnGroups={filterColumnGroups}
           customColumns={customColumns}
           customColumnMap={customColumnMap}
-          allRows={allRows}
+          allRows={isWorkspaceMode ? effectiveRows : allRows}
+          dataSource={dataSource}
           activeFilters={activeFilters}
           filterGroup={activeFilterGroup}
           getColumnLabel={getColumnLabel}
-          onSetConjunction={(conj) => project.stageTable.setFilterConjunction?.(conj)}
-          onAddCondition={(cid) => project.stageTable.addFilterCondition?.(cid)}
-          onUpdateCondition={(id, patch) => project.stageTable.updateFilterCondition?.(id, patch)}
-          onRemoveCondition={(id) => project.stageTable.removeFilterCondition?.(id)}
-          onToggleConditionCollapse={(id) => project.stageTable.toggleFilterConditionCollapsed?.(id)}
-          onReorderConditions={(dragId, targetId, pos) =>
-            project.stageTable.reorderFilterConditions?.(dragId, targetId, pos)
-          }
-          onSetColumnFilter={(cid, flt) => project.stageTable.setColumnFilter?.(cid, flt)}
-          onClearAllFilters={() => project.stageTable.clearAllFilters?.()}
+          onSetConjunction={(conj) => dataSource.setFilterConjunction(conj)}
+          onAddCondition={(cid) => dataSource.addFilterCondition(cid)}
+          onUpdateCondition={(id, patch) => dataSource.updateFilterCondition(id, patch)}
+          onRemoveCondition={(id) => dataSource.removeFilterCondition(id)}
+          onToggleConditionCollapse={(id) => dataSource.toggleFilterConditionCollapsed(id)}
+          onReorderConditions={(dragId, targetId, pos) => dataSource.reorderFilterConditions(dragId, targetId, pos)}
+          onSetColumnFilter={(cid, flt) => dataSource.setColumnFilter(cid, flt)}
+          onClearAllFilters={() => dataSource.clearAllFilters()}
           t={t}
         />
 
@@ -684,7 +767,7 @@ export function StageTableGanttView({
             <div className="space-y-0.5">
               <button
                 type="button"
-                onClick={() => project.stageTable.updateActiveViewConfig?.({ gantt: { groupByColumnId: null } })}
+                onClick={() => dataSource.updateActiveViewConfig({ gantt: { groupByColumnId: null } })}
                 className="hover:bg-accent flex w-full cursor-pointer items-center justify-between rounded px-2 py-1 text-left"
               >
                 <span className="text-muted-foreground">{t("kanban.noGrouping")}</span>
@@ -694,7 +777,7 @@ export function StageTableGanttView({
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => project.stageTable.updateActiveViewConfig?.({ gantt: { groupByColumnId: item.id } })}
+                  onClick={() => dataSource.updateActiveViewConfig({ gantt: { groupByColumnId: item.id } })}
                   className="hover:bg-accent flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1 text-left"
                 >
                   <StageTableColumnIcon columnId={item.id} customColumn={item.customCol} />
@@ -711,7 +794,7 @@ export function StageTableGanttView({
           customColumnMap={customColumnMap}
           activeSort={activeSort}
           getColumnLabel={getColumnLabel}
-          onSetSort={(sort) => project.stageTable.setSort?.(sort)}
+          onSetSort={(sort) => dataSource.setSort(sort)}
           t={t}
         />
       </div>
@@ -755,103 +838,122 @@ export function StageTableGanttView({
               </div>
             </div>
 
-            {/* 左侧同步滚动行列表 */}
+            {/* 左侧同步滚动行列表（与右侧共用同一个行虚拟化器保持 1px 严格对齐） */}
             <div
               ref={leftScrollRef}
               onScroll={handleLeftScroll}
               className="min-h-0 flex-1 overflow-x-auto overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             >
-              {flatItems.map((item) => {
-                if (item.kind === "group") {
-                  const collapsed = collapsedGroups.has(item.key);
-                  return (
-                    <div
-                      key={`lg-${item.key}`}
-                      style={{ height: `${GROUP_ROW_HEIGHT}px` }}
-                      onClick={() => {
-                        setCollapsedGroups((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(item.key)) next.delete(item.key);
-                          else next.add(item.key);
-                          return next;
-                        });
-                      }}
-                      className="border-border/40 bg-muted/35 hover:bg-muted/60 flex cursor-pointer items-center gap-1.5 border-b px-2 text-xs select-none"
-                    >
-                      {collapsed ? (
-                        <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />
-                      ) : (
-                        <ChevronDown className="text-muted-foreground size-3.5 shrink-0" />
-                      )}
-                      {item.color ? (
-                        <span
-                          className={cn(
-                            "truncate rounded px-1.5 py-0.5 text-[11px] font-medium",
-                            getViewOptionBadgeClass(item.color),
-                          )}
-                        >
-                          {item.label}
-                        </span>
-                      ) : (
-                        <span className="truncate font-medium">{item.label}</span>
-                      )}
-                      <span className="text-muted-foreground text-[10px] tabular-nums">{item.count}</span>
-                    </div>
-                  );
-                }
-
-                const { row, rowIndex } = item;
-                const isSelected = selectedRowIds.has(row.uuid);
-                const titleInfo = getRowDisplayTitle(row, t);
-
-                return (
-                  <div
-                    key={`lr-${row.uuid}`}
-                    data-gantt-left-row={row.uuid}
-                    style={{ height: `${ROW_HEIGHT}px` }}
-                    onClick={() => onSelectRows([row.uuid])}
-                    onDoubleClick={() => onOpenRecord(row.uuid)}
-                    className={cn(
-                      "border-border/40 flex cursor-pointer items-center border-b text-xs transition-colors select-none",
-                      isSelected ? "bg-primary/12" : "hover:bg-muted/30",
-                    )}
-                  >
-                    <div className="border-border/40 text-muted-foreground flex h-full w-9 shrink-0 items-center justify-center border-r text-[11px] tabular-nums">
-                      {rowIndex + 1}
-                    </div>
-                    {leftTableColIds.map((cid, idx) => (
+              <div style={{ height: `${totalVirtualHeight}px`, position: "relative" }}>
+                {virtualFlatItems.map((vItem) => {
+                  const item = flatItems[vItem.index];
+                  if (!item) return null;
+                  if (item.kind === "group") {
+                    const collapsed = collapsedGroups.has(item.key);
+                    return (
                       <div
-                        key={cid}
-                        className={cn(
-                          "border-border/40 flex h-full items-center overflow-hidden border-r px-2",
-                          idx === 0 ? "min-w-28 flex-1" : "w-24 shrink-0",
-                        )}
+                        key={`lg-${item.key}`}
+                        style={{
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
+                          width: "100%",
+                          height: `${GROUP_ROW_HEIGHT}px`,
+                          transform: `translateY(${vItem.start}px)`,
+                        }}
+                        onClick={() => {
+                          setCollapsedGroups((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(item.key)) next.delete(item.key);
+                            else next.add(item.key);
+                            return next;
+                          });
+                        }}
+                        className="border-border/40 bg-muted/35 hover:bg-muted/60 flex cursor-pointer items-center gap-1.5 border-b px-2 text-xs select-none"
                       >
-                        {cid === "name" ? (
+                        {collapsed ? (
+                          <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />
+                        ) : (
+                          <ChevronDown className="text-muted-foreground size-3.5 shrink-0" />
+                        )}
+                        {item.color ? (
                           <span
                             className={cn(
-                              "truncate font-medium",
-                              titleInfo.isPlaceholder && "text-muted-foreground/55 font-normal",
+                              "truncate rounded px-1.5 py-0.5 text-[11px] font-medium",
+                              getViewOptionBadgeClass(item.color),
                             )}
                           >
-                            {titleInfo.text}
+                            {item.label}
                           </span>
                         ) : (
-                          <StageTableFieldValueDisplay
-                            project={project}
-                            row={row}
-                            columnId={cid}
-                            customCol={customColumnMap.get(cid)}
-                            onPreviewImage={onPreviewImage}
-                            compact
-                            t={t}
-                          />
+                          <span className="truncate font-medium">{item.label}</span>
                         )}
+                        <span className="text-muted-foreground text-[10px] tabular-nums">{item.count}</span>
                       </div>
-                    ))}
-                  </div>
-                );
-              })}
+                    );
+                  }
+
+                  const { row, rowIndex } = item;
+                  const isSelected = selectedRowIds.has(row.uuid);
+                  const titleInfo = getRowDisplayTitle(row, t);
+
+                  return (
+                    <div
+                      key={`lr-${row.docId ?? ""}:${row.uuid}`}
+                      data-gantt-left-row={row.uuid}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        height: `${ROW_HEIGHT}px`,
+                        transform: `translateY(${vItem.start}px)`,
+                      }}
+                      onClick={() => onSelectRows([row.uuid])}
+                      onDoubleClick={() => onOpenRecord(row.uuid, row)}
+                      className={cn(
+                        "border-border/40 flex cursor-pointer items-center border-b text-xs transition-colors select-none",
+                        isSelected ? "bg-primary/12" : "hover:bg-muted/30",
+                      )}
+                    >
+                      <div className="border-border/40 text-muted-foreground flex h-full w-9 shrink-0 items-center justify-center border-r text-[11px] tabular-nums">
+                        {rowIndex + 1}
+                      </div>
+                      {leftTableColIds.map((cid, idx) => (
+                        <div
+                          key={cid}
+                          className={cn(
+                            "border-border/40 flex h-full items-center overflow-hidden border-r px-2",
+                            idx === 0 ? "min-w-28 flex-1" : "w-24 shrink-0",
+                          )}
+                        >
+                          {cid === "name" ? (
+                            <span
+                              className={cn(
+                                "truncate font-medium",
+                                titleInfo.isPlaceholder && "text-muted-foreground/55 font-normal",
+                              )}
+                            >
+                              {titleInfo.text}
+                            </span>
+                          ) : (
+                            <StageTableFieldValueDisplay
+                              project={project}
+                              dataSource={dataSource}
+                              row={row}
+                              columnId={cid}
+                              customCol={customColumnMap.get(cid)}
+                              onPreviewImage={onPreviewImage}
+                              compact
+                              t={t}
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
 
               {/* 底部 + 行 */}
               <button
@@ -886,9 +988,7 @@ export function StageTableGanttView({
                 type="button"
                 data-gantt-toggle-left
                 title={showLeftTable ? t("gantt.collapseTable") : t("gantt.expandTable")}
-                onClick={() =>
-                  project.stageTable.updateActiveViewConfig?.({ gantt: { showLeftTable: !showLeftTable } })
-                }
+                onClick={() => dataSource.updateActiveViewConfig({ gantt: { showLeftTable: !showLeftTable } })}
                 className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-6 cursor-pointer items-center justify-center rounded transition-colors"
               >
                 {showLeftTable ? <ChevronsLeft className="size-4" /> : <ChevronsRight className="size-4" />}
@@ -931,7 +1031,7 @@ export function StageTableGanttView({
                     key={sc}
                     type="button"
                     data-gantt-scale={sc}
-                    onClick={() => project.stageTable.updateActiveViewConfig?.({ gantt: { timeScale: sc } })}
+                    onClick={() => dataSource.updateActiveViewConfig({ gantt: { timeScale: sc } })}
                     className={cn(
                       "cursor-pointer rounded px-2 py-0.5 text-[11px] font-medium transition-colors",
                       timeScale === sc
@@ -1029,169 +1129,198 @@ export function StageTableGanttView({
                 </div>
               )}
 
-              {/* 行与甘特条 */}
+              {/* 行与甘特条（同步虚拟滚动） */}
               <div className="relative z-10">
-                {flatItems.map((item) => {
-                  if (item.kind === "group") {
+                <div style={{ height: `${totalVirtualHeight}px`, position: "relative" }}>
+                  {virtualFlatItems.map((vItem) => {
+                    const item = flatItems[vItem.index];
+                    if (!item) return null;
+                    if (item.kind === "group") {
+                      return (
+                        <div
+                          key={`rg-${item.key}`}
+                          style={{
+                            position: "absolute",
+                            top: 0,
+                            left: 0,
+                            width: "100%",
+                            height: `${GROUP_ROW_HEIGHT}px`,
+                            transform: `translateY(${vItem.start}px)`,
+                          }}
+                          className="border-border/40 bg-muted/25 border-b"
+                        />
+                      );
+                    }
+
+                    const { row } = item;
+                    const isSelected = selectedRowIds.has(row.uuid);
+                    const titleInfo = getRowDisplayTitle(row, t);
+                    const baseRange = resolveRowDateRange(row, startDateColId, endDateColId, customColumnMap);
+
+                    const activeDrag = dragState?.rowUuid === row.uuid ? dragState : null;
+                    const effectiveRange = (() => {
+                      if (!baseRange) return null;
+                      if (!activeDrag || activeDrag.deltaDays === 0) return baseRange;
+                      let s = baseRange.startKey;
+                      let e = baseRange.endKey;
+                      if (activeDrag.mode === "move") {
+                        s = addDaysToDateKey(s, activeDrag.deltaDays);
+                        e = addDaysToDateKey(e, activeDrag.deltaDays);
+                      } else if (activeDrag.mode === "resize-start") {
+                        const cand = addDaysToDateKey(s, activeDrag.deltaDays);
+                        s = diffCalendarDays(cand, e) < 0 ? e : cand;
+                      } else if (activeDrag.mode === "resize-end") {
+                        const cand = addDaysToDateKey(e, activeDrag.deltaDays);
+                        e = diffCalendarDays(s, cand) < 0 ? s : cand;
+                      }
+                      return {
+                        startKey: s,
+                        endKey: e,
+                        durationDays: Math.max(1, diffCalendarDays(s, e) + 1),
+                      };
+                    })();
+
+                    const barColor = getRowSelectOptionColor(row, colorColumnId, customColumnMap);
+
                     return (
                       <div
-                        key={`rg-${item.key}`}
-                        style={{ height: `${GROUP_ROW_HEIGHT}px` }}
-                        className="border-border/40 bg-muted/25 border-b"
-                      />
+                        key={`rr-${row.docId ?? ""}:${row.uuid}`}
+                        data-gantt-timeline-row={row.uuid}
+                        style={{
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
+                          width: "100%",
+                          height: `${ROW_HEIGHT}px`,
+                          transform: `translateY(${vItem.start}px)`,
+                        }}
+                        onClick={(e) => {
+                          if (effectiveRange || !startColEditable) {
+                            onSelectRows([row.uuid]);
+                            return;
+                          }
+                          // 无日期行：点击时间轴空白位置直接排期到对应日期
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const clickX = e.clientX - rect.left;
+                          const dayIdx = Math.max(0, Math.min(timelineDays.length - 1, Math.floor(clickX / dayWidth)));
+                          const clickedDateKey = timelineDays[dayIdx]?.key;
+                          if (clickedDateKey) {
+                            void dataSource.updateRowCustomField(row.uuid, startDateColId, clickedDateKey, row.docId);
+                          }
+                        }}
+                        className={cn(
+                          "border-border/35 flex items-center border-b transition-colors",
+                          isSelected && "bg-primary/8",
+                          !effectiveRange && startColEditable && "hover:bg-accent/25 cursor-crosshair",
+                        )}
+                      >
+                        {effectiveRange ? (
+                          (() => {
+                            const startOffsetDays = diffCalendarDays(timelineStartKey, effectiveRange.startKey);
+                            const leftPx = startOffsetDays * dayWidth;
+                            const widthPx = Math.max(effectiveRange.durationDays * dayWidth, Math.min(dayWidth, 26));
+                            const durationLabel = t("gantt.durationDays", { count: effectiveRange.durationDays });
+                            return (
+                              <div
+                                data-gantt-bar={row.uuid}
+                                style={{ left: `${leftPx}px`, width: `${widthPx}px` }}
+                                onPointerDown={(e) =>
+                                  startBarPointerDrag(
+                                    e,
+                                    row.uuid,
+                                    "move",
+                                    baseRange!.startKey,
+                                    baseRange!.endKey,
+                                    row.docId,
+                                  )
+                                }
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onSelectRows([row.uuid]);
+                                }}
+                                onDoubleClick={(e) => {
+                                  e.stopPropagation();
+                                  onOpenRecord(row.uuid, row);
+                                }}
+                                title={`${titleInfo.text} (${effectiveRange.startKey}${effectiveRange.endKey !== effectiveRange.startKey ? ` ~ ${effectiveRange.endKey}` : ""})`}
+                                className={cn(
+                                  "group/gbar absolute flex h-6 items-center rounded-md border text-[11px] shadow-2xs transition-shadow select-none",
+                                  startColEditable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
+                                  getViewOptionBarClass(barColor),
+                                  isSelected && "ring-primary ring-2",
+                                )}
+                              >
+                                {/* 左边缘调整开始日期 */}
+                                {startColEditable && (
+                                  <div
+                                    onPointerDown={(e) =>
+                                      startBarPointerDrag(
+                                        e,
+                                        row.uuid,
+                                        "resize-start",
+                                        baseRange!.startKey,
+                                        baseRange!.endKey,
+                                        row.docId,
+                                      )
+                                    }
+                                    className="hover:bg-primary/50 absolute top-0 bottom-0 left-0 w-1.5 cursor-ew-resize rounded-l-md"
+                                  />
+                                )}
+
+                                {/* 条内/条外延伸标题与天数（贴合截图 3 效果） */}
+                                {(showBarLabel || showDuration) && (
+                                  <div className="pointer-events-none flex items-center gap-1 px-2 whitespace-nowrap">
+                                    {showBarLabel && (
+                                      <span className="drop-shadow-2xs font-medium">{titleInfo.text}</span>
+                                    )}
+                                    {showDuration && (
+                                      <span className="text-muted-foreground/95 text-[10px] tabular-nums">
+                                        · {durationLabel}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* 右边缘调整结束日期 */}
+                                {endColEditable && (
+                                  <div
+                                    onPointerDown={(e) =>
+                                      startBarPointerDrag(
+                                        e,
+                                        row.uuid,
+                                        "resize-end",
+                                        baseRange!.startKey,
+                                        baseRange!.endKey,
+                                        row.docId,
+                                      )
+                                    }
+                                    className="hover:bg-primary/50 absolute top-0 right-0 bottom-0 w-1.5 cursor-ew-resize rounded-r-md"
+                                  />
+                                )}
+                              </div>
+                            );
+                          })()
+                        ) : (
+                          /* 未设置日期的记录：在今日附近展示信息提示，点击空白轴即可排期 */
+                          <div
+                            style={{
+                              left: `${Math.max(8, (todayOffsetPx ?? 120) - 120)}px`,
+                            }}
+                            className="text-muted-foreground pointer-events-none absolute flex items-center gap-1.5 text-[11px] whitespace-nowrap select-none"
+                          >
+                            <Info className="text-primary size-3.5 shrink-0" />
+                            <span>{titleInfo.text}</span>
+                            {startColEditable && (
+                              <span className="text-muted-foreground/60 text-[10px]">
+                                ({t("gantt.clickToSchedule")})
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     );
-                  }
-
-                  const { row } = item;
-                  const isSelected = selectedRowIds.has(row.uuid);
-                  const titleInfo = getRowDisplayTitle(row, t);
-                  const baseRange = resolveRowDateRange(row, startDateColId, endDateColId, customColumnMap);
-
-                  const activeDrag = dragState?.rowUuid === row.uuid ? dragState : null;
-                  const effectiveRange = (() => {
-                    if (!baseRange) return null;
-                    if (!activeDrag || activeDrag.deltaDays === 0) return baseRange;
-                    let s = baseRange.startKey;
-                    let e = baseRange.endKey;
-                    if (activeDrag.mode === "move") {
-                      s = addDaysToDateKey(s, activeDrag.deltaDays);
-                      e = addDaysToDateKey(e, activeDrag.deltaDays);
-                    } else if (activeDrag.mode === "resize-start") {
-                      const cand = addDaysToDateKey(s, activeDrag.deltaDays);
-                      s = diffCalendarDays(cand, e) < 0 ? e : cand;
-                    } else if (activeDrag.mode === "resize-end") {
-                      const cand = addDaysToDateKey(e, activeDrag.deltaDays);
-                      e = diffCalendarDays(s, cand) < 0 ? s : cand;
-                    }
-                    return {
-                      startKey: s,
-                      endKey: e,
-                      durationDays: Math.max(1, diffCalendarDays(s, e) + 1),
-                    };
-                  })();
-
-                  const barColor = getRowSelectOptionColor(row, colorColumnId, customColumnMap);
-
-                  return (
-                    <div
-                      key={`rr-${row.uuid}`}
-                      data-gantt-timeline-row={row.uuid}
-                      style={{ height: `${ROW_HEIGHT}px` }}
-                      onClick={(e) => {
-                        if (effectiveRange || !startColEditable) {
-                          onSelectRows([row.uuid]);
-                          return;
-                        }
-                        // 无日期行：点击时间轴空白位置直接排期到对应日期
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const clickX = e.clientX - rect.left;
-                        const dayIdx = Math.max(0, Math.min(timelineDays.length - 1, Math.floor(clickX / dayWidth)));
-                        const clickedDateKey = timelineDays[dayIdx]?.key;
-                        if (clickedDateKey) {
-                          project.stageTable.updateRowCustomField(row.uuid, startDateColId, clickedDateKey);
-                        }
-                      }}
-                      className={cn(
-                        "border-border/35 relative flex items-center border-b transition-colors",
-                        isSelected && "bg-primary/8",
-                        !effectiveRange && startColEditable && "hover:bg-accent/25 cursor-crosshair",
-                      )}
-                    >
-                      {effectiveRange ? (
-                        (() => {
-                          const startOffsetDays = diffCalendarDays(timelineStartKey, effectiveRange.startKey);
-                          const leftPx = startOffsetDays * dayWidth;
-                          const widthPx = Math.max(effectiveRange.durationDays * dayWidth, Math.min(dayWidth, 26));
-                          const durationLabel = t("gantt.durationDays", { count: effectiveRange.durationDays });
-                          return (
-                            <div
-                              data-gantt-bar={row.uuid}
-                              style={{ left: `${leftPx}px`, width: `${widthPx}px` }}
-                              onPointerDown={(e) =>
-                                startBarPointerDrag(e, row.uuid, "move", baseRange!.startKey, baseRange!.endKey)
-                              }
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onSelectRows([row.uuid]);
-                              }}
-                              onDoubleClick={(e) => {
-                                e.stopPropagation();
-                                onOpenRecord(row.uuid);
-                              }}
-                              title={`${titleInfo.text} (${effectiveRange.startKey}${effectiveRange.endKey !== effectiveRange.startKey ? ` ~ ${effectiveRange.endKey}` : ""})`}
-                              className={cn(
-                                "group/gbar absolute flex h-6 items-center rounded-md border text-[11px] shadow-2xs transition-shadow select-none",
-                                startColEditable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
-                                getViewOptionBarClass(barColor),
-                                isSelected && "ring-primary ring-2",
-                              )}
-                            >
-                              {/* 左边缘调整开始日期 */}
-                              {startColEditable && (
-                                <div
-                                  onPointerDown={(e) =>
-                                    startBarPointerDrag(
-                                      e,
-                                      row.uuid,
-                                      "resize-start",
-                                      baseRange!.startKey,
-                                      baseRange!.endKey,
-                                    )
-                                  }
-                                  className="hover:bg-primary/50 absolute top-0 bottom-0 left-0 w-1.5 cursor-ew-resize rounded-l-md"
-                                />
-                              )}
-
-                              {/* 条内/条外延伸标题与天数（贴合截图 3 效果） */}
-                              {(showBarLabel || showDuration) && (
-                                <div className="pointer-events-none flex items-center gap-1 px-2 whitespace-nowrap">
-                                  {showBarLabel && (
-                                    <span className="drop-shadow-2xs font-medium">{titleInfo.text}</span>
-                                  )}
-                                  {showDuration && (
-                                    <span className="text-muted-foreground/95 text-[10px] tabular-nums">
-                                      · {durationLabel}
-                                    </span>
-                                  )}
-                                </div>
-                              )}
-
-                              {/* 右边缘调整结束日期 */}
-                              {endColEditable && (
-                                <div
-                                  onPointerDown={(e) =>
-                                    startBarPointerDrag(
-                                      e,
-                                      row.uuid,
-                                      "resize-end",
-                                      baseRange!.startKey,
-                                      baseRange!.endKey,
-                                    )
-                                  }
-                                  className="hover:bg-primary/50 absolute top-0 right-0 bottom-0 w-1.5 cursor-ew-resize rounded-r-md"
-                                />
-                              )}
-                            </div>
-                          );
-                        })()
-                      ) : (
-                        /* 未设置日期的记录：在今日附近展示信息提示，点击空白轴即可排期 */
-                        <div
-                          style={{
-                            left: `${Math.max(8, (todayOffsetPx ?? 120) - 120)}px`,
-                          }}
-                          className="text-muted-foreground pointer-events-none absolute flex items-center gap-1.5 text-[11px] whitespace-nowrap select-none"
-                        >
-                          <Info className="text-primary size-3.5 shrink-0" />
-                          <span>{titleInfo.text}</span>
-                          {startColEditable && (
-                            <span className="text-muted-foreground/60 text-[10px]">({t("gantt.clickToSchedule")})</span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                  })}
+                </div>
 
                 {/* 与左侧 + 行对应的占位行 */}
                 <div style={{ height: `${ROW_HEIGHT}px` }} className="border-border/35 border-b" />

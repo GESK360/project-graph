@@ -68,7 +68,16 @@ import {
 import { Color, ProgressNumber, Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
 import { toast } from "sonner";
-import { evaluateTableFormulas, materializeFormulaCellToStatic } from "./formulaEngine";
+import type { CellMutationItem, DocChangeSet, DocCommand, FormulaCacheEntry } from "@/core/sqlite/DocClient";
+import { DocClient } from "@/core/sqlite/DocClient";
+import {
+  serializeCellValueToV3Record,
+  serializeColumnToV3Record,
+  serializeTableMetaJson,
+  serializeViewToV3Record,
+} from "@/core/sqlite/V3Serializer";
+import { FormulaDagEngine, extractFormulaDeltaFromChangeSet } from "./FormulaDagEngine";
+import { materializeFormulaCellToStatic } from "./formulaEngine";
 
 export type StageTableRowKind =
   | "text"
@@ -94,7 +103,11 @@ export interface StageTableImageItem {
 
 export interface StageTableRow {
   uuid: string;
-  entity: ConnectableEntity;
+  docId?: string;
+  sourceFile?: string;
+  sourceFolder?: string;
+  sourceRelPath?: string;
+  entity?: ConnectableEntity;
   kind: StageTableRowKind;
   primaryText: string;
   editableText: boolean;
@@ -242,21 +255,209 @@ const SPACED_REPETITION_COLUMN_SPECS: readonly SpacedRepetitionColumnSpec[] = [
 
 @service("stageTable")
 export class StageTableService implements Service {
+  public readonly formulaDag = new FormulaDagEngine();
   private readonly listeners = new Set<() => void>();
   private readonly selectionListeners = new Set<(selectedUUIDs: string[]) => void>();
-  private readonly baselineDigests = new Map<string, string>();
-  private readonly suppressTimestampUuids = new Set<string>();
-  private readonly detailsJsonCache = new WeakMap<object, string>();
-  private readonly fieldsJsonCache = new WeakMap<object, string>();
-  private baselineInitialized = false;
   private selectionSyncScheduled = false;
   private suppressCanvasSelectionSync = false;
+  private cachedBaseRows: {
+    stageRev: number;
+    tableRef: unknown;
+    stageLen: number;
+    rows: StageTableRow[];
+    rowByUuid: Map<string, StageTableRow>;
+  } | null = null;
 
   constructor(private readonly project: Project) {}
+
+  private commitSchemaCommands(
+    commands: DocCommand[],
+    options: { recordHistory?: boolean; label?: string; touchedEntityUuids?: string[] } = {},
+  ): void {
+    const bus = this.project.docCommandBus;
+    if (bus && commands.length > 0) {
+      bus.dispatchCommands(commands, {
+        label: options.label ?? "table_schema",
+        recordHistory: options.recordHistory ?? false,
+        emitStageCommit: false,
+        touchedEntityUuidsForLocalSnapshot: options.touchedEntityUuids,
+      });
+    } else if (!this.project.isSqliteV3 || this.project.isDraft) {
+      this.project.projectState = ProjectState.Unsaved;
+    }
+  }
+
+  private buildViewUpsertCommand(viewId: string): DocCommand[] {
+    const idx = this.project.table.views.findIndex((v) => v.id === viewId);
+    if (idx === -1) return [];
+    return [{ type: "upsert_view", view: serializeViewToV3Record(this.project.table.views[idx], idx) }];
+  }
+
+  private buildColumnUpsertCommand(columnId: string): DocCommand[] {
+    const idx = this.project.table.columns.findIndex((c) => c.id === columnId);
+    if (idx === -1) return [];
+    return [{ type: "upsert_column", column: serializeColumnToV3Record(this.project.table.columns[idx], idx) }];
+  }
+
+  private buildTableMetaCommand(): DocCommand {
+    return { type: "update_table_meta", tableMetaJson: serializeTableMetaJson(this.project.table) };
+  }
 
   public dispose(): void {
     this.listeners.clear();
     this.selectionListeners.clear();
+    this.cachedBaseRows = null;
+    this.formulaDag.reset();
+  }
+
+  public invalidateRowCache(): void {
+    this.cachedBaseRows = null;
+  }
+
+  private pushFormulaCacheEntriesToSqlite(entries: FormulaCacheEntry[]): void {
+    if (entries.length === 0) return;
+    if (!this.project.isSqliteV3 || !this.project.v3DocId || !DocClient.isAvailable()) return;
+    this.project.docCommandBus?.dispatchCommands([{ type: "update_formula_cache_batch", entries }], {
+      label: "formula_cache_sync",
+      recordHistory: false,
+      emitStageCommit: false,
+    });
+  }
+
+  private buildBaseRowsSnapshot(): { rows: StageTableRow[]; rowByUuid: Map<string, StageTableRow> } {
+    const stageRev = this.project.stageRevision ?? 0;
+    const tableRef = this.project.table;
+    const stageLen = this.project.stage.length;
+    if (
+      this.cachedBaseRows &&
+      this.cachedBaseRows.stageRev === stageRev &&
+      this.cachedBaseRows.tableRef === tableRef &&
+      this.cachedBaseRows.stageLen === stageLen
+    ) {
+      return { rows: this.cachedBaseRows.rows, rowByUuid: this.cachedBaseRows.rowByUuid };
+    }
+
+    const rowEntities = this.getRowEntities();
+    const relationIndex = this.buildRelationIndex(rowEntities);
+    const rowByUuid = new Map<string, StageTableRow>();
+
+    const rows: StageTableRow[] = rowEntities.map((entity) => {
+      const rel = relationIndex.get(entity.uuid)!;
+      const imageNodes = this.getRowImageNodes(entity);
+      const isEditableContainer = entity instanceof Section || entity instanceof TextNode;
+      const row: StageTableRow = {
+        uuid: entity.uuid,
+        entity,
+        kind: getRowEntityKind(entity),
+        primaryText: getRowPrimaryText(entity),
+        editableText: isRowPrimaryTextEditable(entity),
+        images: imageNodes.map((img) => ({ uuid: img.uuid, attachmentId: img.attachmentId })),
+        canEditImages: isEditableContainer,
+        createdAt: entity.createdAt,
+        updatedAt: entity.updatedAt,
+        parents: rel.parents.map((item) => this.toRelationItem(item)),
+        children: rel.children.map((item) => this.toRelationItem(item)),
+        outer: rel.outer ? this.toRelationItem(rel.outer) : null,
+        inner: rel.inner.map((item) => this.toRelationItem(item)),
+        canEditInner: isEditableContainer,
+        tableFields: entity.tableFields,
+        formulaValues: {},
+      };
+      rowByUuid.set(row.uuid, row);
+      return row;
+    });
+
+    this.cachedBaseRows = { stageRev, tableRef, stageLen, rows, rowByUuid };
+    return { rows, rowByUuid };
+  }
+
+  public syncFormulaCacheFull(options?: { persistToSqlite?: boolean; now?: Date }): FormulaCacheEntry[] {
+    this.invalidateRowCache();
+    const { rows, rowByUuid } = this.buildBaseRowsSnapshot();
+    const res = this.formulaDag.evaluateFull(
+      rows,
+      rowByUuid,
+      this.project.table.columns,
+      this.project.table.systemColumnNames,
+      options?.now,
+    );
+    for (const row of rows) {
+      row.formulaValues = this.formulaDag.getRowFormulaValues(row.uuid);
+    }
+    if (options?.persistToSqlite !== false && res.changedEntries.length > 0) {
+      this.pushFormulaCacheEntriesToSqlite(res.changedEntries);
+    }
+    return res.changedEntries;
+  }
+
+  public syncFormulaCacheIncremental(delta: {
+    dirtyRowUuids?: Iterable<string>;
+    deletedRowUuids?: Iterable<string>;
+    changedColumnIds?: Iterable<string>;
+    topologyChanged?: boolean;
+    schemaChanged?: boolean;
+    now?: Date;
+    persistToSqlite?: boolean;
+  }): FormulaCacheEntry[] {
+    this.invalidateRowCache();
+    const hasFormulaCols = this.project.table.columns.some((c) => c.type === "formula");
+    if (!hasFormulaCols && !this.formulaDag.hasFormulaColumns()) {
+      return [];
+    }
+    const { rows, rowByUuid } = this.buildBaseRowsSnapshot();
+    const res = this.formulaDag.evaluateIncremental({
+      rows,
+      rowByUuid,
+      columns: this.project.table.columns,
+      systemColumnNames: this.project.table.systemColumnNames,
+      dirtyRowUuids: delta.dirtyRowUuids,
+      deletedRowUuids: delta.deletedRowUuids,
+      changedColumnIds: delta.changedColumnIds,
+      topologyChanged: delta.topologyChanged,
+      schemaChanged: delta.schemaChanged,
+      now: delta.now,
+    });
+    for (const row of rows) {
+      row.formulaValues = this.formulaDag.getRowFormulaValues(row.uuid);
+    }
+    if (delta.persistToSqlite !== false && res.changedEntries.length > 0) {
+      this.pushFormulaCacheEntriesToSqlite(res.changedEntries);
+    }
+    return res.changedEntries;
+  }
+
+  public onDocChangeSetApplied(changeset: DocChangeSet, options?: { persistToSqlite?: boolean }): void {
+    this.invalidateRowCache();
+    const hasFormulaCols = this.project.table.columns.some((c) => c.type === "formula");
+    if (!hasFormulaCols && !this.formulaDag.hasFormulaColumns() && !changeset.schemaChanged) {
+      return;
+    }
+    const delta = extractFormulaDeltaFromChangeSet(changeset);
+    this.syncFormulaCacheIncremental({
+      ...delta,
+      persistToSqlite: options?.persistToSqlite ?? true,
+    });
+  }
+
+  public refreshVolatileFormulasIfDayChanged(now?: Date): boolean {
+    if (!this.formulaDag.hasVolatileColumns()) return false;
+    const { rows, rowByUuid } = this.buildBaseRowsSnapshot();
+    const res = this.formulaDag.refreshVolatileIfDayChanged(
+      rows,
+      rowByUuid,
+      this.project.table.columns,
+      this.project.table.systemColumnNames,
+      now,
+    );
+    if (!res) return false;
+    for (const row of rows) {
+      row.formulaValues = this.formulaDag.getRowFormulaValues(row.uuid);
+    }
+    if (res.changedEntries.length > 0) {
+      this.pushFormulaCacheEntriesToSqlite(res.changedEntries);
+    }
+    this.notifyChange({ emitSync: false });
+    return true;
   }
 
   public subscribe(listener: () => void): () => void {
@@ -295,6 +496,7 @@ export class StageTableService implements Service {
   }
 
   public notifyChange(options?: { emitSync?: boolean }): void {
+    this.invalidateRowCache();
     for (const listener of this.listeners) {
       listener();
     }
@@ -334,8 +536,8 @@ export class StageTableService implements Service {
       ...this.project.table,
       activeViewId: viewId,
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands([this.buildTableMetaCommand()], { label: "set_active_view" });
+    this.notifyChange({ emitSync: false });
     return true;
   }
 
@@ -350,8 +552,9 @@ export class StageTableService implements Service {
     };
     const baseName = input.name?.trim() || defaultLabels[input.type];
     const uniqueName = this.buildUniqueViewName(baseName);
+    let srSchemaCommands: DocCommand[] = [];
     if (input.type === "spaced_repetition") {
-      this.ensureSpacedRepetitionColumns(false);
+      srSchemaCommands = this.ensureSpacedRepetitionColumnsInternal(false).schemaCommands;
     }
     const activeView = this.getActiveView();
     const columns = this.project.table.columns;
@@ -436,8 +639,11 @@ export class StageTableService implements Service {
       views: [...this.project.table.views, nextView],
       activeViewId: nextView.id,
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(
+      [...srSchemaCommands, ...this.buildViewUpsertCommand(nextView.id), this.buildTableMetaCommand()],
+      { label: "create_view" },
+    );
+    this.notifyChange({ emitSync: false });
     return nextView;
   }
 
@@ -450,8 +656,8 @@ export class StageTableService implements Service {
       ...this.project.table,
       views: this.project.table.views.map((v) => (v.id === viewId ? { ...v, name: trimmed } : v)),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(viewId), { label: "rename_view" });
+    this.notifyChange({ emitSync: false });
     return true;
   }
 
@@ -512,8 +718,15 @@ export class StageTableService implements Service {
       views: nextViews,
       activeViewId: duplicated.id,
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(
+      [
+        ...this.buildViewUpsertCommand(duplicated.id),
+        { type: "reorder_views", orderedIds: nextViews.map((v) => v.id) },
+        this.buildTableMetaCommand(),
+      ],
+      { label: "duplicate_view" },
+    );
+    this.notifyChange({ emitSync: false });
     return duplicated;
   }
 
@@ -532,8 +745,10 @@ export class StageTableService implements Service {
       views: nextViews,
       activeViewId: nextActiveId,
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands([{ type: "delete_view", id: viewId }, this.buildTableMetaCommand()], {
+      label: "delete_view",
+    });
+    this.notifyChange({ emitSync: false });
     return true;
   }
 
@@ -555,8 +770,10 @@ export class StageTableService implements Service {
       ...this.project.table,
       views: nextViews,
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands([{ type: "reorder_views", orderedIds: nextViews.map((v) => v.id) }], {
+      label: "reorder_views",
+    });
+    this.notifyChange({ emitSync: false });
     return true;
   }
 
@@ -586,8 +803,8 @@ export class StageTableService implements Service {
         };
       }),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(activeView.id), { label: "update_view_config" });
+    this.notifyChange({ emitSync: false });
   }
 
   private pruneColumnReferencesInView(
@@ -701,6 +918,17 @@ export class StageTableService implements Service {
    * 新增列默认不写入任何视图的 visibleColumnIds，在表格视图中保持隐藏。
    */
   public ensureSpacedRepetitionColumns(notify: boolean = true): SpacedRepetitionColumnMap {
+    const { roleIds, schemaCommands } = this.ensureSpacedRepetitionColumnsInternal(notify);
+    if (schemaCommands.length > 0 && notify) {
+      this.commitSchemaCommands(schemaCommands, { label: "ensure_sr_columns" });
+    }
+    return roleIds;
+  }
+
+  private ensureSpacedRepetitionColumnsInternal(notify: boolean): {
+    roleIds: SpacedRepetitionColumnMap;
+    schemaCommands: DocCommand[];
+  } {
     const nextColumns = this.project.table.columns.map((col) => ({
       ...col,
       ...(col.options ? { options: col.options.map((opt) => ({ ...opt })) } : {}),
@@ -708,6 +936,7 @@ export class StageTableService implements Service {
     const claimedIds = new Set<string>();
     const roleIds = {} as SpacedRepetitionColumnMap;
     const newlyCreatedRoles = new Set<SpacedRepetitionColumnRole>();
+    const touchedColIds = new Set<string>();
     let mutated = false;
 
     for (const spec of SPACED_REPETITION_COLUMN_SPECS) {
@@ -723,6 +952,7 @@ export class StageTableService implements Service {
         roleIds[spec.role] = existing.id;
         if (existing.protectedRole !== spec.role) {
           existing.protectedRole = spec.role;
+          touchedColIds.add(existing.id);
           mutated = true;
         }
         if (spec.defaultOptions) {
@@ -736,6 +966,7 @@ export class StageTableService implements Service {
           }
           if (optsChanged) {
             existing.options = opts;
+            touchedColIds.add(existing.id);
             mutated = true;
           }
         }
@@ -744,6 +975,7 @@ export class StageTableService implements Service {
         claimedIds.add(newId);
         roleIds[spec.role] = newId;
         newlyCreatedRoles.add(spec.role);
+        touchedColIds.add(newId);
         const created: TableColumnSchema = {
           id: newId,
           name: spec.name,
@@ -773,27 +1005,34 @@ export class StageTableService implements Service {
       if (newlyCreatedRoles.has(spec.role) || !col.formula || !col.formula.trim()) {
         if (col.formula !== formulaText) {
           col.formula = formulaText;
+          touchedColIds.add(col.id);
           mutated = true;
         }
       }
       if (spec.format && !col.format) {
         col.format = spec.format;
+        touchedColIds.add(col.id);
         mutated = true;
       }
     }
 
+    const schemaCommands: DocCommand[] = [];
     if (mutated) {
       this.project.table = {
         ...this.project.table,
         columns: nextColumns,
       };
-      this.project.projectState = ProjectState.Unsaved;
+      nextColumns.forEach((col, idx) => {
+        if (touchedColIds.has(col.id)) {
+          schemaCommands.push({ type: "upsert_column", column: serializeColumnToV3Record(col, idx) });
+        }
+      });
       if (notify) {
-        this.notifyChange();
+        this.notifyChange({ emitSync: false });
       }
     }
 
-    return roleIds;
+    return { roleIds, schemaCommands };
   }
 
   public getColumns(): TableColumnSchema[] {
@@ -859,8 +1098,8 @@ export class StageTableService implements Service {
           : view,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(activeView.id), { label: "set_column_visible" });
+    this.notifyChange({ emitSync: false });
   }
 
   public reorderColumn(draggedColumnId: string, targetColumnId: string, position: "before" | "after"): boolean {
@@ -891,8 +1130,8 @@ export class StageTableService implements Service {
         view.id === activeView.id ? { ...view, visibleColumnIds: nextOrder } : view,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(activeView.id), { label: "reorder_column" });
+    this.notifyChange({ emitSync: false });
     return true;
   }
 
@@ -956,8 +1195,10 @@ export class StageTableService implements Service {
         return view;
       }),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands([...this.buildColumnUpsertCommand(id), ...this.buildViewUpsertCommand(activeView.id)], {
+      label: "add_sr_column",
+    });
+    this.notifyChange({ emitSync: false });
     return newColumn;
   }
 
@@ -1064,8 +1305,8 @@ export class StageTableService implements Service {
           : view,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(activeView.id), { label: "reorder_sr_fields" });
+    this.notifyChange({ emitSync: false });
     return true;
   }
 
@@ -1135,8 +1376,10 @@ export class StageTableService implements Service {
           : view,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands([...this.buildColumnUpsertCommand(id), ...this.buildViewUpsertCommand(activeView.id)], {
+      label: "insert_column",
+    });
+    this.notifyChange({ emitSync: false });
     return newColumn;
   }
 
@@ -1167,14 +1410,23 @@ export class StageTableService implements Service {
     };
 
     let stageFieldsMutated = false;
+    const copiedCellUpdates: CellMutationItem[] = [];
+    const touchedEntityUuids: string[] = [];
     if (sourceCol.type !== "formula") {
       for (const entity of this.getRowEntities()) {
         const val = entity.tableFields[sourceColumnId];
         if (val !== undefined && val !== null && val !== "" && !(Array.isArray(val) && val.length === 0)) {
           const nextFields = cloneTableFields(entity.tableFields);
-          nextFields[newColId] = Array.isArray(val) ? [...val] : val;
+          const clonedVal = Array.isArray(val) ? [...val] : val;
+          nextFields[newColId] = clonedVal;
           entity.tableFields = nextFields;
           stageFieldsMutated = true;
+          touchedEntityUuids.push(entity.uuid);
+          copiedCellUpdates.push({
+            entityUuid: entity.uuid,
+            colId: newColId,
+            value: serializeCellValueToV3Record(entity.uuid, duplicatedColumn, clonedVal),
+          });
         }
       }
     }
@@ -1219,12 +1471,19 @@ export class StageTableService implements Service {
       ),
     };
 
-    if (stageFieldsMutated) {
-      this.project.historyManager.recordStep();
-    } else {
-      this.project.projectState = ProjectState.Unsaved;
-    }
-    this.notifyChange();
+    const commands: DocCommand[] = [
+      ...this.buildColumnUpsertCommand(newColId),
+      ...this.buildViewUpsertCommand(activeView.id),
+      ...(copiedCellUpdates.length > 0
+        ? [{ type: "update_cells" as const, updates: copiedCellUpdates, touchUpdatedAt: true }]
+        : []),
+    ];
+    this.commitSchemaCommands(commands, {
+      recordHistory: stageFieldsMutated,
+      label: "duplicate_column",
+      touchedEntityUuids,
+    });
+    this.notifyChange({ emitSync: false });
     return duplicatedColumn;
   }
 
@@ -1246,8 +1505,8 @@ export class StageTableService implements Service {
         ...this.project.table,
         systemColumnNames: Object.keys(nextNames).length > 0 ? nextNames : undefined,
       };
-      this.project.projectState = ProjectState.Unsaved;
-      this.notifyChange();
+      this.commitSchemaCommands([this.buildTableMetaCommand()], { label: "rename_system_column" });
+      this.notifyChange({ emitSync: false });
       return true;
     }
 
@@ -1279,6 +1538,7 @@ export class StageTableService implements Service {
     const nextOptions: TableSelectOption[] | undefined =
       nextType === "select" || nextType === "multi_select" ? [...(existingCol.options ?? [])] : undefined;
     let stageFieldsMutated = false;
+    const mutatedCellEntities = new Map<string, TableCellValue | null>();
 
     if (nextType !== existingCol.type) {
       const oldOptionNameById = new Map((existingCol.options ?? []).map((o) => [o.id, o.name]));
@@ -1312,11 +1572,13 @@ export class StageTableService implements Service {
             if (columnId in nextFields) {
               delete nextFields[columnId];
               entity.tableFields = nextFields;
+              mutatedCellEntities.set(entity.uuid, null);
               stageFieldsMutated = true;
             }
           } else {
             nextFields[columnId] = materialized;
             entity.tableFields = nextFields;
+            mutatedCellEntities.set(entity.uuid, materialized);
             stageFieldsMutated = true;
           }
         }
@@ -1327,6 +1589,7 @@ export class StageTableService implements Service {
             const nextFields = cloneTableFields(entity.tableFields);
             delete nextFields[columnId];
             entity.tableFields = nextFields;
+            mutatedCellEntities.set(entity.uuid, null);
             stageFieldsMutated = true;
           }
         }
@@ -1384,8 +1647,10 @@ export class StageTableService implements Service {
           const nextFields = cloneTableFields(entity.tableFields);
           if (converted === null || converted === "" || (Array.isArray(converted) && converted.length === 0)) {
             delete nextFields[columnId];
+            mutatedCellEntities.set(entity.uuid, null);
           } else {
             nextFields[columnId] = converted;
+            mutatedCellEntities.set(entity.uuid, converted);
           }
           entity.tableFields = nextFields;
           stageFieldsMutated = true;
@@ -1434,12 +1699,35 @@ export class StageTableService implements Service {
         : this.project.table.views,
     };
 
-    if (stageFieldsMutated) {
-      this.project.historyManager.recordStep();
-    } else {
-      this.project.projectState = ProjectState.Unsaved;
+    const updatedCol = this.getColumnSchema(columnId)!;
+    const commands: DocCommand[] = [...this.buildColumnUpsertCommand(columnId)];
+    if (typeChanged) {
+      this.project.table.views.forEach((v, idx) => {
+        commands.push({ type: "upsert_view", view: serializeViewToV3Record(v, idx) });
+      });
     }
-    this.notifyChange();
+    if (mutatedCellEntities.size > 0) {
+      const cellUpdates: CellMutationItem[] = [];
+      for (const [entityUuid, val] of mutatedCellEntities) {
+        cellUpdates.push({
+          entityUuid,
+          colId: columnId,
+          value: val === null ? null : serializeCellValueToV3Record(entityUuid, updatedCol, val),
+        });
+      }
+      commands.push({
+        type: "update_cells",
+        updates: cellUpdates,
+        touchUpdatedAt: nextType !== "formula",
+      });
+    }
+    this.commitSchemaCommands(commands, {
+      recordHistory: stageFieldsMutated,
+      label: "update_column",
+      touchedEntityUuids: Array.from(mutatedCellEntities.keys()),
+    });
+    this.syncFormulaCacheIncremental({ schemaChanged: true });
+    this.notifyChange({ emitSync: false });
     return true;
   }
 
@@ -1450,12 +1738,14 @@ export class StageTableService implements Service {
     }
 
     let stageFieldsMutated = false;
+    const touchedEntityUuids: string[] = [];
     for (const entity of this.getRowEntities()) {
       if (columnId in entity.tableFields) {
         const nextFields = cloneTableFields(entity.tableFields);
         delete nextFields[columnId];
         entity.tableFields = nextFields;
         stageFieldsMutated = true;
+        touchedEntityUuids.push(entity.uuid);
       }
     }
 
@@ -1502,12 +1792,20 @@ export class StageTableService implements Service {
       }),
     };
 
-    if (stageFieldsMutated) {
-      this.project.historyManager.recordStep();
-    } else {
-      this.project.projectState = ProjectState.Unsaved;
-    }
-    this.notifyChange();
+    const commands: DocCommand[] = [
+      { type: "delete_column", id: columnId },
+      ...this.project.table.views.map((v, idx) => ({
+        type: "upsert_view" as const,
+        view: serializeViewToV3Record(v, idx),
+      })),
+    ];
+    this.commitSchemaCommands(commands, {
+      recordHistory: stageFieldsMutated,
+      label: "delete_column",
+      touchedEntityUuids,
+    });
+    this.syncFormulaCacheIncremental({ schemaChanged: true });
+    this.notifyChange({ emitSync: false });
     return true;
   }
 
@@ -1537,8 +1835,8 @@ export class StageTableService implements Service {
         item.id === columnId ? { ...item, options: [...currentOptions, created] } : item,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildColumnUpsertCommand(columnId), { label: "add_select_option" });
+    this.notifyChange({ emitSync: false });
     return created;
   }
 
@@ -1559,8 +1857,8 @@ export class StageTableService implements Service {
           : view,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(activeView.id), { label: "set_column_width" });
+    this.notifyChange({ emitSync: false });
   }
 
   private estimateDisplayWidthPx(text: string): number {
@@ -1650,8 +1948,8 @@ export class StageTableService implements Service {
         view.id === activeView.id ? { ...view, frozenColumnId: nextFrozen } : view,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(activeView.id), { label: "toggle_freeze_column" });
+    this.notifyChange({ emitSync: false });
     return nextFrozen ?? null;
   }
 
@@ -1707,8 +2005,8 @@ export class StageTableService implements Service {
           : view,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(activeView.id), { label: "create_column_group" });
+    this.notifyChange({ emitSync: false });
     return newGroup;
   }
 
@@ -1732,8 +2030,8 @@ export class StageTableService implements Service {
           : view,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(activeView.id), { label: "rename_column_group" });
+    this.notifyChange({ emitSync: false });
     return true;
   }
 
@@ -1769,8 +2067,8 @@ export class StageTableService implements Service {
           : view,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(activeView.id), { label: "set_column_in_group" });
+    this.notifyChange({ emitSync: false });
     return true;
   }
 
@@ -1791,8 +2089,8 @@ export class StageTableService implements Service {
           : view,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(activeView.id), { label: "dissolve_column_group" });
+    this.notifyChange({ emitSync: false });
     return true;
   }
 
@@ -1825,8 +2123,8 @@ export class StageTableService implements Service {
           : view,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(activeView.id), { label: "set_sort" });
+    this.notifyChange({ emitSync: false });
   }
 
   public toggleColumnSort(columnId: string, preferredDirection?: TableSortDirection): TableSortConfig | null {
@@ -1879,8 +2177,8 @@ export class StageTableService implements Service {
           : view,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(activeView.id), { label: "set_column_filter" });
+    this.notifyChange({ emitSync: false });
   }
 
   public getFilterGroup(): TableFilterGroup {
@@ -1943,8 +2241,8 @@ export class StageTableService implements Service {
           : view,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(activeView.id), { label: "set_filter_group" });
+    this.notifyChange({ emitSync: false });
   }
 
   public setFilterConjunction(conjunction: TableFilterConjunction): void {
@@ -2108,8 +2406,8 @@ export class StageTableService implements Service {
           : view,
       ),
     };
-    this.project.projectState = ProjectState.Unsaved;
-    this.notifyChange();
+    this.commitSchemaCommands(this.buildViewUpsertCommand(activeView.id), { label: "clear_filters" });
+    this.notifyChange({ emitSync: false });
   }
 
   public getRowEntities(): ConnectableEntity[] {
@@ -2190,179 +2488,66 @@ export class StageTableService implements Service {
   }
 
   public getRows(): StageTableRow[] {
-    if (!this.baselineInitialized) {
-      this.captureBaselineDigests();
-    }
-    const rowEntities = this.getRowEntities();
-    const relationIndex = this.buildRelationIndex(rowEntities);
+    const { rows, rowByUuid } = this.buildBaseRowsSnapshot();
+    const columns = this.project.table.columns;
+    const sysNames = this.project.table.systemColumnNames;
 
-    const rows: StageTableRow[] = rowEntities.map((entity) => {
-      const rel = relationIndex.get(entity.uuid)!;
-      const imageNodes = this.getRowImageNodes(entity);
-      const isEditableContainer = entity instanceof Section || entity instanceof TextNode;
-      return {
-        uuid: entity.uuid,
-        entity,
-        kind: getRowEntityKind(entity),
-        primaryText: getRowPrimaryText(entity),
-        editableText: isRowPrimaryTextEditable(entity),
-        images: imageNodes.map((img) => ({ uuid: img.uuid, attachmentId: img.attachmentId })),
-        canEditImages: isEditableContainer,
-        createdAt: entity.createdAt,
-        updatedAt: entity.updatedAt,
-        parents: rel.parents.map((item) => this.toRelationItem(item)),
-        children: rel.children.map((item) => this.toRelationItem(item)),
-        outer: rel.outer ? this.toRelationItem(rel.outer) : null,
-        inner: rel.inner.map((item) => this.toRelationItem(item)),
-        canEditInner: isEditableContainer,
-        tableFields: entity.tableFields,
-        formulaValues: {},
-      };
-    });
-
-    const evaluatedMap = evaluateTableFormulas(rows, this.project.table.columns, {
-      systemColumnNames: this.project.table.systemColumnNames,
-    });
-    if (evaluatedMap.size > 0) {
+    if (columns.some((c) => c.type === "formula")) {
+      if (!this.formulaDag.isInitialized() || this.formulaDag.syncSchema(columns, sysNames)) {
+        const res = this.formulaDag.evaluateFull(rows, rowByUuid, columns, sysNames);
+        if (res.changedEntries.length > 0) {
+          this.pushFormulaCacheEntriesToSqlite(res.changedEntries);
+        }
+      } else {
+        const todayKey = toLocalDateKey(new Date());
+        if (this.formulaDag.hasVolatileColumns() && this.formulaDag.getComputedDay() !== todayKey) {
+          const res = this.formulaDag.refreshVolatileIfDayChanged(rows, rowByUuid, columns, sysNames);
+          if (res && res.changedEntries.length > 0) {
+            this.pushFormulaCacheEntriesToSqlite(res.changedEntries);
+          }
+        } else {
+          const hasMissingRow = rows.some((r) => Object.keys(this.formulaDag.getRowFormulaValues(r.uuid)).length === 0);
+          if (hasMissingRow) {
+            const res = this.formulaDag.evaluateIncremental({
+              rows,
+              rowByUuid,
+              columns,
+              systemColumnNames: sysNames,
+            });
+            if (res.changedEntries.length > 0) {
+              this.pushFormulaCacheEntriesToSqlite(res.changedEntries);
+            }
+          }
+        }
+      }
       for (const row of rows) {
-        row.formulaValues = evaluatedMap.get(row.uuid) ?? {};
+        row.formulaValues = this.formulaDag.getRowFormulaValues(row.uuid);
+      }
+    } else {
+      for (const row of rows) {
+        row.formulaValues = {};
       }
     }
 
     return rows;
   }
 
-  private getDetailsDigest(details: unknown): string {
-    if (details && typeof details === "object") {
-      const cached = this.detailsJsonCache.get(details);
-      if (cached !== undefined) return cached;
-      const serialized = JSON.stringify(details);
-      this.detailsJsonCache.set(details, serialized);
-      return serialized;
-    }
-    return String(details ?? "");
-  }
-
-  private getFieldsDigest(fields: Record<string, TableCellValue>): string {
-    const cached = this.fieldsJsonCache.get(fields);
-    if (cached !== undefined) return cached;
-    const keys = Object.keys(fields).sort();
-    const normalized: Record<string, TableCellValue> = {};
-    for (const key of keys) {
-      const val = fields[key];
-      normalized[key] = Array.isArray(val) ? [...val] : val;
-    }
-    const serialized = JSON.stringify(normalized);
-    this.fieldsJsonCache.set(fields, serialized);
-    return serialized;
-  }
-
-  private getEntityOwnDataDigest(entity: ConnectableEntity): string {
-    if (entity instanceof TextNode || entity instanceof Section) {
-      return `text:${entity.text}`;
-    }
-    if (entity instanceof UrlNode) {
-      return `url:${entity.title}|${entity.url}`;
-    }
-    if (entity instanceof MediaNode) {
-      return `media:${entity.title}|${entity.attachmentId}|${entity.mediaKind}`;
-    }
-    if (entity instanceof LatexNode) {
-      return `latex:${entity.latexSource}`;
-    }
-    if (entity instanceof ImageNode || entity instanceof SvgNode) {
-      return `asset:${entity.attachmentId}`;
-    }
-    if (entity instanceof ReferenceBlockNode) {
-      return `ref:${entity.fileName}#${entity.sectionName}`;
-    }
-    if (entity instanceof ExtensionEntity) {
-      return `ext:${entity.extensionId}:${entity.typeName}:${JSON.stringify(entity.customData)}`;
-    }
-    return "";
-  }
-
-  private computeDigestsMap(): Map<string, { entity: ConnectableEntity; digest: string }> {
-    const rowEntities = this.getRowEntities();
-    const relationIndex = this.buildRelationIndex(rowEntities);
-    const result = new Map<string, { entity: ConnectableEntity; digest: string }>();
-
-    for (const entity of rowEntities) {
-      const rel = relationIndex.get(entity.uuid)!;
-      const parentsIds = rel.parents
-        .map((p) => p.uuid)
-        .sort()
-        .join(",");
-      const childrenIds = rel.children
-        .map((c) => c.uuid)
-        .sort()
-        .join(",");
-      const outerId = rel.outer?.uuid ?? "";
-      const innerIds = rel.inner
-        .map((i) => i.uuid)
-        .sort()
-        .join(",");
-      const ownData = this.getEntityOwnDataDigest(entity);
-      const detailsData = this.getDetailsDigest(entity.details);
-      const fieldsData = this.getFieldsDigest(entity.tableFields);
-      const imagesData = this.getRowImageNodes(entity)
-        .map((img) => `${img.uuid}:${img.attachmentId}`)
-        .join(",");
-
-      const digest = `${ownData}\n${detailsData}\n${fieldsData}\nIMG:${imagesData}\nP:${parentsIds}\nC:${childrenIds}\nO:${outerId}\nI:${innerIds}`;
-      result.set(entity.uuid, { entity, digest });
-    }
-
-    return result;
-  }
-
-  /**
-   * 在打开工程、撤销重做或远端协作快照恢复后重新建立语义基线，不改动已有 updatedAt。
-   */
-  public captureBaselineDigests(): void {
-    this.baselineDigests.clear();
-    const current = this.computeDigestsMap();
-    for (const [uuid, { digest }] of current) {
-      this.baselineDigests.set(uuid, digest);
-    }
-    this.baselineInitialized = true;
-  }
-
-  public resetAfterStageRestore(): void {
-    this.captureBaselineDigests();
-    this.notifyChange();
-  }
-
-  /**
-   * 对比每行语义数据指纹（不含位置/尺寸/折叠状态），仅刷新数据发生变动的行的 updatedAt。
-   */
-  public syncSemanticTimestamps(now: number = Date.now()): boolean {
-    if (!this.baselineInitialized) {
-      this.captureBaselineDigests();
-      return false;
-    }
-
-    const current = this.computeDigestsMap();
-    let anyTimestampUpdated = false;
-
-    for (const [uuid, { entity, digest }] of current) {
-      const prevDigest = this.baselineDigests.get(uuid);
-      if (prevDigest !== undefined && prevDigest !== digest && !this.suppressTimestampUuids.has(uuid)) {
-        entity.updatedAt = Math.trunc(now);
-        anyTimestampUpdated = true;
+  public resetAfterStageRestore(options?: { deferFormulaSync?: boolean; needsFormulaRecompute?: boolean }): void {
+    this.invalidateRowCache();
+    this.formulaDag.reset();
+    const hasFormulaCols = this.project.table.columns.some((c) => c.type === "formula");
+    if (hasFormulaCols && options?.needsFormulaRecompute !== false) {
+      if (options?.deferFormulaSync) {
+        queueMicrotask(() => {
+          if (this.project.closing || !this.project.getService?.("stageTable")) return;
+          this.syncFormulaCacheFull({ persistToSqlite: true });
+          this.notifyChange({ emitSync: false });
+        });
+      } else {
+        this.syncFormulaCacheFull({ persistToSqlite: true });
       }
     }
-
-    this.baselineDigests.clear();
-    for (const [uuid, { digest }] of current) {
-      this.baselineDigests.set(uuid, digest);
-    }
-
-    return anyTimestampUpdated;
-  }
-
-  public flushPendingTimestamps(): void {
-    this.syncSemanticTimestamps();
+    this.notifyChange({ emitSync: false });
   }
 
   public updateRowPrimaryText(uuid: string, nextText: string): boolean {
@@ -2386,6 +2571,7 @@ export class StageTableService implements Service {
       entity.rename(nextText);
     } else if (entity instanceof MediaNode) {
       entity.title = nextText;
+      this.project.docCommandBus?.markSemanticDirty(entity);
     } else if (entity instanceof LatexNode) {
       void entity.updateLatex(nextText);
     }
@@ -2394,7 +2580,11 @@ export class StageTableService implements Service {
       reflowMindMapTreesForEntities(this.project, [entity], new Map([[entity.uuid, centerBefore]]));
     }
     this.project.historyManager.recordStep();
-    this.notifyChange();
+    this.syncFormulaCacheIncremental({
+      dirtyRowUuids: [entity.uuid],
+      changedColumnIds: ["name", "updatedAt"],
+    });
+    this.notifyChange({ emitSync: false });
     return true;
   }
 
@@ -2408,6 +2598,7 @@ export class StageTableService implements Service {
       return false;
     }
     const nextFields = cloneTableFields(entity.tableFields);
+    const touchedColIds: string[] = [];
     let mutated = false;
     for (const [columnId, value] of Object.entries(patch)) {
       const colSchema = this.getColumnSchema(columnId);
@@ -2417,10 +2608,12 @@ export class StageTableService implements Service {
       if (value === null || value === "" || (Array.isArray(value) && value.length === 0)) {
         if (columnId in nextFields) {
           delete nextFields[columnId];
+          touchedColIds.push(columnId);
           mutated = true;
         }
       } else {
         nextFields[columnId] = Array.isArray(value) ? [...value] : value;
+        touchedColIds.push(columnId);
         mutated = true;
       }
     }
@@ -2428,8 +2621,13 @@ export class StageTableService implements Service {
       return false;
     }
     entity.tableFields = nextFields;
+    this.project.docCommandBus?.markCellsDirty(entity.uuid, touchedColIds, true);
     this.project.historyManager.recordStep();
-    this.notifyChange();
+    this.syncFormulaCacheIncremental({
+      dirtyRowUuids: [entity.uuid],
+      changedColumnIds: [...touchedColIds, "updatedAt"],
+    });
+    this.notifyChange({ emitSync: false });
     return true;
   }
 
@@ -2445,7 +2643,7 @@ export class StageTableService implements Service {
     if (!entity || !isTableRowEntity(entity)) {
       return null;
     }
-    const roleIds = this.ensureSpacedRepetitionColumns(false);
+    const { roleIds, schemaCommands } = this.ensureSpacedRepetitionColumnsInternal(false);
     const snapshot: SpacedRepetitionAnswerSnapshot = options?.baseline ?? {
       mastery: entity.tableFields[roleIds.mastery],
       correctCount: entity.tableFields[roleIds.correctCount],
@@ -2469,13 +2667,36 @@ export class StageTableService implements Service {
     nextFields[roleIds.answerDate] = todayKey;
 
     entity.tableFields = nextFields;
-    this.suppressTimestampUuids.add(entity.uuid);
-    try {
-      this.project.historyManager.recordStep();
-    } finally {
-      this.suppressTimestampUuids.delete(entity.uuid);
+    const cellUpdates: CellMutationItem[] = [];
+    for (const colId of [roleIds.mastery, roleIds.correctCount, roleIds.delay, roleIds.answerDate]) {
+      const col = this.getColumnSchema(colId);
+      if (!col) continue;
+      const val = nextFields[colId] ?? null;
+      cellUpdates.push({
+        entityUuid: entity.uuid,
+        colId,
+        value: val === null ? null : serializeCellValueToV3Record(entity.uuid, col, val),
+      });
     }
-    this.notifyChange();
+    if (this.project.docCommandBus) {
+      this.project.docCommandBus.dispatchCommands(
+        [...schemaCommands, { type: "update_cells", updates: cellUpdates, touchUpdatedAt: false }],
+        {
+          label: "spaced_repetition_answer",
+          recordHistory: true,
+          touchedEntityUuidsForLocalSnapshot: [entity.uuid],
+        },
+      );
+    } else {
+      this.project.historyManager.recordStep();
+    }
+    this.syncFormulaCacheIncremental({
+      dirtyRowUuids: [entity.uuid],
+      changedColumnIds: [roleIds.mastery, roleIds.correctCount, roleIds.delay, roleIds.answerDate],
+      schemaChanged: schemaCommands.length > 0,
+      now: options?.today,
+    });
+    this.notifyChange({ emitSync: false });
     return snapshot;
   }
 
@@ -2484,7 +2705,7 @@ export class StageTableService implements Service {
     if (!entity || !isTableRowEntity(entity)) {
       return false;
     }
-    const roleIds = this.ensureSpacedRepetitionColumns(false);
+    const { roleIds, schemaCommands } = this.ensureSpacedRepetitionColumnsInternal(false);
     const nextFields = cloneTableFields(entity.tableFields);
 
     const restoreOne = (colId: string, val: TableCellValue | undefined) => {
@@ -2500,13 +2721,35 @@ export class StageTableService implements Service {
     restoreOne(roleIds.answerDate, snapshot.answerDate);
 
     entity.tableFields = nextFields;
-    this.suppressTimestampUuids.add(entity.uuid);
-    try {
-      this.project.historyManager.recordStep();
-    } finally {
-      this.suppressTimestampUuids.delete(entity.uuid);
+    const cellUpdates: CellMutationItem[] = [];
+    for (const colId of [roleIds.mastery, roleIds.correctCount, roleIds.delay, roleIds.answerDate]) {
+      const col = this.getColumnSchema(colId);
+      if (!col) continue;
+      const val = nextFields[colId] ?? null;
+      cellUpdates.push({
+        entityUuid: entity.uuid,
+        colId,
+        value: val === null ? null : serializeCellValueToV3Record(entity.uuid, col, val),
+      });
     }
-    this.notifyChange();
+    if (this.project.docCommandBus) {
+      this.project.docCommandBus.dispatchCommands(
+        [...schemaCommands, { type: "update_cells", updates: cellUpdates, touchUpdatedAt: false }],
+        {
+          label: "spaced_repetition_restore",
+          recordHistory: true,
+          touchedEntityUuidsForLocalSnapshot: [entity.uuid],
+        },
+      );
+    } else {
+      this.project.historyManager.recordStep();
+    }
+    this.syncFormulaCacheIncremental({
+      dirtyRowUuids: [entity.uuid],
+      changedColumnIds: [roleIds.mastery, roleIds.correctCount, roleIds.delay, roleIds.answerDate],
+      schemaChanged: schemaCommands.length > 0,
+    });
+    this.notifyChange({ emitSync: false });
     return true;
   }
 
@@ -2574,6 +2817,10 @@ export class StageTableService implements Service {
 
     this.project.stageManager.updateReferences?.();
     this.project.historyManager.recordStep();
+    this.syncFormulaCacheIncremental({
+      dirtyRowUuids: options?.outerSectionUuid ? [node.uuid, options.outerSectionUuid] : [node.uuid],
+      topologyChanged: Boolean(options?.outerSectionUuid),
+    });
     this.notifyChange();
     return this.getRows().find((r) => r.uuid === node.uuid) ?? null;
   }
@@ -2693,6 +2940,10 @@ export class StageTableService implements Service {
       this.project.stageManager.updateReferences();
     }
     this.project.historyManager.recordStep();
+    this.syncFormulaCacheIncremental({
+      dirtyRowUuids: [targetSection.uuid],
+      changedColumnIds: ["images", "updatedAt"],
+    });
     this.notifyChange();
     return true;
   }
@@ -2730,6 +2981,10 @@ export class StageTableService implements Service {
       }
     }
     this.project.historyManager.recordStep();
+    this.syncFormulaCacheIncremental({
+      dirtyRowUuids: [rowUuid],
+      changedColumnIds: ["images", "updatedAt"],
+    });
     this.notifyChange();
     return true;
   }
@@ -2774,6 +3029,11 @@ export class StageTableService implements Service {
         reflowMindMapTreesForEntities(this.project, affectedEntities);
       }
       this.project.historyManager.recordStep();
+      this.syncFormulaCacheIncremental({
+        dirtyRowUuids: affectedEntities.map((e) => e.uuid),
+        changedColumnIds: ["parents", "children", "updatedAt"],
+        topologyChanged: true,
+      });
       this.notifyChange();
     }
     return changed;
@@ -2819,6 +3079,11 @@ export class StageTableService implements Service {
         reflowMindMapTreesForEntities(this.project, affectedEntities);
       }
       this.project.historyManager.recordStep();
+      this.syncFormulaCacheIncremental({
+        dirtyRowUuids: affectedEntities.map((e) => e.uuid),
+        changedColumnIds: ["parents", "children", "updatedAt"],
+        topologyChanged: true,
+      });
       this.notifyChange();
     }
     return changed;
@@ -2892,12 +3157,7 @@ export class StageTableService implements Service {
       tableFields: textNode.tableFields,
     });
 
-    const stageIndex = this.project.stage.indexOf(textNode);
-    if (stageIndex !== -1) {
-      this.project.stage[stageIndex] = newSection;
-    } else {
-      this.project.stage.push(newSection);
-    }
+    this.project.stageManager.replaceStageObject(textNode, newSection);
 
     if (fatherSection) {
       const childIdx = fatherSection.children.indexOf(textNode);
@@ -2932,12 +3192,7 @@ export class StageTableService implements Service {
       tableFields: section.tableFields,
     });
 
-    const stageIndex = this.project.stage.indexOf(section);
-    if (stageIndex !== -1) {
-      this.project.stage[stageIndex] = textNode;
-    } else {
-      this.project.stage.push(textNode);
-    }
+    this.project.stageManager.replaceStageObject(section, textNode);
 
     if (fatherSection) {
       const childIdx = fatherSection.children.indexOf(section);
@@ -3003,6 +3258,11 @@ export class StageTableService implements Service {
         reflowMindMapTreesForEntities(this.project, [currentOuter], new Map([[currentOuter.uuid, prevCenter]]));
       }
       this.project.historyManager.recordStep();
+      this.syncFormulaCacheIncremental({
+        dirtyRowUuids: [entity.uuid, currentOuter.uuid],
+        changedColumnIds: ["outer", "inner", "updatedAt"],
+        topologyChanged: true,
+      });
       this.notifyChange();
       return true;
     }
@@ -3052,6 +3312,11 @@ export class StageTableService implements Service {
       reflowMindMapTreesForEntities(this.project, [targetSection, currentOuter], prevCenters);
     }
     this.project.historyManager.recordStep();
+    this.syncFormulaCacheIncremental({
+      dirtyRowUuids: [entity.uuid, targetSection.uuid, ...(currentOuter ? [currentOuter.uuid] : [])],
+      changedColumnIds: ["outer", "inner", "updatedAt"],
+      topologyChanged: true,
+    });
     this.notifyChange();
     return true;
   }
@@ -3102,6 +3367,11 @@ export class StageTableService implements Service {
         this.project.sectionInOutManager.goInSection([child], promotedSection);
       }
       this.project.historyManager.recordStep();
+      this.syncFormulaCacheIncremental({
+        dirtyRowUuids: [promotedSection.uuid, ...validTargets.map((v) => v.uuid)],
+        changedColumnIds: ["outer", "inner", "updatedAt"],
+        topologyChanged: true,
+      });
       this.notifyChange();
       return true;
     }
@@ -3151,6 +3421,15 @@ export class StageTableService implements Service {
       reflowMindMapTreesForEntities(this.project, affectedContainers, prevCenters);
     }
     this.project.historyManager.recordStep();
+    this.syncFormulaCacheIncremental({
+      dirtyRowUuids: [
+        ...Array.from(affectedContainers).map((c) => c.uuid),
+        ...toAdd.map((c) => c.uuid),
+        ...toRemove.map((c) => c.uuid),
+      ],
+      changedColumnIds: ["outer", "inner", "updatedAt"],
+      topologyChanged: true,
+    });
     this.notifyChange();
     return true;
   }
@@ -3173,19 +3452,23 @@ export class StageTableService implements Service {
       }
     }
 
-    let expandedSection = false;
+    const expandedSections: Section[] = [];
     for (const entity of targets) {
       let ancestor = entity.parentSection;
       while (ancestor) {
         if (ancestor.isCollapsed) {
           ancestor.isCollapsed = false;
-          expandedSection = true;
+          expandedSections.push(ancestor);
         }
         ancestor = ancestor.parentSection;
       }
     }
-    if (expandedSection) {
+    if (expandedSections.length > 0) {
       this.project.stageManager.updateReferences();
+      this.project.docCommandBus?.dispatchCommands(
+        expandedSections.map((sec) => ({ type: "toggle_section_collapse", uuid: sec.uuid, isCollapsed: false })),
+        { label: "expand_section_on_select", recordHistory: false, emitStageCommit: false },
+      );
     }
 
     this.suppressCanvasSelectionSync = true;

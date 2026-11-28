@@ -124,8 +124,10 @@ Dialog.confirm = (title = "你确定？", description = "", { destructive = fals
             <DialogHeader>
               <DialogTitle>{title}</DialogTitle>
               <DialogDescription>
-                {description.split("\n").map((it) => (
-                  <p>{it}</p>
+                {description.split("\n").map((it, idx) => (
+                  <span key={idx} className="block">
+                    {it}
+                  </span>
                 ))}
               </DialogDescription>
               <DialogFooter>
@@ -262,8 +264,10 @@ Dialog.buttons = <
             <DialogHeader>
               <DialogTitle>{title}</DialogTitle>
               <DialogDescription>
-                {description.split("\n").map((it) => (
-                  <p>{it}</p>
+                {description.split("\n").map((it, idx) => (
+                  <span key={idx} className="block">
+                    {it}
+                  </span>
                 ))}
               </DialogDescription>
               <DialogFooter>

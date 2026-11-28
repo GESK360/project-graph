@@ -1,5 +1,7 @@
 import { loadAllServicesAfterInit, loadAllServicesBeforeInit } from "@/core/loadAllServices";
 import { Project } from "@/core/Project";
+import { DocClient } from "@/core/sqlite/DocClient";
+import { WorkspaceClient } from "@/core/sqlite/WorkspaceClient";
 import { Settings } from "@/core/service/Settings";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -109,6 +111,7 @@ export class WorkspaceManagerClass {
   };
   private unwatch?: () => void;
   private watchingRoot?: string;
+  private indexOpenedRoot?: string;
   private watchTask?: Promise<void>;
   private watchUnavailableRoot?: string;
   private changeTimer?: ReturnType<typeof setTimeout>;
@@ -136,12 +139,20 @@ export class WorkspaceManagerClass {
     this.clipboard = null;
     this.snapshotTimes.clear();
     await this.startWatching();
+    if (WorkspaceClient.isAvailable()) {
+      this.indexOpenedRoot = root;
+      void WorkspaceClient.openWorkspace(root).catch(() => {});
+    }
     this.emit("root-change");
     this.emit("change");
   }
 
   async closeWorkspace(): Promise<void> {
     this.stopWatching();
+    this.indexOpenedRoot = undefined;
+    if (WorkspaceClient.isAvailable()) {
+      void WorkspaceClient.closeWorkspace().catch(() => {});
+    }
     this.clipboard = null;
     Settings.activeWorkspaceRoot = "";
     this.emit("root-change");
@@ -164,7 +175,12 @@ export class WorkspaceManagerClass {
     const root = this.root;
     if (!root) {
       this.stopWatching();
+      this.indexOpenedRoot = undefined;
       return;
+    }
+    if (WorkspaceClient.isAvailable() && this.indexOpenedRoot !== root) {
+      this.indexOpenedRoot = root;
+      void WorkspaceClient.openWorkspace(root).catch(() => {});
     }
     if (this.watchingRoot === root && (this.unwatch || this.watchTask || this.watchUnavailableRoot === root)) {
       return;
@@ -201,13 +217,20 @@ export class WorkspaceManagerClass {
       await project.dispose();
     }
     await this.insertOrder(dir, WorkspacePaths.baseName(target), placement);
+    if (WorkspaceClient.isAvailable()) {
+      void WorkspaceClient.syncFile(target).catch(() => {});
+    }
     this.emit("change");
     return target;
   }
 
   async deletePage(path: string): Promise<void> {
     const target = WorkspacePaths.normalize(path);
+    await DocClient.releasePath(target);
     await remove(target);
+    if (WorkspaceClient.isAvailable()) {
+      await WorkspaceClient.notifyPathDeleted(target, false).catch(() => {});
+    }
     await this.pruneOrder([WorkspacePaths.dirname(target)]);
     this.emit("change");
   }
@@ -256,6 +279,9 @@ export class WorkspaceManagerClass {
     await mkdir(dir, { recursive: true });
     const target = await this.uniquePath(dir, WorkspacePaths.nameOf(source));
     await copyFile(source, target);
+    if (WorkspaceClient.isAvailable()) {
+      await WorkspaceClient.reissueCopiedDocIds(target, false).catch(() => {});
+    }
     this.emit("change");
     return target;
   }
@@ -286,7 +312,11 @@ export class WorkspaceManagerClass {
       baseName.toLowerCase() === currentName.toLowerCase()
         ? WorkspacePaths.join(parent, baseName)
         : await this.uniqueTitlePath(parent, baseName);
+    await DocClient.releaseUnderPrefix(source);
     await rename(source, target);
+    if (WorkspaceClient.isAvailable()) {
+      await WorkspaceClient.notifyPathRenamed(source, target, true).catch(() => {});
+    }
     await this.updateOrderAfterRename(source, target);
     await this.pruneOrder([parent]);
     this.emit("change");
@@ -301,7 +331,11 @@ export class WorkspaceManagerClass {
     if (WorkspacePaths.isInside(root, target)) {
       throw new Error(i18next.t("workspace.invalidName", { defaultValue: target }));
     }
+    await DocClient.releaseUnderPrefix(target);
     await remove(target, { recursive: true });
+    if (WorkspaceClient.isAvailable()) {
+      await WorkspaceClient.notifyPathDeleted(target, true).catch(() => {});
+    }
     await this.pruneOrder([WorkspacePaths.dirname(target)]);
     this.emit("change");
   }
@@ -327,7 +361,11 @@ export class WorkspaceManagerClass {
     let target: string;
     if (folder) {
       target = await this.uniqueTitlePath(dir, WorkspacePaths.baseName(source));
+      await DocClient.releaseUnderPrefix(source);
       await rename(source, target);
+      if (WorkspaceClient.isAvailable()) {
+        await WorkspaceClient.notifyPathRenamed(source, target, true).catch(() => {});
+      }
     } else {
       target = await this.uniquePath(dir, WorkspacePaths.nameOf(source));
       await this.movePageFile(source, target);
@@ -352,6 +390,9 @@ export class WorkspaceManagerClass {
     } else {
       target = await this.uniquePath(dir, WorkspacePaths.nameOf(source));
       await copyFile(source, target);
+    }
+    if (WorkspaceClient.isAvailable()) {
+      await WorkspaceClient.reissueCopiedDocIds(target, folder).catch(() => {});
     }
     this.emit("change");
     return target;
@@ -436,6 +477,27 @@ export class WorkspaceManagerClass {
     await this.writeSnapshot(path, false);
   }
 
+  /** 为工作空间内页面解析本次手动快照的目标路径；未开启历史或文件在工作空间外时返回 null */
+  resolveSnapshotTargetPath(path: string): string | null {
+    if (!Settings.workspaceVersionHistory) return null;
+    const root = this.root;
+    if (!root) return null;
+    const source = WorkspacePaths.normalize(path);
+    if (!WorkspacePaths.isInside(source, root)) return null;
+    const now = Date.now();
+    this.snapshotTimes.set(source, now);
+    return WorkspacePaths.join(this.versionDir(source), `${formatVersionId(now)}.prg`);
+  }
+
+  async prunePageSnapshots(path: string): Promise<void> {
+    if (!this.root) return;
+    const source = WorkspacePaths.normalize(path);
+    if (!WorkspacePaths.isInside(source, this.root)) return;
+    const dir = this.versionDir(source);
+    if (!(await exists(dir))) return;
+    await this.pruneVersions(dir);
+  }
+
   async listVersions(path: string): Promise<{ id: string; time: number; filePath: string }[]> {
     if (!this.root) return [];
     const dir = this.versionDir(WorkspacePaths.normalize(path));
@@ -450,15 +512,19 @@ export class WorkspaceManagerClass {
       .sort((left, right) => right.time - left.time);
   }
 
-  /** 用某个快照覆盖当前页面文件（覆盖前先 snapshotPage 保底） */
+  /** 用某个快照覆盖当前页面文件（覆盖前先 snapshotPage 保底，并释放 Windows SQLite 连接句柄） */
   async restoreVersion(path: string, versionId: string): Promise<void> {
     const source = WorkspacePaths.normalize(path);
     const versionPath = WorkspacePaths.join(this.versionDir(source), `${versionId}.prg`);
     if (!(await exists(versionPath))) {
       throw new Error(i18next.t("workspace.versionsEmpty", { defaultValue: versionId }));
     }
+    await DocClient.releasePath(source);
     await this.writeSnapshot(source, true);
     await copyFile(versionPath, source);
+    if (WorkspaceClient.isAvailable()) {
+      await WorkspaceClient.syncFile(source).catch(() => {});
+    }
     this.emit("change");
   }
 
@@ -773,18 +839,14 @@ export class WorkspaceManagerClass {
       }
       order[parentKey] = names;
     } else {
-      const namesBeforeRename = currentNames.map((name) =>
-        normalizeName(name) === newNameKey ? oldName : name,
-      );
+      const namesBeforeRename = currentNames.map((name) => (normalizeName(name) === newNameKey ? oldName : name));
       namesBeforeRename.sort((left, right) => {
         const leftIsDir = !isPagePath(left);
         const rightIsDir = !isPagePath(right);
         if (leftIsDir !== rightIsDir) return leftIsDir ? -1 : 1;
         return left.localeCompare(right);
       });
-      order[parentKey] = namesBeforeRename.map((name) =>
-        normalizeName(name) === oldNameKey ? newName : name,
-      );
+      order[parentKey] = namesBeforeRename.map((name) => (normalizeName(name) === oldNameKey ? newName : name));
     }
 
     const sourcePrefix = isPagePath(source)
@@ -830,12 +892,20 @@ export class WorkspaceManagerClass {
    * 否则改名的页面会留下一个对不上名字的子页目录（父子关系就是目录层级）。
    */
   private async movePageFile(source: string, target: string): Promise<void> {
+    await DocClient.releasePath(source);
     await rename(source, target);
+    if (WorkspaceClient.isAvailable()) {
+      await WorkspaceClient.notifyPathRenamed(source, target, false).catch(() => {});
+    }
     const sourceChildren = this.childDirOf(source);
     if (!(await exists(sourceChildren))) return;
     const targetChildren = this.childDirOf(target);
     if (await exists(targetChildren)) return;
+    await DocClient.releaseUnderPrefix(sourceChildren);
     await rename(sourceChildren, targetChildren);
+    if (WorkspaceClient.isAvailable()) {
+      await WorkspaceClient.notifyPathRenamed(sourceChildren, targetChildren, true).catch(() => {});
+    }
   }
 
   private sanitizeName(name: string): string {

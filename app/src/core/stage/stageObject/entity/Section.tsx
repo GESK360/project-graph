@@ -28,7 +28,7 @@ export class Section extends ConnectableEntity implements ResizeAble {
   @serializable
   public uuid: string;
   _isEditingTitle: boolean = false;
-  private _collisionBoxWhenCollapsed: CollisionBox;
+  private _collisionBoxWhenCollapsed: CollisionBox | null = null;
   @serializable
   private _collisionBoxNormal: CollisionBox;
 
@@ -45,9 +45,13 @@ export class Section extends ConnectableEntity implements ResizeAble {
    */
   static bigTitleCameraScale = 0.2;
 
+  private getCollapsedCollisionBox(): CollisionBox {
+    return (this._collisionBoxWhenCollapsed ??= this.collapsedCollisionBox());
+  }
+
   public get collisionBox(): CollisionBox {
     if (this.isCollapsed) {
-      return this._collisionBoxWhenCollapsed;
+      return this.getCollapsedCollisionBox();
     } else if (this.locked) {
       // 锁定状态下使用整个矩形作为碰撞箱
       return new CollisionBox([this.rectangle]);
@@ -114,23 +118,32 @@ export class Section extends ConnectableEntity implements ResizeAble {
       createdAt = undefined as number | undefined,
       updatedAt = undefined as number | undefined,
       tableFields = undefined as TableFields | undefined,
+      tableFieldsOwned = false,
+      skipInitialAdjust = false,
     } = {},
     public unknown = false,
   ) {
     super();
     this.uuid = uuid;
-    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
+    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields, tableFieldsOwned });
 
     if (collisionBoxNormal) {
       // 从序列化数据恢复：直接使用保存的 _collisionBoxNormal（含正确位置）
       this._collisionBoxNormal = collisionBoxNormal;
+      // v3 持久化矩形快路径：补齐标题栏可拖动命中矩形，避免开页期重算 adjustLocationAndSize
+      if (skipInitialAdjust && text !== "" && this._collisionBoxNormal.shapes.length === 4) {
+        const rect = this.getNormalRectangle();
+        if (rect.size.x > 0 && rect.size.y > 0) {
+          this._collisionBoxNormal.shapes.push(new Rectangle(rect.location.clone(), new Vector(rect.size.x, 50)));
+        }
+      }
     } else {
       // 新建：从 collisionBox 参数构建 _collisionBoxNormal
       const rect = collisionBox.getRectangle();
       const shapes: Shape[] = rect.getBoundingLines();
       this._collisionBoxNormal = new CollisionBox(shapes);
     }
-    this._collisionBoxWhenCollapsed = collisionBox;
+    this._collisionBoxWhenCollapsed = null;
 
     this.color = color;
     this.text = text;
@@ -140,8 +153,10 @@ export class Section extends ConnectableEntity implements ResizeAble {
     this.children = children;
     this.borderStyle = borderStyle;
     this.sizeAdjust = sizeAdjust;
-    // 一定要放在最后
-    this.adjustLocationAndSize();
+    // 一定要放在最后；v3 水合第一遍（children 尚未挂载）可跳过重复计算，由第二遍或持久化几何接管
+    if (!skipInitialAdjust) {
+      this.adjustLocationAndSize();
+    }
   }
 
   /**
@@ -159,6 +174,9 @@ export class Section extends ConnectableEntity implements ResizeAble {
   }
 
   rename(newName: string) {
+    if (this.text !== newName) {
+      this.project?.docCommandBus?.markSemanticDirty(this);
+    }
     this.text = newName;
     this.adjustLocationAndSize();
   }
@@ -189,22 +207,29 @@ export class Section extends ConnectableEntity implements ResizeAble {
       return null;
     }
     const bounds = this.children.map((child) => child.collisionBox.getRectangle());
-    const descendants = new Set<Entity>();
-    const collect = (entity: Entity) => {
-      if (descendants.has(entity)) return;
-      descendants.add(entity);
-      if (entity instanceof Section && !entity.isCollapsed) entity.children.forEach(collect);
-    };
-    this.children.forEach(collect);
     // 只包含端点全部在框内的包围线；跨分组连线不能反过来撑大两边的框。
-    for (const edge of this.project.stageManager.getAssociations()) {
-      if (
-        edge instanceof MultiTargetUndirectedEdge &&
-        edge.renderType !== "line" &&
-        edge.associationList.length >= 2 &&
-        edge.associationList.every((node) => descendants.has(node))
-      ) {
-        bounds.push(edge.collisionBox.getRectangle());
+    // 优先使用 StageManager 的非直线多目标边缓存（绝大多数图为空数组，将 O(S*E) 降至 O(0)）。
+    const multiTargetEdges =
+      typeof this.project.stageManager?.getMultiTargetNonLineEdges === "function"
+        ? this.project.stageManager.getMultiTargetNonLineEdges()
+        : this.project.stageManager.getAssociations();
+    if (multiTargetEdges.length > 0) {
+      const descendants = new Set<Entity>();
+      const collect = (entity: Entity) => {
+        if (descendants.has(entity)) return;
+        descendants.add(entity);
+        if (entity instanceof Section && !entity.isCollapsed) entity.children.forEach(collect);
+      };
+      this.children.forEach(collect);
+      for (const edge of multiTargetEdges) {
+        if (
+          edge instanceof MultiTargetUndirectedEdge &&
+          edge.renderType !== "line" &&
+          edge.associationList.length >= 2 &&
+          edge.associationList.every((node) => descendants.has(node))
+        ) {
+          bounds.push(edge.collisionBox.getRectangle());
+        }
       }
     }
     return Rectangle.getBoundingRectangle(bounds, padding);
@@ -217,8 +242,10 @@ export class Section extends ConnectableEntity implements ResizeAble {
       const newRect = new Rectangle(rectangle.location.clone(), new Vector(rectangle.size.x, titleBarHeight));
       this._collisionBoxNormal.shapes.push(newRect);
     }
-    // 调整折叠状态
-    this._collisionBoxWhenCollapsed = this.collapsedCollisionBox();
+    // 仅折叠态立即重建折叠碰撞箱，展开态置空按需懒建，省去每次 adjust 触发 Canvas measureText
+    this._collisionBoxWhenCollapsed = this.isCollapsed ? this.collapsedCollisionBox() : null;
+    this.project?.stageManager?.updateSpatialIndex?.(this);
+    this.project?.docCommandBus?.markGeometryDirty(this);
   }
 
   /**
@@ -348,7 +375,7 @@ export class Section extends ConnectableEntity implements ResizeAble {
    */
   public get rectangle(): Rectangle {
     if (this.isCollapsed) {
-      return this._collisionBoxWhenCollapsed.getRectangle();
+      return this.getCollapsedCollisionBox().getRectangle();
     } else {
       return this.getNormalRectangle();
     }
@@ -363,7 +390,10 @@ export class Section extends ConnectableEntity implements ResizeAble {
     this.project.sectionMoveDepth++;
     try {
       // 锁定时 collisionBox 是临时创建的矩形；两种状态下实际保存的边界都要跟着子节点移动。
-      for (const box of [this._collisionBoxNormal, this._collisionBoxWhenCollapsed]) {
+      const boxes = this._collisionBoxWhenCollapsed
+        ? [this._collisionBoxNormal, this._collisionBoxWhenCollapsed]
+        : [this._collisionBoxNormal];
+      for (const box of boxes) {
         for (const shape of box.shapes) {
           if (shape instanceof Line) {
             shape.start = shape.start.add(delta);
@@ -393,6 +423,9 @@ export class Section extends ConnectableEntity implements ResizeAble {
       this.updateFatherSectionByMove();
       // 移动其他实体，递归碰撞
       this.updateOtherEntityLocationByMove();
+    } else {
+      this.project?.stageManager?.updateSpatialIndex?.(this);
+      this.project?.docCommandBus?.markGeometryDirty(this);
     }
   }
   protected override collideWithOtherEntity(other: Entity): void {

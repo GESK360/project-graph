@@ -47,6 +47,8 @@ nodeDetailsWindow:
 findWindow:
   useRegex: Gunakan ekspresi reguler
   invalidRegex: Ekspresi reguler tidak valid
+  scopeWorkspace: Cari seluruh ruang kerja
+  workspacePlaceholder: Cari simpul & detail di seluruh ruang kerja...
 
 stageTable:
   expandPanel: Buka tabel multidimensi
@@ -71,6 +73,8 @@ stageTable:
     searchPlaceholder: Cari properti...
   columns:
     name: Nama
+    sourceFile: File sumber
+    sourceFolder: Folder sumber
     images: Gambar
     createdAt: Waktu dibuat
     updatedAt: Terakhir diedit
@@ -428,6 +432,38 @@ stageTable:
     resetZoom: Reset zoom
     currentNodeScope: "Simpul saat ini ({{count}})"
     allImagesScope: "Semua gambar ({{count}})"
+  workspaceTab:
+    title: Tabel Ruang Kerja
+  scope:
+    currentDoc: Kanvas saat ini
+    currentFolder: Folder saat ini
+    allWorkspace: Seluruh ruang kerja
+    selectedFolders: "{{count}} folder"
+    selectedDocs: "{{count}} kanvas"
+    mode_all: Semua
+    mode_folders: Folder
+    mode_docs: Kanvas
+    allSummary: "Mencakup semua {{count}} kanvas di ruang kerja ini"
+    noFolders: Tidak ada subfolder di ruang kerja ini
+  workspaceColumns:
+    button: Kolom Bersama
+    title: Kelola Kolom Bersama Ruang Kerja
+    description: Kolom bersama tetap selaras lintas file meski diganti nama; kolom otomatis dengan nama sama dapat ditingkatkan atau digabungkan.
+    newColumnPlaceholder: Nama kolom bersama baru...
+    createShared: Buat Kolom Bersama
+    empty: Belum ada kolom khusus di ruang kerja ini
+    badgeProtected: Dilindungi
+    badgeShared: Bersama
+    badgeAuto: Selaras otomatis
+    docCount: "{{count}} file"
+    promote: Tingkatkan
+    mergeSelectedCount: "Gabungkan {{count}} kolom menjadi:"
+    mergeTargetPlaceholder: Nama kolom bersama tujuan
+    mergeAction: Gabungkan
+    mergeTypeMismatch: Hanya kolom bertipe sama yang tidak dilindungi yang dapat digabungkan
+    createdToast: 'Kolom bersama "{{name}}" telah dibuat'
+    promotedToast: '"{{name}}" ditingkatkan menjadi kolom bersama ruang kerja'
+    mergedToast: 'Digabungkan ke kolom bersama "{{name}}"'
 
 projectStatus:
   nodes: "{{count}} simpul"
@@ -3161,6 +3197,22 @@ workspace:
   versionSnapshotFailed: Gagal menulis snapshot versi
   notAWorkspace: Folder yang dipilih tidak tersedia
   rootMissing: Folder ruang kerja sudah tidak ada
+  v3CheckpointSaved: WAL digabungkan dan snapshot tersimpan
+  openGlobalTable: Tabel Multidimensi Ruang Kerja
+  openGlobalSpacedRepetition: Pengulangan Berjarak Global
+  upgradeV3:
+    title: Cadangkan & Tingkatkan ke .prg v3.0.0
+    description: Ditemukan {{count}} file proyek v2.x lama (total {{size}}) di ruang kerja ini. Peningkatan ke SQLite v3.0.0 menghadirkan pembukaan instan dan penyimpanan otomatis waktu nyata.
+    backupHint: "Semua file lama akan dicadangkan dengan struktur folder utuh sebelum ditingkatkan ke:"
+    moreFiles: "{{count}} file lainnya tidak ditampilkan"
+    backingUp: Mencadangkan file lama…
+    migratingFile: "Meningkatkan ({{completed}}/{{total}}): {{file}}"
+    summary: "Peningkatan selesai: {{succeeded}} berhasil, {{failed}} gagal."
+    backupSavedAt: "File asli dicadangkan di: {{dir}}"
+    later: Nanti
+    confirmUpgrade: Cadangkan & Tingkatkan
+    upgrading: Meningkatkan…
+    done: Selesai
 
 common:
   editModeHint:

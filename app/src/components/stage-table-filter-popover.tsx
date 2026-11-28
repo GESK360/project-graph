@@ -8,6 +8,7 @@ import {
   StageTableColumnIcon,
 } from "@/components/stage-table-views-shared";
 import type { StageTableRow } from "@/core/service/dataManageService/stageTableService/StageTableService";
+import type { TableDataSource } from "@/core/service/dataManageService/stageTableService/TableDataSource";
 import {
   countActiveFilterConditions,
   getColumnFilterKind,
@@ -268,6 +269,7 @@ interface FilterConditionCardProps {
   columnGroups: readonly TableColumnGroup[];
   customColumnMap: ReadonlyMap<string, TableColumnSchema>;
   allRows: readonly StageTableRow[];
+  dataSource?: TableDataSource;
   isDragging: boolean;
   dropPosition: "before" | "after" | null;
   onStartDrag: (conditionId: string, e: React.PointerEvent) => void;
@@ -284,6 +286,7 @@ function FilterConditionCard({
   columnGroups,
   customColumnMap,
   allRows,
+  dataSource,
   isDragging,
   dropPosition,
   onStartDrag,
@@ -316,7 +319,10 @@ function FilterConditionCard({
     }
   }, [dateOpen, selectedExactDate]);
 
-  const relationCandidates = useMemo(() => {
+  const [remoteRelationOptions, setRemoteRelationOptions] = useState<Array<{ id: string; label: string }> | null>(null);
+  const relationLabelCacheRef = useRef<Map<string, string>>(new Map());
+
+  const localRelationCandidates = useMemo(() => {
     if (kind !== "relation") return [];
     const byId = new Map<string, string>();
     for (const row of allRows) {
@@ -338,6 +344,63 @@ function FilterConditionCard({
     }
     return Array.from(byId.entries()).map(([uuid, label]) => ({ id: uuid, label }));
   }, [allRows, condition.columnId, kind, t]);
+
+  useEffect(() => {
+    if (kind !== "relation" || !dataSource?.isSqliteBacked()) {
+      setRemoteRelationOptions(null);
+      return;
+    }
+    if (isCollapsed || !needsValue) return;
+    let cancelled = false;
+    const searchStr = optionSearch.trim() || undefined;
+    void dataSource
+      .queryFilterBuckets({
+        columnId: condition.columnId,
+        search: searchStr,
+        limit: 80,
+      })
+      .then((res) => {
+        if (cancelled) return;
+        const next: Array<{ id: string; label: string }> = [];
+        const seen = new Set<string>();
+        for (const bucket of res.buckets) {
+          relationLabelCacheRef.current.set(bucket.key, bucket.label);
+          if (!seen.has(bucket.key)) {
+            seen.add(bucket.key);
+            next.push({ id: bucket.key, label: bucket.label });
+          }
+        }
+        // 确保当前已勾选的关系项始终展示在列表中
+        for (const valId of condition.values ?? []) {
+          if (!seen.has(valId)) {
+            seen.add(valId);
+            const fallbackLabel =
+              relationLabelCacheRef.current.get(valId) ??
+              localRelationCandidates.find((c) => c.id === valId)?.label ??
+              valId;
+            next.unshift({ id: valId, label: fallbackLabel });
+          }
+        }
+        setRemoteRelationOptions(next);
+      })
+      .catch(() => {
+        if (!cancelled) setRemoteRelationOptions(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    kind,
+    dataSource,
+    isCollapsed,
+    needsValue,
+    condition.columnId,
+    condition.values,
+    optionSearch,
+    localRelationCandidates,
+  ]);
+
+  const relationCandidates = remoteRelationOptions ?? localRelationCandidates;
 
   const collapsedSummary = useMemo(() => {
     const opText = getOperatorLabel(kind, condition.operator, t);
@@ -392,9 +455,14 @@ function FilterConditionCard({
 
   const filteredRelationCandidates = useMemo(() => {
     if (kind !== "relation") return [];
-    if (!trimmedOptSearch) return relationCandidates;
-    return relationCandidates.filter((item) => item.label.toLowerCase().includes(trimmedOptSearch));
-  }, [kind, relationCandidates, trimmedOptSearch]);
+    const matched = !trimmedOptSearch
+      ? relationCandidates
+      : relationCandidates.filter((item) => item.label.toLowerCase().includes(trimmedOptSearch));
+    if (matched.length <= 200) return matched;
+    const selectedItems = matched.filter((item) => selectedValuesSet.has(item.id));
+    const unselectedItems = matched.filter((item) => !selectedValuesSet.has(item.id));
+    return [...selectedItems, ...unselectedItems.slice(0, Math.max(0, 200 - selectedItems.length))];
+  }, [kind, relationCandidates, trimmedOptSearch, selectedValuesSet]);
 
   const dateDisplayLabel = condition.datePreset ? getDatePresetLabel(condition.datePreset, t) : (condition.value ?? "");
 
@@ -774,6 +842,7 @@ export interface StageTableFilterToolbarPopoverProps {
   customColumns: readonly TableColumnSchema[];
   customColumnMap: ReadonlyMap<string, TableColumnSchema>;
   allRows: readonly StageTableRow[];
+  dataSource?: TableDataSource;
   activeFilters: readonly TableColumnFilter[];
   filterGroup: TableFilterGroup;
   getColumnLabel: (colId: string) => string;
@@ -794,6 +863,7 @@ export function StageTableFilterToolbarPopover({
   customColumns,
   customColumnMap,
   allRows,
+  dataSource,
   activeFilters,
   filterGroup,
   getColumnLabel,
@@ -1055,6 +1125,7 @@ export function StageTableFilterToolbarPopover({
                   columnGroups={columnGroups}
                   customColumnMap={customColumnMap}
                   allRows={allRows}
+                  dataSource={dataSource}
                   isDragging={isDragging}
                   dropPosition={dropPosition}
                   onStartDrag={startConditionDrag}

@@ -52,19 +52,26 @@ export abstract class Entity extends StageObject {
     createdAt?: number;
     updatedAt?: number;
     tableFields?: Record<string, unknown>;
+    tableFieldsOwned?: boolean;
   }) {
-    const now = Date.now();
-    const created =
+    const validCreated =
       typeof raw?.createdAt === "number" && Number.isFinite(raw.createdAt) && raw.createdAt > 0
         ? Math.trunc(raw.createdAt)
-        : now;
+        : 0;
+    const created = validCreated > 0 ? validCreated : Date.now();
     const updated =
       typeof raw?.updatedAt === "number" && Number.isFinite(raw.updatedAt) && raw.updatedAt > 0
         ? Math.trunc(raw.updatedAt)
         : created;
     this.createdAt = created;
     this.updatedAt = updated;
-    this.tableFields = cloneTableFields(raw?.tableFields);
+    if (!raw?.tableFields) {
+      this.tableFields = {};
+    } else if (raw.tableFieldsOwned) {
+      this.tableFields = raw.tableFields as TableFields;
+    } else {
+      this.tableFields = cloneTableFields(raw.tableFields);
+    }
   }
 
   /**
@@ -116,6 +123,8 @@ export abstract class Entity extends StageObject {
    * 每次父框 adjustLocationAndSize 后，调用碰撞求解器推开与其重叠的同级分支。
    */
   protected updateFatherSectionByMove() {
+    this.project?.stageManager?.updateSpatialIndex?.(this);
+    this.project?.docCommandBus?.markGeometryDirty(this);
     if (this.project.sectionMoveDepth > 0) return;
     let current = this.parentSection;
     while (current) {
@@ -133,7 +142,11 @@ export abstract class Entity extends StageObject {
     if (!Settings.isEnableEntityCollision || this.project.sectionMoveDepth > 0) {
       return;
     }
-    for (const entity of this.project.stageManager.getEntities()) {
+    const candidates =
+      typeof this.project.stageManager?.queryEntitiesInRect === "function"
+        ? this.project.stageManager.queryEntitiesInRect(this.collisionBox.getRectangle(), { preserveOrder: false })
+        : this.project.stageManager.getEntities();
+    for (const entity of candidates) {
       if (entity === this) {
         continue;
       }
@@ -174,6 +187,9 @@ export abstract class Entity extends StageObject {
    */
   abstract isHiddenBySectionCollapse: boolean;
 
-  // 桥接模式，让详细信息的各种操作封装在外部类中
-  public detailsManager = new DetailsManager(this);
+  // 懒加载桥接器：避免打开数千节点工程时在构造期预分配数千个 DetailsManager + WeakMap 对象
+  private _detailsManager?: DetailsManager;
+  public get detailsManager(): DetailsManager {
+    return (this._detailsManager ??= new DetailsManager(this));
+  }
 }

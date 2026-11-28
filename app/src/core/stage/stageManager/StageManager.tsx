@@ -24,6 +24,7 @@ import { Direction } from "@/types/directions";
 // import { Serialized } from "@/types/node";
 import { Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
+import RBush from "rbush";
 import { toast } from "sonner";
 import {
   isPersistentMindMapDragEnabled,
@@ -84,6 +85,141 @@ export type ChildCameraData = {
  * 舞台管理器，也可以看成包含了很多操作方法的《舞台实体容器》
  * 管理节点、边的关系等，内部包含了舞台上的所有实体
  */
+type EntitySpatialItem = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  uuid: string;
+  order: number;
+  entity: Entity;
+};
+
+type AssociationSpatialItem = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  uuid: string;
+  order: number;
+  association: Association;
+};
+
+function finiteOr(v: number, fallback = 0): number {
+  return Number.isFinite(v) ? v : fallback;
+}
+
+function readEntityBoundsFast(entity: Entity): [number, number, number, number] {
+  const box = entity.collisionBox;
+  const shapes = box.shapes;
+  if (shapes.length === 1) {
+    const s = shapes[0];
+    if (s instanceof Rectangle) {
+      const x1 = finiteOr(s.location.x);
+      const y1 = finiteOr(s.location.y);
+      const x2 = finiteOr(x1 + s.size.x, x1);
+      const y2 = finiteOr(y1 + s.size.y, y1);
+      return x1 <= x2
+        ? y1 <= y2
+          ? [x1, y1, x2, y2]
+          : [x1, y2, x2, y1]
+        : y1 <= y2
+          ? [x2, y1, x1, y2]
+          : [x2, y2, x1, y1];
+    }
+  }
+  const rect = box.getRectangle();
+  const x1 = finiteOr(rect.left);
+  const y1 = finiteOr(rect.top);
+  const x2 = finiteOr(rect.right, x1);
+  const y2 = finiteOr(rect.bottom, y1);
+  return [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
+}
+
+function makeEntitySpatialItem(entity: Entity, order: number): EntitySpatialItem {
+  const [minX, minY, maxX, maxY] = readEntityBoundsFast(entity);
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    uuid: entity.uuid,
+    order,
+    entity,
+  };
+}
+
+function makeAssociationSpatialItem(association: Association, order: number): AssociationSpatialItem {
+  // LineEdge 零曲线快路径：直接用两端点矩形并集 + 保守外扩裕量建 R-Tree，
+  // 彻底避免开页时对数千条离屏边预先构造 bodyLine 与 SymmetryCurve 采样。
+  if (association instanceof LineEdge && association.source?.collisionBox && association.target?.collisionBox) {
+    const [sx1, sy1, sx2, sy2] = readEntityBoundsFast(association.source);
+    const [tx1, ty1, tx2, ty2] = readEntityBoundsFast(association.target);
+    const minX = Math.min(sx1, tx1);
+    const minY = Math.min(sy1, ty1);
+    const maxX = Math.max(sx2, tx2);
+    const maxY = Math.max(sy2, ty2);
+    const shiftPad = Math.abs(association.shiftingIndex) * 64;
+    let pad = 64 + shiftPad;
+    if (association.source.uuid === association.target.uuid) {
+      pad = Math.max(96, sy2 - sy1);
+    } else if (
+      association.sourceRectangleRate.x !== 0.5 ||
+      association.sourceRectangleRate.y !== 0.5 ||
+      association.targetRectangleRate.x !== 0.5 ||
+      association.targetRectangleRate.y !== 0.5
+    ) {
+      const span = Math.max(maxX - minX, maxY - minY);
+      pad = Math.max(64, Math.min(400, span * 0.35)) + shiftPad;
+    }
+    return {
+      minX: minX - pad,
+      minY: minY - pad,
+      maxX: maxX + pad,
+      maxY: maxY + pad,
+      uuid: association.uuid,
+      order,
+      association,
+    };
+  }
+
+  const rect = association.collisionBox.getRectangle();
+  let minX = finiteOr(rect.left);
+  let minY = finiteOr(rect.top);
+  let maxX = finiteOr(rect.right, minX);
+  let maxY = finiteOr(rect.bottom, minY);
+  if (minX > maxX) [minX, maxX] = [maxX, minX];
+  if (minY > maxY) [minY, maxY] = [maxY, minY];
+
+  // 对曲线/弧线/偏移多重边留足外扩裕量，避免视口边缘裁切闪烁
+  let pad = 64;
+  if (association instanceof ArcEdge) {
+    pad = Math.max(64, Math.abs(association.offset) + 64);
+  } else if (association instanceof MultiTargetUndirectedEdge) {
+    pad = Math.max(64, association.padding + 48);
+  }
+  if (association instanceof Edge) {
+    for (const ep of [association.source, association.target]) {
+      if (!ep?.collisionBox) continue;
+      const [ex1, ey1, ex2, ey2] = readEntityBoundsFast(ep);
+      minX = Math.min(minX, ex1);
+      minY = Math.min(minY, ey1);
+      maxX = Math.max(maxX, ex2);
+      maxY = Math.max(maxY, ey2);
+    }
+  }
+
+  return {
+    minX: minX - pad,
+    minY: minY - pad,
+    maxX: maxX + pad,
+    maxY: maxY + pad,
+    uuid: association.uuid,
+    order,
+    association,
+  };
+}
+
 @service("stageManager")
 export class StageManager {
   /**
@@ -111,7 +247,339 @@ export class StageManager {
     counts: Map<string, number>;
   };
 
+  // ── 热索引缓存：O(1) UUID 查找 + 分类数组缓存 + 端点邻接 + RBush 2D R-Tree ──
+  private readonly byUuid = new Map<string, StageObject>();
+  private readonly orderByUuid = new Map<string, number>();
+  private readonly associationsByEndpoint = new Map<string, Set<Association>>();
+  private entitiesCache: Entity[] = [];
+  private sectionsCache: Section[] = [];
+  private textNodesCache: TextNode[] = [];
+  private imageNodesCache: ImageNode[] = [];
+  private connectPointsCache: ConnectPoint[] = [];
+  private urlNodesCache: UrlNode[] = [];
+  private penStrokesCache: PenStroke[] = [];
+  private svgNodesCache: SvgNode[] = [];
+  private latexNodesCache: LatexNode[] = [];
+  private associationsCache: Association[] = [];
+  private edgesCache: Edge[] = [];
+  private lineEdgesCache: LineEdge[] = [];
+  private crEdgesCache: CubicCatmullRomSplineEdge[] = [];
+  private arcEdgesCache: ArcEdge[] = [];
+  private multiTargetNonLineEdgesCache: MultiTargetUndirectedEdge[] = [];
+
+  private readonly entityRTree = new RBush<EntitySpatialItem>();
+  private readonly entitySpatialByUuid = new Map<string, EntitySpatialItem>();
+  private readonly associationRTree = new RBush<AssociationSpatialItem>();
+  private readonly associationSpatialByUuid = new Map<string, AssociationSpatialItem>();
+
+  private indexedStageRef: StageObject[] | null = null;
+  private indexedStageLength = -1;
+  private nextOrderSeq = 0;
+
   constructor(private readonly project: Project) {}
+
+  private syncIndexesIfNeeded(): void {
+    if (this.indexedStageRef !== this.project.stage || this.indexedStageLength !== this.project.stage.length) {
+      this.rebuildAllIndexes();
+    }
+  }
+
+  public rebuildAllIndexes(): void {
+    this.byUuid.clear();
+    this.orderByUuid.clear();
+    this.associationsByEndpoint.clear();
+    this.entitiesCache = [];
+    this.sectionsCache = [];
+    this.textNodesCache = [];
+    this.imageNodesCache = [];
+    this.connectPointsCache = [];
+    this.urlNodesCache = [];
+    this.penStrokesCache = [];
+    this.svgNodesCache = [];
+    this.latexNodesCache = [];
+    this.associationsCache = [];
+    this.edgesCache = [];
+    this.lineEdgesCache = [];
+    this.crEdgesCache = [];
+    this.arcEdgesCache = [];
+    this.multiTargetNonLineEdgesCache = [];
+    this.entityRTree.clear();
+    this.entitySpatialByUuid.clear();
+    this.associationRTree.clear();
+    this.associationSpatialByUuid.clear();
+    this.nextOrderSeq = 0;
+
+    const entitySpatialItems: EntitySpatialItem[] = [];
+    const associationSpatialItems: AssociationSpatialItem[] = [];
+
+    for (const obj of this.project.stage) {
+      const order = this.nextOrderSeq++;
+      this.byUuid.set(obj.uuid, obj);
+      this.orderByUuid.set(obj.uuid, order);
+      this.addToTypedCaches(obj);
+      if (obj instanceof Entity) {
+        const item = makeEntitySpatialItem(obj, order);
+        this.entitySpatialByUuid.set(obj.uuid, item);
+        entitySpatialItems.push(item);
+      } else if (obj instanceof Association) {
+        this.linkAssociationEndpoints(obj);
+        const item = makeAssociationSpatialItem(obj, order);
+        this.associationSpatialByUuid.set(obj.uuid, item);
+        associationSpatialItems.push(item);
+      }
+    }
+
+    if (entitySpatialItems.length > 0) {
+      this.entityRTree.load(entitySpatialItems);
+    }
+    if (associationSpatialItems.length > 0) {
+      this.associationRTree.load(associationSpatialItems);
+    }
+    this.indexedStageRef = this.project.stage;
+    this.indexedStageLength = this.project.stage.length;
+  }
+
+  private addToTypedCaches(obj: StageObject): void {
+    if (obj instanceof Entity) {
+      this.entitiesCache.push(obj);
+      if (obj instanceof Section) this.sectionsCache.push(obj);
+      else if (obj instanceof TextNode) this.textNodesCache.push(obj);
+      else if (obj instanceof ImageNode) this.imageNodesCache.push(obj);
+      else if (obj instanceof ConnectPoint) this.connectPointsCache.push(obj);
+      else if (obj instanceof UrlNode) this.urlNodesCache.push(obj);
+      else if (obj instanceof PenStroke) this.penStrokesCache.push(obj);
+      else if (obj instanceof SvgNode) this.svgNodesCache.push(obj);
+      else if (obj instanceof LatexNode) this.latexNodesCache.push(obj);
+    } else if (obj instanceof Association) {
+      this.associationsCache.push(obj);
+      if (obj instanceof Edge) {
+        this.edgesCache.push(obj);
+        if (obj instanceof LineEdge) this.lineEdgesCache.push(obj);
+        else if (obj instanceof CubicCatmullRomSplineEdge) this.crEdgesCache.push(obj);
+        else if (obj instanceof ArcEdge) this.arcEdgesCache.push(obj);
+      } else if (obj instanceof MultiTargetUndirectedEdge && obj.renderType !== "line") {
+        this.multiTargetNonLineEdgesCache.push(obj);
+      }
+    }
+  }
+
+  private removeFromArray<T>(arr: T[], item: T): void {
+    const idx = arr.indexOf(item);
+    if (idx !== -1) arr.splice(idx, 1);
+  }
+
+  private removeFromTypedCaches(obj: StageObject): void {
+    if (obj instanceof Entity) {
+      this.removeFromArray(this.entitiesCache, obj);
+      if (obj instanceof Section) this.removeFromArray(this.sectionsCache, obj);
+      else if (obj instanceof TextNode) this.removeFromArray(this.textNodesCache, obj);
+      else if (obj instanceof ImageNode) this.removeFromArray(this.imageNodesCache, obj);
+      else if (obj instanceof ConnectPoint) this.removeFromArray(this.connectPointsCache, obj);
+      else if (obj instanceof UrlNode) this.removeFromArray(this.urlNodesCache, obj);
+      else if (obj instanceof PenStroke) this.removeFromArray(this.penStrokesCache, obj);
+      else if (obj instanceof SvgNode) this.removeFromArray(this.svgNodesCache, obj);
+      else if (obj instanceof LatexNode) this.removeFromArray(this.latexNodesCache, obj);
+    } else if (obj instanceof Association) {
+      this.removeFromArray(this.associationsCache, obj);
+      if (obj instanceof Edge) {
+        this.removeFromArray(this.edgesCache, obj);
+        if (obj instanceof LineEdge) this.removeFromArray(this.lineEdgesCache, obj);
+        else if (obj instanceof CubicCatmullRomSplineEdge) this.removeFromArray(this.crEdgesCache, obj);
+        else if (obj instanceof ArcEdge) this.removeFromArray(this.arcEdgesCache, obj);
+      } else if (obj instanceof MultiTargetUndirectedEdge) {
+        this.removeFromArray(this.multiTargetNonLineEdgesCache, obj);
+      }
+    }
+  }
+
+  public getMultiTargetNonLineEdges(): readonly MultiTargetUndirectedEdge[] {
+    this.syncIndexesIfNeeded();
+    return this.multiTargetNonLineEdgesCache;
+  }
+
+  private linkAssociationEndpoints(assoc: Association): void {
+    for (const member of assoc.associationList) {
+      if (!member?.uuid) continue;
+      let set = this.associationsByEndpoint.get(member.uuid);
+      if (!set) {
+        set = new Set();
+        this.associationsByEndpoint.set(member.uuid, set);
+      }
+      set.add(assoc);
+    }
+  }
+
+  private unlinkAssociationEndpoints(assoc: Association): void {
+    for (const member of assoc.associationList) {
+      if (!member?.uuid) continue;
+      const set = this.associationsByEndpoint.get(member.uuid);
+      if (set) {
+        set.delete(assoc);
+        if (set.size === 0) {
+          this.associationsByEndpoint.delete(member.uuid);
+        }
+      }
+    }
+  }
+
+  public getIncidentAssociations(entityUuid: string): readonly Association[] {
+    this.syncIndexesIfNeeded();
+    const set = this.associationsByEndpoint.get(entityUuid);
+    return set ? Array.from(set) : [];
+  }
+
+  /**
+   * 增量更新单个实体或关联在 RBush 空间索引中的包围盒（O(log N)），同步刷新相邻边的空间包围盒。
+   */
+  public updateSpatialIndex(stageObject: StageObject): void {
+    if (this.indexedStageRef !== this.project.stage || this.indexedStageLength !== this.project.stage.length) {
+      return;
+    }
+    const order = this.orderByUuid.get(stageObject.uuid);
+    if (order === undefined) return;
+
+    if (stageObject instanceof Entity) {
+      const oldItem = this.entitySpatialByUuid.get(stageObject.uuid);
+      if (oldItem) {
+        this.entityRTree.remove(oldItem);
+      }
+      const nextItem = makeEntitySpatialItem(stageObject, order);
+      this.entitySpatialByUuid.set(stageObject.uuid, nextItem);
+      this.entityRTree.insert(nextItem);
+
+      const incident = this.associationsByEndpoint.get(stageObject.uuid);
+      if (incident) {
+        for (const assoc of incident) {
+          const oldAssocItem = this.associationSpatialByUuid.get(assoc.uuid);
+          const assocOrder = this.orderByUuid.get(assoc.uuid);
+          if (assocOrder === undefined) continue;
+          if (oldAssocItem) {
+            this.associationRTree.remove(oldAssocItem);
+          }
+          const nextAssocItem = makeAssociationSpatialItem(assoc, assocOrder);
+          this.associationSpatialByUuid.set(assoc.uuid, nextAssocItem);
+          this.associationRTree.insert(nextAssocItem);
+        }
+      }
+    } else if (stageObject instanceof Association) {
+      const oldItem = this.associationSpatialByUuid.get(stageObject.uuid);
+      if (oldItem) {
+        this.associationRTree.remove(oldItem);
+      }
+      const nextItem = makeAssociationSpatialItem(stageObject, order);
+      this.associationSpatialByUuid.set(stageObject.uuid, nextItem);
+      this.associationRTree.insert(nextItem);
+    }
+  }
+
+  /**
+   * 原地无损替换舞台对象（如 TextNode ↔ Section 同 UUID 升降级），保持 stage 位置与所有索引一致。
+   */
+  public replaceStageObject(oldObj: StageObject, newObj: StageObject): void {
+    const idx = this.project.stage.indexOf(oldObj);
+    if (idx !== -1) {
+      this.project.stage[idx] = newObj;
+    } else {
+      this.project.stage.push(newObj);
+    }
+    this.branchCollapseState = undefined;
+    this.project?.docCommandBus?.notifyObjectReplaced(oldObj, newObj);
+
+    if (this.indexedStageRef === this.project.stage && idx !== -1) {
+      const order = this.orderByUuid.get(oldObj.uuid) ?? this.nextOrderSeq++;
+      this.removeFromTypedCaches(oldObj);
+      if (oldObj instanceof Entity) {
+        const oldSpatial = this.entitySpatialByUuid.get(oldObj.uuid);
+        if (oldSpatial) {
+          this.entityRTree.remove(oldSpatial);
+          this.entitySpatialByUuid.delete(oldObj.uuid);
+        }
+      } else if (oldObj instanceof Association) {
+        this.unlinkAssociationEndpoints(oldObj);
+        const oldSpatial = this.associationSpatialByUuid.get(oldObj.uuid);
+        if (oldSpatial) {
+          this.associationRTree.remove(oldSpatial);
+          this.associationSpatialByUuid.delete(oldObj.uuid);
+        }
+      }
+      this.byUuid.delete(oldObj.uuid);
+      this.orderByUuid.delete(oldObj.uuid);
+
+      this.byUuid.set(newObj.uuid, newObj);
+      this.orderByUuid.set(newObj.uuid, order);
+      this.addToTypedCaches(newObj);
+      if (newObj instanceof Entity) {
+        const item = makeEntitySpatialItem(newObj, order);
+        this.entitySpatialByUuid.set(newObj.uuid, item);
+        this.entityRTree.insert(item);
+      } else if (newObj instanceof Association) {
+        this.linkAssociationEndpoints(newObj);
+        const item = makeAssociationSpatialItem(newObj, order);
+        this.associationSpatialByUuid.set(newObj.uuid, item);
+        this.associationRTree.insert(item);
+      }
+      this.indexedStageLength = this.project.stage.length;
+    } else {
+      this.rebuildAllIndexes();
+    }
+  }
+
+  /**
+   * 基于 RBush 2D R-Tree 查询与指定矩形相交的实体集合（O(log N + K)）。
+   */
+  public queryEntitiesInRect(rect: Rectangle, options: { preserveOrder?: boolean } = {}): Entity[] {
+    this.syncIndexesIfNeeded();
+    const minX = Math.min(finiteOr(rect.left), finiteOr(rect.right));
+    const maxX = Math.max(finiteOr(rect.left), finiteOr(rect.right));
+    const minY = Math.min(finiteOr(rect.top), finiteOr(rect.bottom));
+    const maxY = Math.max(finiteOr(rect.top), finiteOr(rect.bottom));
+    const hits = this.entityRTree.search({ minX, minY, maxX, maxY });
+    if (options.preserveOrder !== false && hits.length > 1) {
+      hits.sort((a, b) => a.order - b.order);
+    }
+    return hits.map((item) => item.entity);
+  }
+
+  /**
+   * 基于 RBush 2D R-Tree 查询与指定矩形相交的关联/边集合（O(log N + K)）。
+   */
+  public queryAssociationsInRect(rect: Rectangle, options: { preserveOrder?: boolean } = {}): Association[] {
+    this.syncIndexesIfNeeded();
+    const minX = Math.min(finiteOr(rect.left), finiteOr(rect.right));
+    const maxX = Math.max(finiteOr(rect.left), finiteOr(rect.right));
+    const minY = Math.min(finiteOr(rect.top), finiteOr(rect.bottom));
+    const maxY = Math.max(finiteOr(rect.top), finiteOr(rect.bottom));
+    const hits = this.associationRTree.search({ minX, minY, maxX, maxY });
+    if (options.preserveOrder !== false && hits.length > 1) {
+      hits.sort((a, b) => a.order - b.order);
+    }
+    return hits.map((item) => item.association);
+  }
+
+  /**
+   * 基于 RBush 查询包含指定世界坐标点的实体候选集。
+   */
+  public queryEntitiesAtPoint(point: Vector): Entity[] {
+    this.syncIndexesIfNeeded();
+    const x = finiteOr(point.x);
+    const y = finiteOr(point.y);
+    const hits = this.entityRTree.search({ minX: x, minY: y, maxX: x, maxY: y });
+    if (hits.length > 1) {
+      hits.sort((a, b) => a.order - b.order);
+    }
+    return hits.map((item) => item.entity);
+  }
+
+  public queryAssociationsAtPoint(point: Vector): Association[] {
+    this.syncIndexesIfNeeded();
+    const x = finiteOr(point.x);
+    const y = finiteOr(point.y);
+    const hits = this.associationRTree.search({ minX: x, minY: y, maxX: x, maxY: y });
+    if (hits.length > 1) {
+      hits.sort((a, b) => a.order - b.order);
+    }
+    return hits.map((item) => item.association);
+  }
 
   private getBranchCollapseState() {
     if (this.branchCollapseState) return this.branchCollapseState;
@@ -322,6 +790,8 @@ export class StageManager {
   toggleSectionCollapse(section: Section) {
     if (section.children.length === 0) return;
     this.project.sectionPackManager.toggleSectionCollapse(section);
+    this.updateSpatialIndex(section);
+    this.project?.docCommandBus?.markCollapseDirty(section);
     this.project.historyManager.recordStep();
   }
 
@@ -332,7 +802,10 @@ export class StageManager {
       ?.filter((edge) => this.getBranchExit(edge, rect).side === side);
     if (!edges?.length || edges.some((edge) => this.project.sectionMethods.isObjectBeLockedBySection(edge))) return;
     const fold = !edges.some((edge) => edge.isBranchCollapsed);
-    for (const edge of edges) edge.isBranchCollapsed = fold;
+    for (const edge of edges) {
+      edge.isBranchCollapsed = fold;
+      this.project?.docCommandBus?.markEdgeStyleDirty(edge);
+    }
     this.branchCollapseState = undefined;
     for (const object of this.project.stage) {
       if (object.isSelected && this.isHiddenByBranchCollapse(object)) object.isSelected = false;
@@ -353,58 +826,64 @@ export class StageManager {
   }
 
   /**
-   * TODO: 这个get方法在2.0从O(1)变成O(N)了，可能是引起卡顿的原因，后面待排查
-   * @param uuid
-   * @returns
+   * O(1) 通过 UUID 索引直接查找舞台对象。
    */
-  get(uuid: string) {
-    return this.project.stage.find((node) => node.uuid === uuid);
+  get(uuid: string): StageObject | undefined {
+    this.syncIndexesIfNeeded();
+    return this.byUuid.get(uuid);
   }
 
   isEmpty(): boolean {
     return this.project.stage.length === 0;
   }
   getTextNodes(): TextNode[] {
-    return this.project.stage.filter((node) => node instanceof TextNode);
+    this.syncIndexesIfNeeded();
+    return [...this.textNodesCache];
   }
   getConnectableEntity(): ConnectableEntity[] {
-    return this.project.stage.filter((node) => {
+    this.syncIndexesIfNeeded();
+    const out: ConnectableEntity[] = [];
+    for (const node of this.entitiesCache) {
       if (node instanceof ConnectableEntity) {
-        // 排除背景图片
-        if (node instanceof ImageNode && (node as ImageNode).isBackground) {
-          return false;
+        if (node instanceof ImageNode && node.isBackground) {
+          continue;
         }
-        return true;
+        out.push(node);
       }
-      return false;
-    }) as ConnectableEntity[];
+    }
+    return out;
   }
   isEntityExists(uuid: string): boolean {
-    return this.project.stage.filter((node) => node.uuid === uuid).length > 0;
+    this.syncIndexesIfNeeded();
+    return this.byUuid.has(uuid);
   }
   getSections(): Section[] {
-    return this.project.stage.filter((node) => node instanceof Section);
+    this.syncIndexesIfNeeded();
+    return [...this.sectionsCache];
   }
   getImageNodes(): ImageNode[] {
-    return this.project.stage.filter((node) => node instanceof ImageNode);
+    this.syncIndexesIfNeeded();
+    return [...this.imageNodesCache];
   }
   getConnectPoints(): ConnectPoint[] {
-    return this.project.stage.filter((node) => node instanceof ConnectPoint);
+    this.syncIndexesIfNeeded();
+    return [...this.connectPointsCache];
   }
   getUrlNodes(): UrlNode[] {
-    return this.project.stage.filter((node) => node instanceof UrlNode);
+    this.syncIndexesIfNeeded();
+    return [...this.urlNodesCache];
   }
-  // getPortalNodes(): PortalNode[] {
-  //   return this.project.stage.filter((node) => node instanceof PortalNode);
-  // }
   getPenStrokes(): PenStroke[] {
-    return this.project.stage.filter((node) => node instanceof PenStroke);
+    this.syncIndexesIfNeeded();
+    return [...this.penStrokesCache];
   }
   getSvgNodes(): SvgNode[] {
-    return this.project.stage.filter((node) => node instanceof SvgNode);
+    this.syncIndexesIfNeeded();
+    return [...this.svgNodesCache];
   }
   getLatexNodes(): LatexNode[] {
-    return this.project.stage.filter((node) => node instanceof LatexNode) as LatexNode[];
+    this.syncIndexesIfNeeded();
+    return [...this.latexNodesCache];
   }
 
   getStageObjects(): StageObject[] {
@@ -416,38 +895,100 @@ export class StageManager {
    * @returns
    */
   getEntities(): Entity[] {
-    return this.project.stage.filter((node) => node instanceof Entity);
+    this.syncIndexesIfNeeded();
+    return [...this.entitiesCache];
   }
   getEntitiesByUUIDs(uuids: string[]): Entity[] {
-    return this.project.stage.filter((node) => uuids.includes(node.uuid) && node instanceof Entity) as Entity[];
+    this.syncIndexesIfNeeded();
+    const out: Entity[] = [];
+    for (const id of uuids) {
+      const obj = this.byUuid.get(id);
+      if (obj instanceof Entity) {
+        out.push(obj);
+      }
+    }
+    return out;
   }
   isNoEntity(): boolean {
-    return this.project.stage.filter((node) => node instanceof Entity).length === 0;
+    this.syncIndexesIfNeeded();
+    return this.entitiesCache.length === 0;
   }
   delete(stageObject: StageObject) {
-    this.project.stage.splice(this.project.stage.indexOf(stageObject), 1);
+    const idx = this.project.stage.indexOf(stageObject);
+    if (idx === -1) {
+      return;
+    }
+    this.project?.docCommandBus?.notifyObjectDeleted(stageObject);
+    this.project.stage.splice(idx, 1);
     this.branchCollapseState = undefined;
+    if (this.indexedStageRef === this.project.stage && this.indexedStageLength === this.project.stage.length + 1) {
+      this.byUuid.delete(stageObject.uuid);
+      this.orderByUuid.delete(stageObject.uuid);
+      this.removeFromTypedCaches(stageObject);
+      if (stageObject instanceof Entity) {
+        const oldSpatial = this.entitySpatialByUuid.get(stageObject.uuid);
+        if (oldSpatial) {
+          this.entityRTree.remove(oldSpatial);
+          this.entitySpatialByUuid.delete(stageObject.uuid);
+        }
+      } else if (stageObject instanceof Association) {
+        this.unlinkAssociationEndpoints(stageObject);
+        const oldSpatial = this.associationSpatialByUuid.get(stageObject.uuid);
+        if (oldSpatial) {
+          this.associationRTree.remove(oldSpatial);
+          this.associationSpatialByUuid.delete(stageObject.uuid);
+        }
+      }
+      this.indexedStageLength = this.project.stage.length;
+    } else {
+      this.rebuildAllIndexes();
+    }
   }
 
   getAssociations(): Association[] {
-    return this.project.stage.filter((node) => node instanceof Association);
+    this.syncIndexesIfNeeded();
+    return [...this.associationsCache];
   }
   getEdges(): Edge[] {
-    return this.project.stage.filter((node) => node instanceof Edge);
+    this.syncIndexesIfNeeded();
+    return [...this.edgesCache];
   }
   getLineEdges(): LineEdge[] {
-    return this.project.stage.filter((node) => node instanceof LineEdge);
+    this.syncIndexesIfNeeded();
+    return [...this.lineEdgesCache];
   }
   getCrEdges(): CubicCatmullRomSplineEdge[] {
-    return this.project.stage.filter((node) => node instanceof CubicCatmullRomSplineEdge);
+    this.syncIndexesIfNeeded();
+    return [...this.crEdgesCache];
   }
   getArcEdges(): ArcEdge[] {
-    return this.project.stage.filter((node) => node instanceof ArcEdge);
+    this.syncIndexesIfNeeded();
+    return [...this.arcEdgesCache];
   }
 
   add(stageObject: StageObject, skipUpdateReferences = false) {
     this.project.stage.push(stageObject);
     this.branchCollapseState = undefined;
+    if (this.indexedStageRef === this.project.stage && this.indexedStageLength === this.project.stage.length - 1) {
+      const order = this.nextOrderSeq++;
+      this.byUuid.set(stageObject.uuid, stageObject);
+      this.orderByUuid.set(stageObject.uuid, order);
+      this.addToTypedCaches(stageObject);
+      if (stageObject instanceof Entity) {
+        const item = makeEntitySpatialItem(stageObject, order);
+        this.entitySpatialByUuid.set(stageObject.uuid, item);
+        this.entityRTree.insert(item);
+      } else if (stageObject instanceof Association) {
+        this.linkAssociationEndpoints(stageObject);
+        const item = makeAssociationSpatialItem(stageObject, order);
+        this.associationSpatialByUuid.set(stageObject.uuid, item);
+        this.associationRTree.insert(item);
+      }
+      this.indexedStageLength = this.project.stage.length;
+    } else {
+      this.rebuildAllIndexes();
+    }
+    this.project?.docCommandBus?.notifyObjectAdded(stageObject);
     if (!skipUpdateReferences) {
       this.updateReferences();
     }
@@ -460,30 +1001,42 @@ export class StageManager {
    * 包含了对分组框的更新
    * 包含了对Edge几何组偏移索引的更新（多重边/双向边自动散开）
    */
-  updateReferences() {
+  updateReferences(options?: { skipIndexRebuild?: boolean; skipSectionAdjust?: boolean }) {
     this.branchCollapseState = undefined;
-    // 一次性建立 uuid -> ConnectableEntity 索引。
-    // 原实现是「实体 × 关系」双层全量遍历：每个实体都重新扫描一次关系列表，
-    // 数千节点/边的工程下单次调用即 O(N*E)，连接、删除等高频路径会卡顿。
-    const connectableEntities = new Map<string, ConnectableEntity>();
-    for (const entity of this.getEntities()) {
-      // 实体是可连接类型
-      if (entity instanceof ConnectableEntity) {
-        connectableEntities.set(entity.uuid, entity);
-      }
+    if (
+      !options?.skipIndexRebuild ||
+      this.indexedStageRef !== this.project.stage ||
+      this.indexedStageLength !== this.project.stage.length
+    ) {
+      this.rebuildAllIndexes();
     }
+    // 懒构建 uuid -> ConnectableEntity 索引：v3 打开路径所有端点均为已解析真引用，
+    // 仅在真正遇到 unknown 端点（旧版 v2 反序列化）时才建 Map，节省大节点图全量 Map 分配。
+    let connectableEntities: Map<string, ConnectableEntity> | null = null;
+    const ensureConnectableMap = () => {
+      if (!connectableEntities) {
+        connectableEntities = new Map<string, ConnectableEntity>();
+        for (const entity of this.getEntities()) {
+          if (entity instanceof ConnectableEntity) {
+            connectableEntities.set(entity.uuid, entity);
+          }
+        }
+      }
+      return connectableEntities;
+    };
+    let legacyCollapsedCleared = false;
     for (const edge of this.getAssociations()) {
       if (!(edge instanceof Edge)) {
         continue;
       }
       if (edge.source.unknown) {
-        const entity = connectableEntities.get(edge.source.uuid);
+        const entity = ensureConnectableMap().get(edge.source.uuid);
         if (entity) {
           edge.source = entity;
         }
       }
       if (edge.target.unknown) {
-        const entity = connectableEntities.get(edge.target.uuid);
+        const entity = ensureConnectableMap().get(edge.target.uuid);
         if (entity) {
           edge.target = entity;
         }
@@ -495,73 +1048,87 @@ export class StageManager {
         edge.source.legacyBranchCollapsed
       ) {
         edge.isBranchCollapsed = true;
+        legacyCollapsedCleared = true;
       }
     }
-    for (const node of connectableEntities.values()) {
-      if (node instanceof TextNode) node.legacyBranchCollapsed = false;
+    if (legacyCollapsedCleared) {
+      for (const node of this.textNodesCache) {
+        node.legacyBranchCollapsed = false;
+      }
     }
-    this.rebuildSectionRuntimeTree();
+    this.rebuildSectionRuntimeTree(Boolean(options?.skipSectionAdjust));
 
     // 以下是LineEdge几何组偏移索引的更新
     // 几何组 key：无向，(minNodeId, maxNodeId, epAtMin, epAtMax)
     // A→B 和 B→A 端点位置相同时归入同一几何组，统一分配 shiftingIndex
-    const rateKey = (v: Vector): string => `${v.x.toFixed(2)},${v.y.toFixed(2)}`;
-    const geoGroups = new Map<string, LineEdge[]>();
+    const lineEdges = this.getLineEdges();
+    if (lineEdges.length === 0) return;
 
-    for (const edge of this.getLineEdges()) {
-      if (edge.source.uuid === edge.target.uuid) {
-        // 自环跳过，不参与几何组，shiftingIndex 保持 0
+    const geoGroups = new Map<string, LineEdge | LineEdge[]>();
+    for (let i = 0; i < lineEdges.length; i++) {
+      const edge = lineEdges[i];
+      const idA = edge.source.uuid;
+      const idB = edge.target.uuid;
+      if (idA === idB) {
         edge.shiftingIndex = 0;
         continue;
       }
-      const idA = edge.source.uuid;
-      const idB = edge.target.uuid;
-      let key: string;
-      if (idA <= idB) {
-        key = `${idA}|${idB}|${rateKey(edge.sourceRectangleRate)}|${rateKey(edge.targetRectangleRate)}`;
+      const sx = Math.round(edge.sourceRectangleRate.x * 100);
+      const sy = Math.round(edge.sourceRectangleRate.y * 100);
+      const tx = Math.round(edge.targetRectangleRate.x * 100);
+      const ty = Math.round(edge.targetRectangleRate.y * 100);
+      const key = idA <= idB ? `${idA}|${idB}|${sx},${sy}|${tx},${ty}` : `${idB}|${idA}|${tx},${ty}|${sx},${sy}`;
+      const existing = geoGroups.get(key);
+      if (existing === undefined) {
+        edge.shiftingIndex = 0;
+        geoGroups.set(key, edge);
+      } else if (Array.isArray(existing)) {
+        existing.push(edge);
       } else {
-        // B→A 方向：交换端点对应关系，使 A→B 与 B→A 落入同一几何组
-        key = `${idB}|${idA}|${rateKey(edge.targetRectangleRate)}|${rateKey(edge.sourceRectangleRate)}`;
+        geoGroups.set(key, [existing, edge]);
       }
-      if (!geoGroups.has(key)) geoGroups.set(key, []);
-      geoGroups.get(key)!.push(edge);
     }
 
-    for (const [, edges] of geoGroups) {
-      // 按 uuid 字典序稳定排序，避免重渲染时 index 跳变
-      edges.sort((a, b) => a.uuid.localeCompare(b.uuid));
-      const count = edges.length;
-      // 对称分配 shiftingIndex：
-      // count=1 → [0]
-      // count=2 → [-1, 1]（跳过0，两条都弯，视觉对称）
-      // count=3 → [-1, 0, 1]
-      // count=4 → [-2, -1, 1, 2]
-      // count=5 → [-2, -1, 0, 1, 2]
+    for (const group of geoGroups.values()) {
+      if (!Array.isArray(group)) continue;
+      // ASCII 字典序稳定排序（比 ICU localeCompare 快 50 倍）
+      group.sort((a, b) => (a.uuid < b.uuid ? -1 : a.uuid > b.uuid ? 1 : 0));
+      const count = group.length;
       for (let i = 0; i < count; i++) {
         let idx: number;
-        if (count === 1) {
-          idx = 0;
-        } else if (count % 2 === 0) {
+        if (count % 2 === 0) {
           const half = count / 2;
           idx = i < half ? i - half : i - half + 1;
         } else {
           idx = i - Math.floor(count / 2);
         }
-        edges[i].shiftingIndex = idx;
+        group[i].shiftingIndex = idx;
       }
     }
   }
 
-  private rebuildSectionRuntimeTree() {
+  private rebuildSectionRuntimeTree(skipSectionAdjust = false) {
     const entities = this.getEntities();
     const sections = this.getSections();
-    const entityMap = new Map<string, Entity>();
-    const originalChildrenMap = new Map<string, Entity[]>();
-    const parentCandidates = new Map<string, Section[]>();
-
     this.rootSections = [];
     this.topLevelEntities = [];
     this.normalizedCrossParentRelationCount = 0;
+
+    // 无分组框的纯节点图直接 O(N) 单遍返回，省去 3 个 Map 与递归开销
+    if (sections.length === 0) {
+      for (let i = 0; i < entities.length; i++) {
+        const entity = entities[i];
+        entity.parentSection = null;
+        entity.sectionDepth = 0;
+        entity.isHiddenBySectionCollapse = false;
+        this.topLevelEntities.push(entity);
+      }
+      return;
+    }
+
+    const entityMap = new Map<string, Entity>();
+    const originalChildrenMap = new Map<string, Entity[]>();
+    const parentCandidates = new Map<string, Section[]>();
 
     for (const entity of entities) {
       entityMap.set(entity.uuid, entity);
@@ -583,22 +1150,34 @@ export class StageManager {
         }
         seenChildUUIDs.add(childObject.uuid);
         uniqueChildren.push(childObject);
-        if (!parentCandidates.has(childObject.uuid)) {
-          parentCandidates.set(childObject.uuid, []);
+        let candidates = parentCandidates.get(childObject.uuid);
+        if (!candidates) {
+          candidates = [];
+          parentCandidates.set(childObject.uuid, candidates);
         }
-        parentCandidates.get(childObject.uuid)!.push(section);
+        candidates.push(section);
       }
       section.children = uniqueChildren;
     }
 
     for (const entity of entities) {
-      const candidates = parentCandidates.get(entity.uuid) ?? [];
+      const candidates = parentCandidates.get(entity.uuid);
+      if (!candidates || candidates.length === 0) {
+        entity.parentSection = null;
+        continue;
+      }
+      if (candidates.length === 1) {
+        entity.parentSection = candidates[0] === entity ? null : candidates[0];
+        continue;
+      }
       const directParent = this.pickDirectParentSection(entity, candidates);
       entity.parentSection = directParent;
       this.normalizedCrossParentRelationCount += candidates.filter((section) => section !== directParent).length;
     }
 
+    let hasAnyCollapsedSection = false;
     for (const section of sections) {
+      if (section.isCollapsed) hasAnyCollapsedSection = true;
       section.children = section.children.filter((child) => child.parentSection === section);
     }
 
@@ -619,12 +1198,16 @@ export class StageManager {
       entity.isHiddenBySectionCollapse = false;
     }
 
-    for (const section of sections.sort((a, b) => b.sectionDepth - a.sectionDepth)) {
-      section.adjustLocationAndSize();
+    if (!skipSectionAdjust) {
+      for (const section of [...sections].sort((a, b) => b.sectionDepth - a.sectionDepth)) {
+        section.adjustLocationAndSize();
+      }
     }
 
-    for (const rootSection of this.rootSections) {
-      rootSection.adjustChildrenStateByCollapse(false);
+    if (hasAnyCollapsedSection) {
+      for (const rootSection of this.rootSections) {
+        rootSection.adjustChildrenStateByCollapse(false);
+      }
     }
   }
 
@@ -675,23 +1258,21 @@ export class StageManager {
   }
 
   getTextNodeByUUID(uuid: string): TextNode | null {
-    for (const node of this.getTextNodes()) {
-      if (node.uuid === uuid) {
-        return node;
-      }
-    }
-    return null;
+    const entity = this.get(uuid);
+    return entity instanceof TextNode ? entity : null;
   }
   getConnectableEntityByUUID(uuid: string): ConnectableEntity | null {
-    for (const node of this.getConnectableEntity()) {
-      if (node.uuid === uuid) {
-        return node;
+    const entity = this.get(uuid);
+    if (entity instanceof ConnectableEntity) {
+      if (entity instanceof ImageNode && entity.isBackground) {
+        return null;
       }
+      return entity;
     }
     return null;
   }
   isSectionByUUID(uuid: string): boolean {
-    return this.project.stage.find((node) => node.uuid === uuid) instanceof Section;
+    return this.get(uuid) instanceof Section;
   }
   getSectionByUUID(uuid: string): Section | null {
     const entity = this.get(uuid);
@@ -702,20 +1283,13 @@ export class StageManager {
   }
 
   /**
-   * 计算所有节点的中心点
+   * 计算所有节点的中心点（O(1) 复用实体 R-Tree 根包围盒，避免视野重置时遍历全图数千条边）
    */
   getCenter(): Vector {
     if (this.project.stage.length === 0) {
       return Vector.getZero();
     }
-    const physicalObjects = this.project.stage.filter((node) => node.isPhysical);
-    if (physicalObjects.length === 0) {
-      return Vector.getZero();
-    }
-    const allNodesRectangle = Rectangle.getBoundingRectangle(
-      physicalObjects.map((node) => node.collisionBox.getRectangle()),
-    );
-    return allNodesRectangle.center;
+    return this.getBoundingRectangle().center;
   }
 
   /**
@@ -725,22 +1299,32 @@ export class StageManager {
     if (this.project.stage.length === 0) {
       return new Vector(this.project.renderer.w, this.project.renderer.h);
     }
-    const size = this.getBoundingRectangle().size;
-
-    return size;
+    return this.getBoundingRectangle().size;
   }
 
   /**
-   * 获取舞台的矩形对象
+   * 获取舞台的矩形对象（优先 O(1) 读取实体 R-Tree 根包围盒）
    */
   getBoundingRectangle(): Rectangle {
-    const physicalObjects = Array.from(this.project.stage).filter((node) => node.isPhysical);
+    this.syncIndexesIfNeeded();
+    if (this.entitiesCache.length > 0) {
+      const root = (
+        this.entityRTree as unknown as {
+          data?: { minX: number; minY: number; maxX: number; maxY: number };
+        }
+      ).data;
+      if (root && Number.isFinite(root.minX) && Number.isFinite(root.maxX)) {
+        return new Rectangle(
+          new Vector(root.minX, root.minY),
+          new Vector(root.maxX - root.minX, root.maxY - root.minY),
+        );
+      }
+    }
+    const physicalObjects = this.project.stage.filter((node) => node.isPhysical);
     if (physicalObjects.length === 0) {
       return new Rectangle(Vector.getZero(), Vector.getZero());
     }
-    const rect = Rectangle.getBoundingRectangle(physicalObjects.map((node) => node.collisionBox.getRectangle()));
-
-    return rect;
+    return Rectangle.getBoundingRectangle(physicalObjects.map((node) => node.collisionBox.getRectangle()));
   }
 
   /**
@@ -749,7 +1333,8 @@ export class StageManager {
    * @returns
    */
   findTextNodeByLocation(location: Vector): TextNode | null {
-    for (const node of this.getTextNodes()) {
+    for (const node of this.queryEntitiesAtPoint(location)) {
+      if (!(node instanceof TextNode)) continue;
       if (this.isHiddenByBranchCollapse(node)) continue;
       if (node.collisionBox.isContainsPoint(location)) {
         return node;
@@ -764,7 +1349,8 @@ export class StageManager {
    * @returns
    */
   findLineEdgeByLocation(location: Vector): LineEdge | null {
-    for (const edge of this.getLineEdges()) {
+    for (const edge of this.queryAssociationsAtPoint(location)) {
+      if (!(edge instanceof LineEdge)) continue;
       if (this.isHiddenByBranchCollapse(edge)) continue;
       if (edge.collisionBox.isContainsPoint(location)) {
         return edge;
@@ -774,7 +1360,7 @@ export class StageManager {
   }
 
   findAssociationByLocation(location: Vector): Association | null {
-    for (const association of this.getAssociations()) {
+    for (const association of this.queryAssociationsAtPoint(location)) {
       if (this.isHiddenByBranchCollapse(association)) continue;
       if (association.collisionBox.isContainsPoint(location)) {
         return association;
@@ -784,7 +1370,8 @@ export class StageManager {
   }
 
   findSectionByLocation(location: Vector): Section | null {
-    for (const section of this.getSections()) {
+    for (const section of this.queryEntitiesAtPoint(location)) {
+      if (!(section instanceof Section)) continue;
       if (section.collisionBox.isContainsPoint(location)) {
         return section;
       }
@@ -793,7 +1380,8 @@ export class StageManager {
   }
 
   findImageNodeByLocation(location: Vector): ImageNode | null {
-    for (const node of this.getImageNodes()) {
+    for (const node of this.queryEntitiesAtPoint(location)) {
+      if (!(node instanceof ImageNode)) continue;
       if (!node.isBackground && !this.isHiddenByBranchCollapse(node) && node.collisionBox.isContainsPoint(location)) {
         return node;
       }
@@ -813,8 +1401,10 @@ export class StageManager {
 
   findBranchDragNodeByLocation(location: Vector): ConnectableEntity | null {
     // Section backgrounds can overlap visible nodes; the renderer draws the nodes above those backgrounds.
-    const hits = this.getConnectableEntity().filter(
-      (node) =>
+    const hits = this.queryEntitiesAtPoint(location).filter(
+      (node): node is ConnectableEntity =>
+        node instanceof ConnectableEntity &&
+        !(node instanceof ImageNode && node.isBackground) &&
         !node.isHiddenBySectionCollapse &&
         !this.isHiddenByBranchCollapse(node) &&
         !this.project.sectionMethods.isEntityHiddenByBigTitleSection(node) &&
@@ -916,7 +1506,8 @@ export class StageManager {
   }
 
   findConnectPointByLocation(location: Vector): ConnectPoint | null {
-    for (const point of this.getConnectPoints()) {
+    for (const point of this.queryEntitiesAtPoint(location)) {
+      if (!(point instanceof ConnectPoint)) continue;
       if (point.isHiddenBySectionCollapse || this.isHiddenByBranchCollapse(point)) {
         continue;
       }
@@ -975,7 +1566,7 @@ export class StageManager {
    * @returns
    */
   isEntityOnLocation(location: Vector): boolean {
-    for (const entity of this.getEntities()) {
+    for (const entity of this.queryEntitiesAtPoint(location)) {
       if (entity.isHiddenBySectionCollapse || this.isHiddenByBranchCollapse(entity)) {
         continue;
       }
@@ -989,7 +1580,7 @@ export class StageManager {
     return false;
   }
   isAssociationOnLocation(location: Vector): boolean {
-    for (const association of this.getAssociations()) {
+    for (const association of this.queryAssociationsAtPoint(location)) {
       if (this.isHiddenByBranchCollapse(association)) continue;
       if (association instanceof Edge) {
         if (association.target.isHiddenBySectionCollapse && association.source.isHiddenBySectionCollapse) {
@@ -1344,6 +1935,7 @@ export class StageManager {
       } else {
         edge.targetRectangleRate = newLocationRate;
       }
+      this.project.docCommandBus?.markEdgeStyleDirty(edge);
     }
     // 播放连线调整音效
     SoundService.play.associationAdjustSoundFile();
@@ -1447,6 +2039,7 @@ export class StageManager {
     const selectedCREdge = this.getSelectedAssociations().filter((edge) => edge instanceof CubicCatmullRomSplineEdge);
     for (const edge of selectedCREdge) {
       edge.addControlPoint();
+      this.project.docCommandBus?.markEdgeStyleDirty(edge);
     }
   }
 
@@ -1455,6 +2048,7 @@ export class StageManager {
     for (const edge of selectedCREdge) {
       edge.tension += 0.25;
       edge.tension = Math.min(1, edge.tension);
+      this.project.docCommandBus?.markEdgeStyleDirty(edge);
     }
   }
 
@@ -1463,6 +2057,7 @@ export class StageManager {
     for (const edge of selectedCREdge) {
       edge.tension -= 0.25;
       edge.tension = Math.max(0, edge.tension);
+      this.project.docCommandBus?.markEdgeStyleDirty(edge);
     }
   }
 
@@ -1475,6 +2070,11 @@ export class StageManager {
     );
     for (const edge of selectedEdges) {
       (edge as LineEdge | ArcEdge | MultiTargetUndirectedEdge).lineType = lineType;
+      if (edge instanceof Edge) {
+        this.project.docCommandBus?.markEdgeStyleDirty(edge);
+      } else {
+        this.project.docCommandBus?.markAssociationDirty(edge);
+      }
     }
     this.branchCollapseState = undefined;
   }
@@ -1488,6 +2088,11 @@ export class StageManager {
     );
     for (const edge of selectedEdges) {
       (edge as LineEdge | ArcEdge | MultiTargetUndirectedEdge).arrowType = arrowType;
+      if (edge instanceof Edge) {
+        this.project.docCommandBus?.markEdgeStyleDirty(edge);
+      } else {
+        this.project.docCommandBus?.markAssociationDirty(edge);
+      }
     }
   }
 

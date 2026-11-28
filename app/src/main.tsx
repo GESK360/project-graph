@@ -11,7 +11,18 @@ import { Settings } from "@/core/service/Settings";
 import { Tutorials } from "@/core/service/Tutorials";
 import { UserState } from "@/core/service/UserState";
 import { EdgeCollisionBoxGetter } from "@/core/stage/stageObject/association/EdgeCollisionBoxGetter";
-import { type AuthUser, currentUserAtom, isAuthLoadingAtom, store, tabsAtom } from "@/state";
+import { loadAllServicesAfterInit, loadAllServicesBeforeInit } from "@/core/loadAllServices";
+import { Project } from "@/core/Project";
+import { TabWorkspace } from "@/core/TabWorkspace";
+import {
+  activeResourceTabAtom,
+  activeTabAtom,
+  type AuthUser,
+  currentUserAtom,
+  isAuthLoadingAtom,
+  store,
+  tabsAtom,
+} from "@/state";
 import { exit, writeStderr } from "@/utils/otherApi";
 import { isDesktop, isMobile, isWeb } from "@/utils/platform";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -33,7 +44,7 @@ import App from "./App";
 import { ExtensionManager } from "./core/extension/ExtensionManager";
 import { handleDeepLink, isProjectGraphDeepLink } from "./core/service/dataFileService/DeepLinkHandler";
 import { LocalDocumentSync } from "./core/service/dataFileService/LocalDocumentSync";
-import { onNewDraft, onOpenFile } from "./core/service/GlobalMenu";
+import { closeEmptyDrafts, onNewDraft, onOpenFile } from "./core/service/GlobalMenu";
 import { installWorkspaceCrossWindowListeners } from "./core/service/workspace/WorkspacePageOps";
 import WelcomeWindow from "./sub/WelcomeWindow";
 import "./css/index.css";
@@ -48,83 +59,16 @@ const el = document.getElementById("root")!;
 let cliMode = false;
 let appRendered = false;
 
-// 建议挂载根节点前的一系列操作统一写成函数，
-// 在这里看着清爽一些，像一个列表清单一样。也方便调整顺序
+const isStandbyBoot =
+  typeof window !== "undefined" && Boolean((window as unknown as { __PG_STANDBY__?: boolean }).__PG_STANDBY__);
 
-(async () => {
-  const isCliDesktopAcceptance =
-    import.meta.env.DEV && new URLSearchParams(window.location.search).has("cli-desktop-acceptance");
-  try {
-    if (isCliDesktopAcceptance) {
-      await invoke("write_cli_desktop_acceptance_state", {
-        state: { phase: "initializing", step: "application" },
-      });
-    }
-    const currentWindowLabel = !isWeb && isDesktop && isTauri() ? getCurrentWindow().label : "main";
-    const isMainWindow = currentWindowLabel === "main";
-    const matches = isMainWindow && !isCliDesktopAcceptance && !isWeb && isDesktop ? await getMatches() : null;
-    const isCliMode = isMainWindow && isDesktop && matches?.args.output?.occurrences === 1;
-    cliMode = isCliMode || isCliDesktopAcceptance;
-    await Promise.all([
-      RecentFileManager.init(),
-      StartFilesManager.init(),
-      ColorManager.init(),
-      Tutorials.init(),
-      UserState.init(),
-      QuickSettingsManager.init(),
-      // 扩展加载失败不应阻断主程序启动（否则 renderApp 不会执行，窗口为空白）
-      ExtensionManager.init().catch((e) => {
-        console.error("[ExtensionManager] 扩展初始化失败，已跳过：", e);
-      }),
-    ]);
-    if (isCliDesktopAcceptance) {
-      await invoke("write_cli_desktop_acceptance_state", {
-        state: { phase: "initializing", step: "application-services" },
-      });
-    }
-    // 这些东西依赖上面的东西，所以单独一个Promise.all
-    await Promise.all([loadLanguageFiles(), loadSyncModules(), ...(isCliDesktopAcceptance ? [] : [initAuth()])]);
-    AutoSaveOnSwitch.install();
-    if (!isWeb && isDesktop && isTauri()) {
-      await Promise.all([LocalDocumentSync.ensureListeners(), installWorkspaceCrossWindowListeners()]);
-    }
-    await renderApp(isCliMode, isCliDesktopAcceptance);
-    appRendered = true;
-    if (isCliDesktopAcceptance) {
-      await invoke("write_cli_desktop_acceptance_state", {
-        state: { phase: "initializing", step: "application-rendered" },
-      });
-      const { runProjectGraphCliDesktopAcceptanceHost } = await import("./cli/ProjectGraphCliDesktopAcceptanceHost");
-      await runProjectGraphCliDesktopAcceptanceHost();
-      return;
-    }
-    await loadStartFile(isMainWindow);
-    if (!isCliMode) {
-      await ensureStartupDraftAndWelcome(isMainWindow);
-      await reopenWorkspacePanel();
-    }
-    if (isCliMode) {
-      try {
-        await runCli(matches);
-        exit();
-      } catch (e) {
-        writeStderr(String(e));
-        exit(1);
-      }
-    }
-  } catch (error) {
-    if (isCliDesktopAcceptance) {
-      await invoke("write_cli_desktop_acceptance_state", {
-        state: { phase: "error", message: error instanceof Error ? (error.stack ?? error.message) : String(error) },
-      });
-    }
-    if (!appRendered && !cliMode && !isCliDesktopAcceptance) {
-      await renderStartupError(error);
-      return;
-    }
-    throw error;
-  }
-})();
+const localeLoaders: Record<string, () => Promise<{ default: Record<string, Record<string, unknown>> }>> = {
+  en: () => import("./locales/en.yml"),
+  zh_CN: () => import("./locales/zh_CN.yml"),
+  zh_TW: () => import("./locales/zh_TW.yml"),
+  zh_TWC: () => import("./locales/zh_TWC.yml"),
+  id: () => import("./locales/id.yml"),
+};
 
 /** 加载同步初始化的模块 */
 async function loadSyncModules() {
@@ -159,28 +103,38 @@ async function initAuth() {
   }
 }
 
-/** 加载语言文件 */
+async function ensureLocaleBundleLoaded(lng: string) {
+  const loader = localeLoaders[lng] ?? localeLoaders.zh_CN;
+  const bundle = (await loader()).default;
+  for (const [ns, data] of Object.entries(bundle)) {
+    if (!i18next.hasResourceBundle(lng, ns)) {
+      i18next.addResourceBundle(lng, ns, data, true, true);
+    }
+  }
+}
+
+/** 仅加载当前激活语言包（其余语言按需懒加载），大幅缩短新窗口启动耗时 */
 async function loadLanguageFiles() {
+  const activeLng = Settings.language in localeLoaders ? Settings.language : "zh_CN";
+  const activeBundle = (await localeLoaders[activeLng]()).default;
   await i18next.use(initReactI18next).init({
-    lng: Settings.language,
-    // debug会影响性能，并且没什么用，所以关掉
-    // debug: import.meta.env.DEV,
+    lng: activeLng,
     debug: false,
     defaultNS: "",
     fallbackLng: false,
     saveMissing: false,
     resources: {
-      en: await import("./locales/en.yml").then((m) => m.default),
-      zh_CN: await import("./locales/zh_CN.yml").then((m) => m.default),
-      zh_TW: await import("./locales/zh_TW.yml").then((m) => m.default),
-      zh_TWC: await import("./locales/zh_TWC.yml").then((m) => m.default),
-      id: await import("./locales/id.yml").then((m) => m.default),
+      [activeLng]: activeBundle,
     },
+  });
+  Settings.watch("language", (nextLng: string) => {
+    if (!nextLng || i18next.language === nextLng) return;
+    void ensureLocaleBundleLoaded(nextLng).then(() => i18next.changeLanguage(nextLng));
   });
 }
 
 /** 渲染应用 */
-async function renderApp(cli: boolean = false, cliDesktopAcceptance: boolean = false) {
+async function renderApp(cli: boolean = false, cliDesktopAcceptance: boolean = false, initialStandby: boolean = false) {
   const root = createRoot(el);
   if (cli) {
     await getCurrentWindow().hide();
@@ -189,25 +143,107 @@ async function renderApp(cli: boolean = false, cliDesktopAcceptance: boolean = f
   } else if (cliDesktopAcceptance) {
     root.render(<></>);
   } else {
-    // if (isMobile) {
-    //   document.querySelector<HTMLMetaElement>("meta[name=viewport]")!.content =
-    //     "width=device-width, initial-scale=0.5, maximum-scale=0.5, user-scalable=yes, interactive-widget=overlays-content";
-    //   document.documentElement.style.transform = "scale(0.5)";
-    //   document.documentElement.style.transformOrigin = "top left";
-    //   document.documentElement.style.overflow = "hidden";
-    // }
     root.render(
       <Provider store={store}>
         <Toaster richColors visibleToasts={5} expand />
         <ErrorBoundary FallbackComponent={Fallback}>
-          <App />
+          <App initialStandby={initialStandby} />
         </ErrorBoundary>
       </Provider>,
     );
   }
 }
 
+/**
+ * 隐藏预热窗口生命周期：
+ * - 在后台完成 React/Canvas 空草稿挂载后保持暂停（0% CPU、不建临时 SQLite、不显示任务栏）；
+ * - 收到 Rust `pg-standby-activate` 时毫秒级激活、按需打开目标文件或恢复草稿与工作空间侧栏。
+ */
+async function setupStandbyWindowLifecycle() {
+  const currentWindow = getCurrentWindow();
+
+  await currentWindow.listen<string>("open-file-from-os", async (event) => {
+    const path = event.payload;
+    const isExists = await exists(path);
+    if (isExists) {
+      await onOpenFile(URI.file(path), "系统打开文件");
+    } else {
+      toast.error("文件不存在");
+    }
+  });
+
+  await currentWindow.listen<string[]>("targeted-deep-link", (event) => {
+    if (Array.isArray(event.payload) && event.payload.length > 0) {
+      void handleDeepLink(event.payload);
+    }
+  });
+
+  // 预建一个内存态空草稿并暂停渲染循环，使窗口被弹出时首帧即为完整可用的工作台
+  const standbyDraft = Project.newDraft();
+  loadAllServicesBeforeInit(standbyDraft);
+  loadAllServicesAfterInit(standbyDraft);
+  standbyDraft.pause();
+  store.set(tabsAtom, [standbyDraft]);
+  TabWorkspace.synchronizeGroups();
+  store.set(activeTabAtom, standbyDraft);
+  store.set(activeResourceTabAtom, standbyDraft);
+
+  let activated = false;
+  await currentWindow.listen<WindowInitPayload>("pg-standby-activate", async ({ payload }) => {
+    if (activated) return;
+    activated = true;
+    (window as unknown as { __PG_STANDBY__?: boolean }).__PG_STANDBY__ = false;
+    window.dispatchEvent(new Event("pg-standby-activated"));
+
+    if (payload?.deepLinkUrl) {
+      try {
+        await handleDeepLink([payload.deepLinkUrl]);
+        void closeEmptyDrafts();
+      } catch (error) {
+        toast.error("处理 Deep Link 失败: " + String(error));
+      }
+    } else if (payload?.filePath) {
+      try {
+        const isExists = await exists(payload.filePath);
+        if (isExists) {
+          const opened = await onOpenFile(URI.file(payload.filePath), "新窗口打开");
+          if (opened) {
+            void closeEmptyDrafts(opened);
+          }
+        } else {
+          toast.error("文件不存在");
+        }
+      } catch (error) {
+        toast.error("打开文件失败: " + String(error));
+      }
+    } else {
+      standbyDraft.loop();
+      void standbyDraft.init().catch(() => {});
+    }
+
+    void reopenWorkspacePanel();
+    const pendingWindowEvents = await invoke<PendingWindowEvents>("activate_window_routing");
+    await consumePendingWindowEvents(pendingWindowEvents);
+  });
+
+  // 后台预加载 WorkspaceWindow 模块，激活新窗口时零动态导入延迟
+  if (Settings.activeWorkspaceRoot) {
+    void import("./sub/WorkspaceWindow").catch(() => {});
+  }
+
+  await invoke("mark_standby_window_ready");
+}
+
 async function renderStartupError(error: unknown) {
+  if (isStandbyBoot) {
+    console.error("[StandbyWindow] 后台预热窗口初始化失败，已静默回收：", error);
+    if (!isWeb) {
+      await getCurrentWindow()
+        .destroy()
+        .catch(() => {});
+    }
+    return;
+  }
   flushSync(() => createRoot(el).render(<Fallback error={error} resetErrorBoundary={() => location.reload()} />));
   if (!isWeb) await getCurrentWindow().show();
 }
@@ -336,3 +372,100 @@ async function ensureStartupDraftAndWelcome(isMainWindow: boolean) {
     WelcomeWindow.open();
   }
 }
+
+// 必须在全部顶层常量（如 localeLoaders）完成初始化后再启动引导流程，
+// 避免副窗口/预热窗口因无前置 await 而在 TDZ 内访问顶层 const 触发 ReferenceError。
+async function bootstrap() {
+  const isCliDesktopAcceptance =
+    import.meta.env.DEV && new URLSearchParams(window.location.search).has("cli-desktop-acceptance");
+  try {
+    if (isCliDesktopAcceptance) {
+      await invoke("write_cli_desktop_acceptance_state", {
+        state: { phase: "initializing", step: "application" },
+      });
+    }
+    const currentWindowLabel = !isWeb && isDesktop && isTauri() ? getCurrentWindow().label : "main";
+    const isMainWindow = currentWindowLabel === "main";
+    const matches =
+      isMainWindow && !isStandbyBoot && !isCliDesktopAcceptance && !isWeb && isDesktop ? await getMatches() : null;
+    const isCliMode = isMainWindow && isDesktop && matches?.args.output?.occurrences === 1;
+    cliMode = isCliMode || isCliDesktopAcceptance;
+
+    // 关键路径仅并发初始化轻量 Store 与当前语言包；网络认证与扩展目录扫描后台异步执行不阻塞首帧
+    await Promise.all([
+      RecentFileManager.init(),
+      StartFilesManager.init(),
+      ColorManager.init(),
+      Tutorials.init(),
+      QuickSettingsManager.init(),
+      loadLanguageFiles(),
+      loadSyncModules(),
+      ...(!isWeb && isDesktop && isTauri()
+        ? [LocalDocumentSync.ensureListeners(), installWorkspaceCrossWindowListeners()]
+        : []),
+    ]);
+
+    void Promise.allSettled([
+      UserState.init().then(() => (isCliDesktopAcceptance ? undefined : initAuth())),
+      ExtensionManager.init().catch((e) => {
+        console.error("[ExtensionManager] 扩展初始化失败，已跳过：", e);
+      }),
+    ]);
+
+    if (isCliDesktopAcceptance) {
+      await invoke("write_cli_desktop_acceptance_state", {
+        state: { phase: "initializing", step: "application-services" },
+      });
+    }
+    AutoSaveOnSwitch.install();
+    await renderApp(isCliMode, isCliDesktopAcceptance, isStandbyBoot && !isCliMode && !isCliDesktopAcceptance);
+    appRendered = true;
+    if (isCliDesktopAcceptance) {
+      await invoke("write_cli_desktop_acceptance_state", {
+        state: { phase: "initializing", step: "application-rendered" },
+      });
+      const { runProjectGraphCliDesktopAcceptanceHost } = await import("./cli/ProjectGraphCliDesktopAcceptanceHost");
+      await runProjectGraphCliDesktopAcceptanceHost();
+      return;
+    }
+
+    if (isStandbyBoot && !isCliMode && !isWeb && isDesktop && isTauri()) {
+      await setupStandbyWindowLifecycle();
+      return;
+    }
+
+    await loadStartFile(isMainWindow);
+    if (!isCliMode) {
+      await ensureStartupDraftAndWelcome(isMainWindow);
+      await reopenWorkspacePanel();
+      // 主窗口空闲后在后台静默预热 1 个隐藏窗口，使后续「新窗口」点击耗时 < 20ms
+      if (isMainWindow && !isWeb && isDesktop && isTauri()) {
+        setTimeout(() => {
+          void invoke("ensure_standby_window").catch(() => {});
+        }, 1200);
+      }
+    }
+    if (isCliMode) {
+      try {
+        await runCli(matches);
+        exit();
+      } catch (e) {
+        writeStderr(String(e));
+        exit(1);
+      }
+    }
+  } catch (error) {
+    if (isCliDesktopAcceptance) {
+      await invoke("write_cli_desktop_acceptance_state", {
+        state: { phase: "error", message: error instanceof Error ? (error.stack ?? error.message) : String(error) },
+      });
+    }
+    if (!appRendered && !cliMode && !isCliDesktopAcceptance) {
+      await renderStartupError(error);
+      return;
+    }
+    throw error;
+  }
+}
+
+void bootstrap();

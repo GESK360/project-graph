@@ -163,7 +163,11 @@ export const ProjectTabs = memo(function ProjectTabs({
                   // 如果正在保存中，显示提示
                   toast.warning("正在保存中，请勿擅自做多余的操作");
                   SoundService.play.cuttingLineRelease();
-                } else if (tab instanceof Project && tab.projectState === ProjectState.Unsaved) {
+                } else if (
+                  tab instanceof Project &&
+                  !(tab.isSqliteV3 && !tab.isDraft) &&
+                  tab.projectState === ProjectState.Unsaved
+                ) {
                   // 如果是未保存状态，根据项目类型执行不同操作
                   if (tab.uri.scheme === "draft") {
                     // 草稿文件，弹出对话框
@@ -175,7 +179,7 @@ export const ProjectTabs = memo(function ProjectTabs({
                     SoundService.play.cuttingLineRelease();
                   }
                 } else {
-                  // 其他状态，执行关闭操作
+                  // v3 自动落盘文件及其他状态，直接执行关闭操作
                   handleTabClose(tab, e);
                   SoundService.play.cuttingLineRelease();
                 }
@@ -188,7 +192,8 @@ export const ProjectTabs = memo(function ProjectTabs({
                   <span className="border-accent-foreground w-full rounded-full border-1 p-0.5"></span>
                   <span className="border-accent-foreground w-full animate-pulse rounded-full border-1 p-0.5"></span>
                 </span>
-              ) : tab instanceof Project && tab.projectState === ProjectState.Saved ? (
+              ) : tab instanceof Project &&
+                ((tab.isSqliteV3 && !tab.isDraft) || tab.projectState === ProjectState.Saved) ? (
                 <X className="scale-75 opacity-75" />
               ) : tab instanceof Project && tab.projectState === ProjectState.Stashed ? (
                 <CloudUpload />

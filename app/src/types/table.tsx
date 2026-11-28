@@ -1,5 +1,9 @@
 export type SystemColumnId = "name" | "images" | "createdAt" | "updatedAt" | "parents" | "children" | "outer" | "inner";
 
+export type WorkspaceOnlySystemColumnId = "sourceFile" | "sourceFolder";
+
+export type AnySystemColumnId = SystemColumnId | WorkspaceOnlySystemColumnId;
+
 export const OPTIONAL_SYSTEM_COLUMN_IDS: readonly Exclude<SystemColumnId, "name">[] = [
   "images",
   "createdAt",
@@ -10,7 +14,22 @@ export const OPTIONAL_SYSTEM_COLUMN_IDS: readonly Exclude<SystemColumnId, "name"
   "inner",
 ];
 
+export const WORKSPACE_ONLY_SYSTEM_COLUMN_IDS: readonly WorkspaceOnlySystemColumnId[] = ["sourceFile", "sourceFolder"];
+
 export const ALL_SYSTEM_COLUMN_IDS: readonly SystemColumnId[] = ["name", ...OPTIONAL_SYSTEM_COLUMN_IDS];
+
+export const ALL_WORKSPACE_SYSTEM_COLUMN_IDS: readonly AnySystemColumnId[] = [
+  "name",
+  ...WORKSPACE_ONLY_SYSTEM_COLUMN_IDS,
+  ...OPTIONAL_SYSTEM_COLUMN_IDS,
+];
+
+export type WorkspaceTableScopeKind = "all" | "folders" | "docs";
+
+export interface WorkspaceTableScope {
+  kind: WorkspaceTableScopeKind;
+  paths: string[];
+}
 
 export type CustomColumnType = "text" | "number" | "date" | "select" | "multi_select" | "formula";
 
@@ -118,6 +137,8 @@ export interface TableColumnSchema {
   format?: string;
   formula?: string;
   protectedRole?: SpacedRepetitionColumnRole;
+  canonicalKey?: string;
+  isShared?: boolean;
 }
 
 export function isProtectedTableColumn(column?: TableColumnSchema | null): boolean {
@@ -393,6 +414,10 @@ export function normalizeTableData(raw: unknown): PrgTableData {
         format: typeof col.format === "string" ? col.format : undefined,
         formula: typeof col.formula === "string" ? col.formula : undefined,
         ...(protectedRole ? { protectedRole } : {}),
+        ...(typeof col.canonicalKey === "string" && col.canonicalKey.trim() !== ""
+          ? { canonicalKey: col.canonicalKey.trim() }
+          : {}),
+        ...(typeof col.isShared === "boolean" ? { isShared: col.isShared } : {}),
       });
     }
   }

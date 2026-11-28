@@ -42,6 +42,18 @@ async function getPrgThumbnailCachePath(fsPath: string) {
  */
 export async function readPrgThumbnailBlob(fsPath: string): Promise<Blob | undefined> {
   const fileContent = await readFile(fsPath);
+  // SQLite v3.0.0 文件以 "SQLite format 3\0" 开头，不是 ZIP 容器，跳过 ZipReader 避免异常
+  if (
+    fileContent.length >= 16 &&
+    fileContent[0] === 0x53 &&
+    fileContent[1] === 0x51 &&
+    fileContent[2] === 0x4c &&
+    fileContent[3] === 0x69 &&
+    fileContent[4] === 0x74 &&
+    fileContent[5] === 0x65
+  ) {
+    return undefined;
+  }
   const reader = new ZipReader(new Uint8ArrayReader(fileContent));
   const entries = await reader.getEntries();
 

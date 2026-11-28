@@ -133,6 +133,8 @@ export class TextNode extends ConnectableEntity implements ResizeAble {
       createdAt,
       updatedAt,
       tableFields,
+      tableFieldsOwned = false,
+      skipInitialResize = false,
     }: {
       uuid?: string;
       text?: string;
@@ -148,6 +150,8 @@ export class TextNode extends ConnectableEntity implements ResizeAble {
       createdAt?: number;
       updatedAt?: number;
       tableFields?: TableFields;
+      tableFieldsOwned?: boolean;
+      skipInitialResize?: boolean;
     },
     public unknown = false,
   ) {
@@ -155,7 +159,7 @@ export class TextNode extends ConnectableEntity implements ResizeAble {
     this.uuid = uuid;
     this.text = text;
     this.details = details;
-    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
+    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields, tableFieldsOwned });
     this.collisionBox = collisionBox;
     this.color = color;
     this.sizeAdjust = sizeAdjust;
@@ -166,13 +170,13 @@ export class TextNode extends ConnectableEntity implements ResizeAble {
     this.legacyBranchCollapsed = isBranchCollapsed;
     // 初始化字体大小缓存
     this.updateFontSizeCache();
-    // if (this.text.length < TextNode.enableResizeCharCount) {
-    //   this.adjustSizeByText();
-    // }
-    if (this.sizeAdjust === "auto") {
-      this.adjustSizeByText();
-    } else if (this.sizeAdjust === "manual") {
-      this.resizeHandle(Vector.getZero());
+    // v3 SQLite 打开路径已持久化精确的 (x, y, w, h)，跳过打开期逐节点 Canvas measureText 重算
+    if (!skipInitialResize) {
+      if (this.sizeAdjust === "auto") {
+        this.adjustSizeByText();
+      } else if (this.sizeAdjust === "manual") {
+        this.resizeHandle(Vector.getZero());
+      }
     }
   }
 
@@ -252,6 +256,7 @@ export class TextNode extends ConnectableEntity implements ResizeAble {
         this._adjustLocationToKeepAnchor(oldRect, new Vector(anchorRate.x, 0));
       }
     }
+    this.project?.docCommandBus?.markStyleDirty(this);
   }
 
   /**
@@ -274,6 +279,7 @@ export class TextNode extends ConnectableEntity implements ResizeAble {
         this._adjustLocationToKeepAnchor(oldRect, new Vector(anchorRate.x, 0));
       }
     }
+    this.project?.docCommandBus?.markStyleDirty(this);
   }
 
   /**
@@ -298,6 +304,7 @@ export class TextNode extends ConnectableEntity implements ResizeAble {
         Vector.same(this.getPadding()).multiply(2),
       ),
     );
+    this.project?.stageManager?.updateSpatialIndex?.(this);
   }
   private adjustHeightByText() {
     const wrapWidth = this.rectangle.size.x - this.getPadding() * 2;
@@ -338,6 +345,9 @@ export class TextNode extends ConnectableEntity implements ResizeAble {
   // }
 
   rename(text: string) {
+    if (this.text !== text) {
+      this.project?.docCommandBus?.markSemanticDirty(this);
+    }
     this.text = text;
     // if (this.text.length < TextNode.enableResizeCharCount) {
     //   this.adjustSizeByText();
@@ -369,6 +379,7 @@ export class TextNode extends ConnectableEntity implements ResizeAble {
     newRectangle.size = newSize;
 
     this.collisionBox.shapes[0] = newRectangle;
+    this.project?.docCommandBus?.markStyleDirty(this);
     this.updateFatherSectionByMove();
   }
 

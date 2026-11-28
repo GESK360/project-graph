@@ -12,8 +12,7 @@ export const MINIMAP_WIDTH = 180;
 export const MINIMAP_HEIGHT = 120;
 /** 节点外接矩形与画布边缘之间保留的空白 */
 export const MINIMAP_PADDING = 6;
-/** 节点几何信息的刷新间隔：相机在动时更勤快，静止后降到低频兜底 */
-const STATIC_REFRESH_INTERVAL_ACTIVE_MS = 200;
+/** 节点几何信息的兜底刷新间隔（正常修改由 stageRevision 精确触发） */
 const STATIC_REFRESH_INTERVAL_IDLE_MS = 800;
 /** 相机停止变化后，继续用 requestAnimationFrame 跟几帧再转入低频轮询 */
 const ACTIVE_WINDOW_MS = 700;
@@ -107,18 +106,25 @@ export function clampPointToMinimap(point: Vector): Vector {
 }
 
 /**
- * 收集一次绘制所需的全部世界坐标几何信息
+ * 收集一次绘制所需的全部世界坐标几何信息（小地图用端点中心连线替代精确 bodyLine 求交，避免数千条边拖慢首帧）
  */
 export function collectGeometry(project: Project): MinimapGeometry {
   const nodeRectangles: Rectangle[] = [];
+  const centerByUuid = new Map<string, Vector>();
   for (const entity of project.stageManager.getEntities()) {
     if (entity.isHiddenBySectionCollapse || project.stageManager.isHiddenByBranchCollapse(entity)) continue;
-    nodeRectangles.push(entity.collisionBox.getRectangle());
+    const rect = entity.collisionBox.getRectangle();
+    nodeRectangles.push(rect);
+    centerByUuid.set(entity.uuid, rect.center);
   }
   const edgeLines: Line[] = [];
   for (const edge of project.stageManager.getEdges()) {
     if (edge.isHiddenBySectionCollapse || project.stageManager.isHiddenByBranchCollapse(edge)) continue;
-    edgeLines.push(edge.bodyLine);
+    const start = centerByUuid.get(edge.source.uuid);
+    const end = centerByUuid.get(edge.target.uuid);
+    if (start && end) {
+      edgeLines.push(new Line(start, end));
+    }
   }
   const layout = createLayout(nodeRectangles, project.renderer.getCoverWorldRectangle());
   return { nodeRectangles, edgeLines, layout };
@@ -289,6 +295,7 @@ export default function Minimap({ project }: { project: Project }) {
     let activeUntil = 0;
     let lastStaticAt = 0;
     let lastStageLength = -1;
+    let lastStageRevision = -1;
     let geometry: MinimapGeometry | null = null;
     let lastCamera: number[] | null = null;
     let lastLayout: MinimapLayout | null = null;
@@ -324,6 +331,7 @@ export default function Minimap({ project }: { project: Project }) {
       drawStaticLayer(staticContext, geometry);
       lastStaticAt = now;
       lastStageLength = project.stage.length;
+      lastStageRevision = project.stageRevision ?? 0;
     };
 
     const stopIdleTimer = () => {
@@ -370,8 +378,11 @@ export default function Minimap({ project }: { project: Project }) {
       const active = hasDragSession || now < activeUntil;
 
       if (!hasDragSession) {
-        const staticInterval = active ? STATIC_REFRESH_INTERVAL_ACTIVE_MS : STATIC_REFRESH_INTERVAL_IDLE_MS;
-        if (geometry === null || now - lastStaticAt >= staticInterval || project.stage.length !== lastStageLength) {
+        const currentStageRev = project.stageRevision ?? 0;
+        const stageChanged = project.stage.length !== lastStageLength || currentStageRev !== lastStageRevision;
+        // 仅在舞台版本/对象数变化，或大间隔兜底时重绘静态层；缩放/平移不再每 200ms 扫描数千节点
+        const fallbackInterval = active ? STATIC_REFRESH_INTERVAL_IDLE_MS * 2 : STATIC_REFRESH_INTERVAL_IDLE_MS * 4;
+        if (geometry === null || stageChanged || now - lastStaticAt >= fallbackInterval) {
           rebuildStaticLayer(now);
         }
       }

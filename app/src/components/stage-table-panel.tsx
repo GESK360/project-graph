@@ -1,5 +1,40 @@
+import { ImageLightbox, type ImageLightboxItem } from "@/components/image-lightbox";
+import { StageTableCalendarView } from "@/components/stage-table-calendar-view";
+import {
+  StageTableCellEditorPortal,
+  StageTableVirtualRow,
+  formatTimestamp,
+  getDisplayLabel,
+  getOptionBadgeClass,
+  type ActiveCellEditorState,
+  type StageTableVirtualRowCallbacks,
+} from "@/components/stage-table-cell-editor-portal";
+import { StageTableFilterToolbarPopover } from "@/components/stage-table-filter-popover";
+import {
+  FormulaPillPreview,
+  StageTableFormulaEditorDialog,
+  type FormulaEditorColumnOption,
+} from "@/components/stage-table-formula-editor";
+import { StageTableGalleryView } from "@/components/stage-table-gallery-view";
+import { StageTableGanttView } from "@/components/stage-table-gantt-view";
+import { StageTableKanbanView } from "@/components/stage-table-kanban-view";
+import { TableScrollContainer, createSafeObserveElementRect } from "@/components/stage-table-scroll-container";
+
+const OBSERVE_TABLE_VIRTUAL_RECT = createSafeObserveElementRect({ width: 1000, height: 600 });
+import {
+  EMPTY_TABLE_SELECTION,
+  StageTableSelectionStore,
+  extractRowIdsFromCellKeys,
+  makeTableCellKey,
+  useIsColumnSelected,
+  useSelectedRowIdsSnapshot,
+  useTableSelectionBadgeInfo,
+  useTableSelectionMode,
+} from "@/components/stage-table-selection-store";
+import { StageTableSpacedRepetitionView } from "@/components/stage-table-spaced-repetition-view";
+import { StageTableRecordDialog, ViewTypeIcon } from "@/components/stage-table-views-shared";
+import { WorkspaceColumnsDialog } from "@/components/workspace/WorkspaceColumnsDialog";
 import { Button } from "@/components/ui/button";
-import { Calendar } from "@/components/ui/calendar";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   ContextMenu,
@@ -14,54 +49,47 @@ import {
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import {
-  FormulaPillPreview,
-  StageTableFormulaEditorDialog,
-  type FormulaEditorColumnOption,
-} from "@/components/stage-table-formula-editor";
-import { ImageLightbox, type ImageLightboxItem } from "@/components/image-lightbox";
-import { StageTableCalendarView } from "@/components/stage-table-calendar-view";
-import { StageTableFilterToolbarPopover } from "@/components/stage-table-filter-popover";
-import { StageTableGalleryView } from "@/components/stage-table-gallery-view";
-import { StageTableGanttView } from "@/components/stage-table-gantt-view";
-import { StageTableKanbanView } from "@/components/stage-table-kanban-view";
-import { StageTableSpacedRepetitionView } from "@/components/stage-table-spaced-repetition-view";
-import { StageTableRecordDialog, ViewTypeIcon } from "@/components/stage-table-views-shared";
-import { hasVolatileFormulas } from "@/core/service/dataManageService/stageTableService/formulaEngine";
 import type { Project } from "@/core/Project";
-import type {
-  StageTableImageItem,
-  StageTableRelationItem,
-  StageTableRow,
-  StageTableRowKind,
-} from "@/core/service/dataManageService/stageTableService/StageTableService";
+import { registerMidnightVolatileWatcher } from "@/core/service/dataManageService/stageTableService/FormulaDagEngine";
+import type { StageTableRow } from "@/core/service/dataManageService/stageTableService/StageTableService";
+import {
+  createSingleFileTableSource,
+  type RelationColumnKind,
+  type TableDataSource,
+} from "@/core/service/dataManageService/stageTableService/TableDataSource";
+import {
+  createWorkspaceTableSource,
+  type WorkspaceTableSource,
+} from "@/core/service/dataManageService/stageTableService/WorkspaceTableSource";
+import { hasVolatileFormulas } from "@/core/service/dataManageService/stageTableService/formulaEngine";
+import { WorkspaceClient } from "@/core/sqlite/WorkspaceClient";
 import {
   ALL_SYSTEM_COLUMN_IDS,
-  OPTIONAL_SYSTEM_COLUMN_IDS,
+  ALL_WORKSPACE_SYSTEM_COLUMN_IDS,
   TABLE_VIEW_TYPES,
-  applyTableFiltersAndSort,
   collectColumnFilterBuckets,
   countActiveFilterConditions,
   isFilterConditionActive,
   isProtectedTableColumn,
-  pickNextSelectOptionColor,
+  type AnySystemColumnId,
+  type ColumnFilterBucket,
   type CustomColumnType,
   type SystemColumnId,
-  type TableCellValue,
   type TableColumnFilter,
   type TableColumnGroup,
   type TableColumnSchema,
   type TableFilterGroup,
   type TableRowHeight,
-  type TableSelectOption,
   type TableSortConfig,
   type TableSortDirection,
   type TableViewSchema,
   type TableViewType,
+  type WorkspaceTableScope,
 } from "@/types/table";
 import { cn } from "@/utils/cn";
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ArrowDown,
   ArrowDownRight,
@@ -70,7 +98,6 @@ import {
   ArrowUp,
   ArrowUpDown,
   ArrowUpLeft,
-  Box,
   Boxes,
   Calendar as CalendarIcon,
   Check,
@@ -81,17 +108,17 @@ import {
   Clock,
   CopyPlus,
   EyeOff,
-  FileCode2,
-  Film,
+  FileText,
   Filter,
-  FolderKanban,
+  Folder,
   FolderPlus,
   FunctionSquare,
+  Globe,
   Hash,
   History,
   Image as ImageIcon,
   Info,
-  Link2,
+  Layers,
   List,
   ListChecks,
   ListTree,
@@ -101,7 +128,6 @@ import {
   Plus,
   PlusCircle,
   Search,
-  Sigma,
   SquareDashed,
   SquarePen,
   Trash2,
@@ -110,15 +136,17 @@ import {
   UnfoldVertical,
   X,
 } from "lucide-react";
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 const INDEX_COLUMN_WIDTH = 44;
 const ADD_COLUMN_WIDTH = 40;
-const MIN_THUMB_SIZE = 32;
+const SQLITE_PAGE_CHUNK_SIZE = 250;
 
-const DEFAULT_SYSTEM_COLUMN_WIDTHS: Record<SystemColumnId, number> = {
+const DEFAULT_SYSTEM_COLUMN_WIDTHS: Record<AnySystemColumnId, number> = {
   name: 220,
+  sourceFile: 170,
+  sourceFolder: 160,
   images: 170,
   createdAt: 164,
   updatedAt: 164,
@@ -137,78 +165,26 @@ const DEFAULT_CUSTOM_COLUMN_WIDTHS: Record<CustomColumnType, number> = {
   formula: 160,
 };
 
-const OPTION_COLOR_CLASSES: Record<string, string> = {
-  gray: "bg-zinc-500/25 text-zinc-900 dark:bg-zinc-400/30 dark:text-zinc-100",
-  purple: "bg-purple-600/85 text-white dark:bg-purple-500/85 dark:text-white",
-  blue: "bg-blue-600/85 text-white dark:bg-blue-500/85 dark:text-white",
-  green: "bg-emerald-600/85 text-white dark:bg-emerald-500/85 dark:text-white",
-  amber: "bg-amber-500/85 text-white dark:bg-amber-500/85 dark:text-white",
-  rose: "bg-rose-600/85 text-white dark:bg-rose-500/85 dark:text-white",
-  cyan: "bg-cyan-600/85 text-white dark:bg-cyan-500/85 dark:text-white",
-  orange: "bg-orange-600/85 text-white dark:bg-orange-500/85 dark:text-white",
-};
+const FIELD_TYPE_GRID_ORDER: readonly CustomColumnType[] = [
+  "text",
+  "select",
+  "multi_select",
+  "number",
+  "date",
+  "formula",
+];
 
-function getOptionBadgeClass(color?: string): string {
-  return (color && OPTION_COLOR_CLASSES[color]) || OPTION_COLOR_CLASSES.gray;
+function isSystemColumnId(colId: string): colId is AnySystemColumnId {
+  return (ALL_WORKSPACE_SYSTEM_COLUMN_IDS as readonly string[]).includes(colId);
 }
 
-function isSystemColumnId(colId: string): colId is SystemColumnId {
-  return (ALL_SYSTEM_COLUMN_IDS as readonly string[]).includes(colId);
-}
-
-function formatTimestamp(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return "-";
-  const date = new Date(ms);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
-
-function formatIsoDate(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-}
-
-function parseIsoDate(raw: string): Date | undefined {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw.trim());
-  if (!match) return undefined;
-  const year = Number(match[1]);
-  const month = Number(match[2]) - 1;
-  const day = Number(match[3]);
-  const dt = new Date(year, month, day);
-  if (dt.getFullYear() !== year || dt.getMonth() !== month || dt.getDate() !== day) {
-    return undefined;
-  }
-  return dt;
-}
-
-function RowKindIcon({ kind, className }: { kind: StageTableRowKind; className?: string }) {
-  const cls = cn("size-3.5 shrink-0 text-muted-foreground", className);
-  switch (kind) {
-    case "section":
-      return <SquareDashed className={cls} />;
-    case "image":
-      return <ImageIcon className={cls} />;
-    case "url":
-      return <Link2 className={cls} />;
-    case "media":
-      return <Film className={cls} />;
-    case "latex":
-      return <Sigma className={cls} />;
-    case "reference":
-      return <FolderKanban className={cls} />;
-    case "svg":
-      return <FileCode2 className={cls} />;
-    case "extension":
-      return <Box className={cls} />;
-    case "text":
-    default:
-      return <Type className={cls} />;
-  }
-}
-
-function SystemPropertyIcon({ columnId }: { columnId: SystemColumnId }) {
+function SystemPropertyIcon({ columnId }: { columnId: AnySystemColumnId }) {
   const cls = "size-3.5 shrink-0 text-muted-foreground";
   switch (columnId) {
+    case "sourceFile":
+      return <FileText className={cls} />;
+    case "sourceFolder":
+      return <Folder className={cls} />;
     case "images":
       return <ImageIcon className={cls} />;
     case "createdAt":
@@ -257,1430 +233,6 @@ function ColumnIcon({ columnId, customColumn }: { columnId: string; customColumn
   }
   return <Type className="text-muted-foreground size-3.5 shrink-0" />;
 }
-
-function getDisplayLabel(
-  item: { primaryText?: string; label?: string; kind: StageTableRowKind; uuid: string },
-  t: (key: string) => string,
-): string {
-  const raw = (item.primaryText ?? item.label ?? "").trim();
-  if (raw.length > 0) {
-    const firstLine = raw.split(/\r?\n/)[0];
-    return firstLine.length > 36 ? `${firstLine.slice(0, 36)}…` : firstLine;
-  }
-  switch (item.kind) {
-    case "image":
-      return t("fallbackLabels.image");
-    case "svg":
-      return t("fallbackLabels.svg");
-    case "media":
-      return t("fallbackLabels.media");
-    case "url":
-      return t("fallbackLabels.url");
-    case "latex":
-      return t("fallbackLabels.latex");
-    case "reference":
-      return t("fallbackLabels.reference");
-    case "section":
-      return t("fallbackLabels.unnamedSection");
-    case "text":
-    default:
-      return t("fallbackLabels.unnamedNode");
-  }
-}
-
-function PrimaryTextCell({
-  row,
-  onCommit,
-  onJump,
-  canEditOnClick,
-  t,
-}: {
-  row: StageTableRow;
-  onCommit: (nextText: string) => void;
-  onJump: () => void;
-  canEditOnClick?: () => boolean;
-  t: (key: string) => string;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(row.primaryText);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!editing) {
-      setDraft(row.primaryText);
-    }
-  }, [row.primaryText, editing]);
-
-  useEffect(() => {
-    if (editing) {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-    }
-  }, [editing]);
-
-  const finishEdit = () => {
-    setEditing(false);
-    if (draft !== row.primaryText) {
-      onCommit(draft);
-    }
-  };
-
-  const displayLabel = getDisplayLabel(row, t);
-  const isEmptyText = row.primaryText.trim().length === 0;
-
-  return (
-    <div className="group flex h-full min-h-8 w-full items-center justify-between gap-1.5 px-2.5 py-1">
-      <div className="flex min-w-0 flex-1 items-center gap-1.5">
-        <RowKindIcon kind={row.kind} />
-        {editing ? (
-          <Input
-            ref={inputRef}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={finishEdit}
-            onKeyDown={(e) => {
-              e.stopPropagation();
-              if (e.key === "Enter") {
-                e.preventDefault();
-                finishEdit();
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                setDraft(row.primaryText);
-                setEditing(false);
-              }
-            }}
-            className="h-6 min-w-0 flex-1 px-1.5 py-0 text-xs"
-          />
-        ) : (
-          <button
-            type="button"
-            disabled={!row.editableText}
-            onClick={() => {
-              if (row.editableText && (!canEditOnClick || canEditOnClick())) {
-                setDraft(row.primaryText);
-                setEditing(true);
-              }
-            }}
-            onDoubleClick={() => {
-              if (row.editableText) {
-                setDraft(row.primaryText);
-                setEditing(true);
-              }
-            }}
-            className={cn(
-              "min-w-0 flex-1 truncate text-left text-xs outline-none",
-              row.editableText ? "hover:text-foreground cursor-text" : "cursor-default",
-              isEmptyText ? "text-muted-foreground italic" : "text-foreground",
-            )}
-            title={row.primaryText || displayLabel}
-          >
-            {displayLabel}
-          </button>
-        )}
-      </div>
-
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            data-cell-action
-            aria-label={t("jumpToNode")}
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              onJump();
-            }}
-            className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-5 shrink-0 items-center justify-center rounded transition-colors"
-          >
-            <ArrowRight className="size-3.5" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="left">{t("jumpToNode")}</TooltipContent>
-      </Tooltip>
-    </div>
-  );
-}
-
-function AttachmentThumb({
-  project,
-  attachmentId,
-  className,
-  onClick,
-}: {
-  project: Project;
-  attachmentId: string;
-  className?: string;
-  onClick?: () => void;
-}) {
-  const blob = project.attachments?.get?.(attachmentId);
-  const [objectUrl, setObjectUrl] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!blob || typeof URL.createObjectURL !== "function") {
-      setObjectUrl(null);
-      return;
-    }
-    const url = URL.createObjectURL(blob);
-    setObjectUrl(url);
-    return () => {
-      URL.revokeObjectURL?.(url);
-    };
-  }, [blob]);
-
-  if (!objectUrl) {
-    return (
-      <div
-        onClick={onClick}
-        className={cn(
-          "bg-muted text-muted-foreground flex size-7 items-center justify-center rounded border",
-          className,
-        )}
-      >
-        <ImageIcon className="size-3.5" />
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={objectUrl}
-      alt=""
-      onClick={onClick}
-      className={cn("border-border/70 size-7 rounded border object-cover", onClick && "cursor-zoom-in", className)}
-    />
-  );
-}
-
-function ImagesCell({
-  project,
-  images,
-  disabled,
-  onAddImages,
-  onRemoveImage,
-  onPreviewImage,
-  t,
-}: {
-  project: Project;
-  images: StageTableImageItem[];
-  disabled?: boolean;
-  onAddImages: (blobs: Blob[]) => void;
-  onRemoveImage: (imageNodeUuid: string) => void;
-  onPreviewImage: (attachmentId: string) => void;
-  t: (key: string) => string;
-}) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  if (disabled) {
-    return <div className="text-muted-foreground/60 flex h-full items-center px-2.5 py-1 text-xs">-</div>;
-  }
-
-  return (
-    <div
-      tabIndex={0}
-      onPaste={(e) => {
-        const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
-        if (files.length > 0) {
-          e.preventDefault();
-          e.stopPropagation();
-          onAddImages(files);
-        }
-      }}
-      className="group/imgcell flex h-full min-h-8 w-full flex-wrap items-center gap-1.5 px-2 py-1 outline-none"
-    >
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        multiple
-        className="hidden"
-        onChange={(e) => {
-          const selected = Array.from(e.target.files ?? []);
-          if (selected.length > 0) {
-            onAddImages(selected);
-          }
-          e.target.value = "";
-        }}
-      />
-
-      {images.map((item) => (
-        <div key={item.uuid} className="group/thumb relative inline-flex shrink-0">
-          <AttachmentThumb
-            project={project}
-            attachmentId={item.attachmentId}
-            onClick={() => onPreviewImage(item.attachmentId)}
-          />
-          <button
-            type="button"
-            aria-label={t("imagesCell.remove")}
-            onClick={(e) => {
-              e.stopPropagation();
-              onRemoveImage(item.uuid);
-            }}
-            className="bg-background/90 text-muted-foreground hover:bg-destructive hover:text-destructive-foreground border-border absolute -top-1 -right-1 flex size-3.5 items-center justify-center rounded-full border opacity-0 shadow-xs transition-opacity group-hover/thumb:opacity-100 focus:opacity-100"
-          >
-            <X className="size-2.5" />
-          </button>
-        </div>
-      ))}
-
-      <button
-        type="button"
-        aria-label={t("imagesCell.add")}
-        onClick={(e) => {
-          e.stopPropagation();
-          fileInputRef.current?.click();
-        }}
-        className={cn(
-          "border-border/70 text-muted-foreground hover:border-primary/60 hover:bg-accent hover:text-foreground inline-flex h-6 items-center gap-1 rounded border border-dashed px-1.5 text-[11px] transition-opacity",
-          images.length > 0 ? "opacity-0 group-hover/imgcell:opacity-100 focus:opacity-100" : "opacity-80",
-        )}
-      >
-        <Plus className="size-3" />
-        {images.length === 0 && <span>{t("imagesCell.add")}</span>}
-      </button>
-    </div>
-  );
-}
-
-function TextCustomCell({
-  value,
-  onCommit,
-  canEditOnClick,
-}: {
-  value: TableCellValue | undefined;
-  onCommit: (val: TableCellValue) => void;
-  canEditOnClick?: () => boolean;
-}) {
-  const strValue = typeof value === "string" ? value : value === null || value === undefined ? "" : String(value);
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(strValue);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!editing) {
-      setDraft(strValue);
-    }
-  }, [strValue, editing]);
-
-  useEffect(() => {
-    if (editing) {
-      inputRef.current?.focus();
-    }
-  }, [editing]);
-
-  const commit = () => {
-    setEditing(false);
-    if (draft !== strValue) {
-      onCommit(draft.length > 0 ? draft : null);
-    }
-  };
-
-  if (editing) {
-    return (
-      <div className="flex h-full min-h-8 items-center px-1.5 py-0.5">
-        <Input
-          ref={inputRef}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === "Enter") {
-              e.preventDefault();
-              commit();
-            } else if (e.key === "Escape") {
-              e.preventDefault();
-              setDraft(strValue);
-              setEditing(false);
-            }
-          }}
-          className="h-6 min-w-0 flex-1 px-1.5 py-0 text-xs"
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={() => {
-        if (!canEditOnClick || canEditOnClick()) {
-          setDraft(strValue);
-          setEditing(true);
-        }
-      }}
-      onDoubleClick={() => {
-        setDraft(strValue);
-        setEditing(true);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          setDraft(strValue);
-          setEditing(true);
-        }
-      }}
-      className="hover:bg-accent/40 flex h-full min-h-8 w-full cursor-text items-center px-2.5 py-1 text-xs outline-none"
-      title={strValue}
-    >
-      <span className="min-w-0 flex-1 truncate">{strValue}</span>
-    </div>
-  );
-}
-
-function NumberCustomCell({
-  value,
-  onCommit,
-  canEditOnClick,
-}: {
-  value: TableCellValue | undefined;
-  onCommit: (val: TableCellValue) => void;
-  canEditOnClick?: () => boolean;
-}) {
-  const numStr = typeof value === "number" && Number.isFinite(value) ? String(value) : "";
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(numStr);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!editing) {
-      setDraft(numStr);
-    }
-  }, [numStr, editing]);
-
-  useEffect(() => {
-    if (editing) {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-    }
-  }, [editing]);
-
-  const commit = () => {
-    setEditing(false);
-    const trimmed = draft.trim();
-    if (!trimmed) {
-      if (numStr !== "") onCommit(null);
-      return;
-    }
-    const parsed = Number(trimmed);
-    if (Number.isFinite(parsed) && String(parsed) !== numStr) {
-      onCommit(parsed);
-    } else {
-      setDraft(numStr);
-    }
-  };
-
-  if (editing) {
-    return (
-      <div className="flex h-full min-h-8 items-center px-1.5 py-0.5">
-        <Input
-          ref={inputRef}
-          type="number"
-          step="any"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === "Enter") {
-              e.preventDefault();
-              commit();
-            } else if (e.key === "Escape") {
-              e.preventDefault();
-              setDraft(numStr);
-              setEditing(false);
-            }
-          }}
-          className="h-6 min-w-0 flex-1 px-1.5 py-0 text-xs tabular-nums"
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={() => {
-        if (!canEditOnClick || canEditOnClick()) {
-          setDraft(numStr);
-          setEditing(true);
-        }
-      }}
-      onDoubleClick={() => {
-        setDraft(numStr);
-        setEditing(true);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          setDraft(numStr);
-          setEditing(true);
-        }
-      }}
-      className="hover:bg-accent/40 flex h-full min-h-8 w-full cursor-text items-center px-2.5 py-1 text-xs tabular-nums outline-none"
-    >
-      <span className="min-w-0 flex-1 truncate">{numStr}</span>
-    </div>
-  );
-}
-
-function DateCustomCell({
-  value,
-  onCommit,
-  t,
-}: {
-  value: TableCellValue | undefined;
-  onCommit: (val: TableCellValue) => void;
-  t: (key: string) => string;
-}) {
-  const [open, setOpen] = useState(false);
-  const dateStr = typeof value === "string" ? value : "";
-  const selectedDate = useMemo(() => parseIsoDate(dateStr), [dateStr]);
-  const [displayMonth, setDisplayMonth] = useState<Date>(() => selectedDate ?? new Date());
-
-  useEffect(() => {
-    if (open) {
-      setDisplayMonth(selectedDate ?? new Date());
-    }
-  }, [open, selectedDate]);
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <div
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              setOpen(true);
-            }
-          }}
-          className={cn(
-            "hover:bg-accent/40 flex h-full min-h-8 w-full cursor-pointer items-center justify-between gap-1 px-2.5 py-1 text-xs tabular-nums outline-none",
-            open && "ring-primary bg-accent/25 ring-1 ring-inset",
-          )}
-        >
-          <span className="truncate">{dateStr}</span>
-          {dateStr && (
-            <button
-              type="button"
-              data-cell-action
-              aria-label={t("dateCell.clear")}
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                onCommit(null);
-              }}
-              className="text-muted-foreground hover:text-foreground rounded-xs p-0.5"
-            >
-              <X className="size-3" />
-            </button>
-          )}
-        </div>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className="w-auto p-2"
-        onWheel={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-2 flex items-center gap-1.5">
-          <Input
-            type="date"
-            value={dateStr}
-            onChange={(e) => {
-              const next = e.target.value.trim();
-              onCommit(next || null);
-            }}
-            onKeyDown={(e) => e.stopPropagation()}
-            className="h-7 flex-1 text-xs tabular-nums"
-          />
-          {dateStr && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                onCommit(null);
-                setOpen(false);
-              }}
-              className="h-7 px-2 text-xs"
-            >
-              {t("dateCell.clear")}
-            </Button>
-          )}
-        </div>
-        <Calendar
-          mode="single"
-          month={displayMonth}
-          onMonthChange={setDisplayMonth}
-          selected={selectedDate}
-          onSelect={(date) => {
-            if (date) {
-              onCommit(formatIsoDate(date));
-            }
-            setOpen(false);
-          }}
-        />
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-function SelectCustomCell({
-  column,
-  value,
-  onCommit,
-  onCreateOrGetOption,
-  t,
-}: {
-  column: TableColumnSchema;
-  value: TableCellValue | undefined;
-  onCommit: (val: TableCellValue) => void;
-  onCreateOrGetOption: (name: string) => TableSelectOption | null;
-  t: (key: string, opts?: Record<string, unknown>) => string;
-}) {
-  const isMulti = column.type === "multi_select";
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  const options = column.options ?? [];
-  const optionById = useMemo(() => new Map(options.map((opt) => [opt.id, opt])), [options]);
-
-  const selectedIds = useMemo<string[]>(() => {
-    if (isMulti) {
-      if (Array.isArray(value)) return value.filter((id) => optionById.has(id));
-      if (typeof value === "string" && optionById.has(value)) return [value];
-      return [];
-    }
-    if (typeof value === "string" && optionById.has(value)) {
-      return [value];
-    }
-    if (Array.isArray(value) && value.length > 0 && optionById.has(value[0])) {
-      return [value[0]];
-    }
-    return [];
-  }, [isMulti, value, optionById]);
-
-  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
-  const selectedOptions = useMemo(
-    () => selectedIds.map((id) => optionById.get(id)).filter((o): o is TableSelectOption => Boolean(o)),
-    [selectedIds, optionById],
-  );
-
-  const trimmedQuery = query.trim();
-  const filteredOptions = useMemo(() => {
-    if (!trimmedQuery) return options;
-    const lower = trimmedQuery.toLowerCase();
-    return options.filter((opt) => opt.name.toLowerCase().includes(lower));
-  }, [options, trimmedQuery]);
-
-  const hasExactOption = useMemo(() => options.some((opt) => opt.name === trimmedQuery), [options, trimmedQuery]);
-
-  const toggleOption = (optionId: string) => {
-    if (isMulti) {
-      const next = new Set(selectedIds);
-      if (next.has(optionId)) {
-        next.delete(optionId);
-      } else {
-        next.add(optionId);
-      }
-      onCommit(Array.from(next));
-    } else {
-      if (selectedSet.has(optionId)) {
-        onCommit(null);
-      } else {
-        onCommit(optionId);
-        setOpen(false);
-      }
-    }
-  };
-
-  const handleCreateAndSelect = (rawName: string) => {
-    const created = onCreateOrGetOption(rawName);
-    if (!created) return;
-    setQuery("");
-    if (isMulti) {
-      const next = Array.from(new Set([...selectedIds, created.id]));
-      onCommit(next);
-    } else {
-      onCommit(created.id);
-      setOpen(false);
-    }
-  };
-
-  const previewColor = useMemo(() => pickNextSelectOptionColor(options), [options]);
-
-  return (
-    <Popover
-      open={open}
-      onOpenChange={(nextOpen) => {
-        setOpen(nextOpen);
-        if (!nextOpen) setQuery("");
-      }}
-    >
-      <PopoverTrigger asChild>
-        <div
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              setOpen(true);
-            }
-          }}
-          className={cn(
-            "hover:bg-accent/40 relative flex h-full min-h-8 w-full cursor-pointer flex-wrap items-center gap-1 px-2 py-1 pr-6 text-xs outline-none",
-            open && "ring-primary bg-accent/20 ring-1 ring-inset",
-          )}
-        >
-          {selectedOptions.map((opt) => (
-            <span
-              key={opt.id}
-              className={cn(
-                "inline-flex max-w-full items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium",
-                getOptionBadgeClass(opt.color),
-              )}
-            >
-              <span className="max-w-28 truncate">{opt.name}</span>
-              <button
-                type="button"
-                data-cell-action
-                aria-label={t("selectCell.removeOption")}
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (isMulti) {
-                    onCommit(selectedIds.filter((id) => id !== opt.id));
-                  } else {
-                    onCommit(null);
-                  }
-                }}
-                className="opacity-75 transition-opacity hover:opacity-100"
-              >
-                <X className="size-2.5" />
-              </button>
-            </span>
-          ))}
-
-          {open && (
-            <ChevronUp className="text-muted-foreground pointer-events-none absolute top-1/2 right-2 size-3 -translate-y-1/2" />
-          )}
-        </div>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className="w-56 p-0"
-        onOpenAutoFocus={(e) => {
-          e.preventDefault();
-          inputRef.current?.focus();
-        }}
-        onWheel={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="border-b p-2">
-          <Input
-            ref={inputRef}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              e.stopPropagation();
-              if (e.key === "Enter" && trimmedQuery) {
-                e.preventDefault();
-                const exact = options.find((opt) => opt.name === trimmedQuery);
-                if (exact) {
-                  toggleOption(exact.id);
-                  setQuery("");
-                } else {
-                  handleCreateAndSelect(trimmedQuery);
-                }
-              }
-            }}
-            placeholder={t("selectCell.searchOrAddPlaceholder")}
-            className="h-7 px-2 text-xs"
-          />
-        </div>
-
-        <div className="text-muted-foreground px-2.5 pt-2 pb-1 text-[11px] font-medium select-none">
-          {isMulti ? t("columnTypes.multi_select") : t("columnTypes.select")}
-        </div>
-
-        <div className="max-h-56 overflow-y-auto p-1">
-          {filteredOptions.map((opt) => {
-            const checked = selectedSet.has(opt.id);
-            return (
-              <button
-                key={opt.id}
-                type="button"
-                onClick={() => toggleOption(opt.id)}
-                className={cn(
-                  "hover:bg-accent flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs",
-                  checked && "bg-accent/50",
-                )}
-              >
-                <span className="flex size-3.5 shrink-0 items-center justify-center">
-                  {checked && <Check className="text-primary size-3.5" />}
-                </span>
-                <span
-                  className={cn(
-                    "inline-flex max-w-full items-center rounded px-2 py-0.5 text-[11px] font-medium",
-                    getOptionBadgeClass(opt.color),
-                  )}
-                >
-                  <span className="truncate">{opt.name}</span>
-                </span>
-              </button>
-            );
-          })}
-
-          {trimmedQuery && !hasExactOption && (
-            <button
-              type="button"
-              onClick={() => handleCreateAndSelect(trimmedQuery)}
-              className="hover:bg-accent flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
-            >
-              <span className="text-muted-foreground text-[11px]">{t("selectCell.createPrefix")}</span>
-              <span
-                className={cn(
-                  "inline-flex max-w-full items-center rounded px-2 py-0.5 text-[11px] font-medium",
-                  getOptionBadgeClass(previewColor),
-                )}
-              >
-                <span className="truncate">{trimmedQuery}</span>
-              </span>
-            </button>
-          )}
-
-          {filteredOptions.length === 0 && !trimmedQuery && (
-            <div className="text-muted-foreground px-2 py-3 text-center text-xs">{t("selectCell.emptyHint")}</div>
-          )}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-function MultiRelationCell({
-  selectedItems,
-  candidates,
-  disabled,
-  placeholder,
-  searchPlaceholder,
-  emptyText,
-  onChange,
-  t,
-}: {
-  selectedItems: StageTableRelationItem[];
-  candidates: StageTableRow[];
-  disabled?: boolean;
-  placeholder: string;
-  searchPlaceholder: string;
-  emptyText: string;
-  onChange: (nextUUIDs: string[]) => void;
-  t: (key: string) => string;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const selectedIds = useMemo(() => new Set(selectedItems.map((item) => item.uuid)), [selectedItems]);
-
-  const filteredCandidates = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return candidates;
-    return candidates.filter((c) => getDisplayLabel(c, t).toLowerCase().includes(q));
-  }, [candidates, query, t]);
-
-  if (disabled) {
-    return <div className="text-muted-foreground/60 flex h-full items-center px-2.5 py-1 text-xs">-</div>;
-  }
-
-  const toggleCandidate = (uuid: string) => {
-    const next = new Set(selectedIds);
-    if (next.has(uuid)) {
-      next.delete(uuid);
-    } else {
-      next.add(uuid);
-    }
-    onChange(Array.from(next));
-  };
-
-  return (
-    <Popover
-      open={open}
-      onOpenChange={(nextOpen) => {
-        setOpen(nextOpen);
-        if (!nextOpen) setQuery("");
-      }}
-    >
-      <PopoverTrigger asChild>
-        <div
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              setOpen(true);
-            }
-          }}
-          className="hover:bg-accent/40 flex h-full min-h-8 w-full cursor-pointer flex-wrap items-center gap-1 px-2 py-1 text-xs outline-none"
-        >
-          {selectedItems.length === 0 ? (
-            <span className="text-muted-foreground/50 text-xs">{placeholder}</span>
-          ) : (
-            selectedItems.map((item) => {
-              const label = getDisplayLabel(item, t);
-              return (
-                <span
-                  key={item.uuid}
-                  className="bg-secondary text-secondary-foreground inline-flex max-w-full items-center gap-1 rounded px-1.5 py-0.5 text-[11px]"
-                >
-                  <RowKindIcon kind={item.kind} className="size-3" />
-                  <span className="max-w-28 truncate">{label}</span>
-                  <button
-                    type="button"
-                    data-cell-action
-                    aria-label={t("removeRelation")}
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onChange(selectedItems.filter((s) => s.uuid !== item.uuid).map((s) => s.uuid));
-                    }}
-                    className="text-muted-foreground hover:text-foreground rounded-xs p-0.5"
-                  >
-                    <X className="size-2.5" />
-                  </button>
-                </span>
-              );
-            })
-          )}
-        </div>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className="w-60 p-0"
-        onWheel={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="border-b p-2">
-          <div className="relative flex items-center">
-            <Search className="text-muted-foreground pointer-events-none absolute left-2 size-3.5" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.stopPropagation()}
-              placeholder={searchPlaceholder}
-              className="h-7 pl-7 text-xs"
-            />
-          </div>
-        </div>
-        <div className="max-h-56 overflow-y-auto p-1">
-          {filteredCandidates.length === 0 ? (
-            <div className="text-muted-foreground px-2 py-4 text-center text-xs">{emptyText}</div>
-          ) : (
-            filteredCandidates.map((candidate) => {
-              const checked = selectedIds.has(candidate.uuid);
-              const label = getDisplayLabel(candidate, t);
-              return (
-                <label
-                  key={candidate.uuid}
-                  className="hover:bg-accent flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-xs"
-                >
-                  <Checkbox checked={checked} onCheckedChange={() => toggleCandidate(candidate.uuid)} />
-                  <RowKindIcon kind={candidate.kind} />
-                  <span className="min-w-0 flex-1 truncate">{label}</span>
-                </label>
-              );
-            })
-          )}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-function SingleRelationCell({
-  selectedItem,
-  candidates,
-  placeholder,
-  searchPlaceholder,
-  emptyText,
-  onChange,
-  t,
-}: {
-  selectedItem: StageTableRelationItem | null;
-  candidates: StageTableRow[];
-  placeholder: string;
-  searchPlaceholder: string;
-  emptyText: string;
-  onChange: (nextUUID: string | null) => void;
-  t: (key: string) => string;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-
-  const filteredCandidates = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return candidates;
-    return candidates.filter((c) => getDisplayLabel(c, t).toLowerCase().includes(q));
-  }, [candidates, query, t]);
-
-  return (
-    <Popover
-      open={open}
-      onOpenChange={(nextOpen) => {
-        setOpen(nextOpen);
-        if (!nextOpen) setQuery("");
-      }}
-    >
-      <PopoverTrigger asChild>
-        <div
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              setOpen(true);
-            }
-          }}
-          className="hover:bg-accent/40 flex h-full min-h-8 w-full cursor-pointer items-center gap-1 px-2 py-1 text-xs outline-none"
-        >
-          {!selectedItem ? (
-            <span className="text-muted-foreground/50 text-xs">{placeholder}</span>
-          ) : (
-            <span className="bg-secondary text-secondary-foreground inline-flex max-w-full items-center gap-1 rounded px-1.5 py-0.5 text-[11px]">
-              <RowKindIcon kind={selectedItem.kind} className="size-3" />
-              <span className="max-w-28 truncate">{getDisplayLabel(selectedItem, t)}</span>
-              <button
-                type="button"
-                data-cell-action
-                aria-label={t("removeRelation")}
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onChange(null);
-                }}
-                className="text-muted-foreground hover:text-foreground rounded-xs p-0.5"
-              >
-                <X className="size-2.5" />
-              </button>
-            </span>
-          )}
-        </div>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className="w-60 p-0"
-        onWheel={(e) => e.stopPropagation()}
-        onMouseDown={(e) => e.stopPropagation()}
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="border-b p-2">
-          <div className="relative flex items-center">
-            <Search className="text-muted-foreground pointer-events-none absolute left-2 size-3.5" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.stopPropagation()}
-              placeholder={searchPlaceholder}
-              className="h-7 pl-7 text-xs"
-            />
-          </div>
-        </div>
-        <div className="max-h-56 overflow-y-auto p-1">
-          {selectedItem && (
-            <button
-              type="button"
-              onClick={() => {
-                onChange(null);
-                setOpen(false);
-              }}
-              className="text-muted-foreground hover:bg-accent hover:text-foreground mb-1 flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs"
-            >
-              <X className="size-3.5" />
-              <span>{t("clearOuter")}</span>
-            </button>
-          )}
-          {filteredCandidates.length === 0 ? (
-            <div className="text-muted-foreground px-2 py-4 text-center text-xs">{emptyText}</div>
-          ) : (
-            filteredCandidates.map((candidate) => {
-              const checked = selectedItem?.uuid === candidate.uuid;
-              const label = getDisplayLabel(candidate, t);
-              return (
-                <button
-                  key={candidate.uuid}
-                  type="button"
-                  onClick={() => {
-                    onChange(checked ? null : candidate.uuid);
-                    setOpen(false);
-                  }}
-                  className={cn(
-                    "hover:bg-accent flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs",
-                    checked && "bg-accent/60 font-medium",
-                  )}
-                >
-                  <RowKindIcon kind={candidate.kind} />
-                  <span className="min-w-0 flex-1 truncate">{label}</span>
-                </button>
-              );
-            })
-          )}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-interface ScrollMetrics {
-  scrollTop: number;
-  scrollLeft: number;
-  scrollHeight: number;
-  scrollWidth: number;
-  clientHeight: number;
-  clientWidth: number;
-  vTrackHeight: number;
-  hTrackWidth: number;
-}
-
-/**
- * 带右侧垂直滑块与底部水平滑块的滚动容器：
- * 支持鼠标拖拽滑块、点击轨道跳转、以及滚轮控制（含底部滑块悬停滚轮与 Shift+滚轮横向滚动）。
- */
-function TableScrollContainer({
-  children,
-  layoutDepsKey,
-  externalViewportRef,
-}: {
-  children: React.ReactNode;
-  layoutDepsKey: string;
-  externalViewportRef?: React.MutableRefObject<HTMLDivElement | null>;
-}) {
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const assignViewportRef = useCallback(
-    (el: HTMLDivElement | null) => {
-      viewportRef.current = el;
-      if (externalViewportRef) {
-        externalViewportRef.current = el;
-      }
-    },
-    [externalViewportRef],
-  );
-  const contentRef = useRef<HTMLDivElement>(null);
-  const vTrackRef = useRef<HTMLDivElement>(null);
-  const hTrackRef = useRef<HTMLDivElement>(null);
-
-  const vDragRef = useRef<{
-    pointerId: number;
-    startY: number;
-    startScrollTop: number;
-    maxScrollTop: number;
-    maxThumbTop: number;
-  } | null>(null);
-
-  const hDragRef = useRef<{
-    pointerId: number;
-    startX: number;
-    startScrollLeft: number;
-    maxScrollLeft: number;
-    maxThumbLeft: number;
-  } | null>(null);
-
-  const [metrics, setMetrics] = useState<ScrollMetrics>({
-    scrollTop: 0,
-    scrollLeft: 0,
-    scrollHeight: 0,
-    scrollWidth: 0,
-    clientHeight: 0,
-    clientWidth: 0,
-    vTrackHeight: 0,
-    hTrackWidth: 0,
-  });
-
-  const syncMetrics = useCallback(() => {
-    const vp = viewportRef.current;
-    if (!vp) return;
-    const next: ScrollMetrics = {
-      scrollTop: vp.scrollTop,
-      scrollLeft: vp.scrollLeft,
-      scrollHeight: vp.scrollHeight,
-      scrollWidth: vp.scrollWidth,
-      clientHeight: vp.clientHeight,
-      clientWidth: vp.clientWidth,
-      vTrackHeight: vTrackRef.current?.clientHeight ?? vp.clientHeight,
-      hTrackWidth: hTrackRef.current?.clientWidth ?? vp.clientWidth,
-    };
-    setMetrics((prev) => {
-      if (
-        prev.scrollTop === next.scrollTop &&
-        prev.scrollLeft === next.scrollLeft &&
-        prev.scrollHeight === next.scrollHeight &&
-        prev.scrollWidth === next.scrollWidth &&
-        prev.clientHeight === next.clientHeight &&
-        prev.clientWidth === next.clientWidth &&
-        prev.vTrackHeight === next.vTrackHeight &&
-        prev.hTrackWidth === next.hTrackWidth
-      ) {
-        return prev;
-      }
-      return next;
-    });
-  }, []);
-
-  useLayoutEffect(() => {
-    syncMetrics();
-  }, [syncMetrics, layoutDepsKey]);
-
-  useEffect(() => {
-    const vp = viewportRef.current;
-    const content = contentRef.current;
-    const vTrack = vTrackRef.current;
-    const hTrack = hTrackRef.current;
-    if (!vp || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => syncMetrics());
-    observer.observe(vp);
-    if (content) observer.observe(content);
-    if (vTrack) observer.observe(vTrack);
-    if (hTrack) observer.observe(hTrack);
-    return () => observer.disconnect();
-  }, [syncMetrics]);
-
-  const maxScrollTop = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
-  const hasVerticalOverflow = maxScrollTop > 1;
-  const vInnerTrack = Math.max(0, metrics.vTrackHeight - 4);
-  const vThumbHeight = hasVerticalOverflow
-    ? Math.max(
-        MIN_THUMB_SIZE,
-        Math.min(vInnerTrack, Math.round((metrics.clientHeight / metrics.scrollHeight) * vInnerTrack)),
-      )
-    : vInnerTrack;
-  const maxVThumbTop = Math.max(0, vInnerTrack - vThumbHeight);
-  const vThumbTop =
-    hasVerticalOverflow && maxVThumbTop > 0
-      ? Math.min(maxVThumbTop, (metrics.scrollTop / maxScrollTop) * maxVThumbTop)
-      : 0;
-
-  const maxScrollLeft = Math.max(0, metrics.scrollWidth - metrics.clientWidth);
-  const hasHorizontalOverflow = maxScrollLeft > 1;
-  const hInnerTrack = Math.max(0, metrics.hTrackWidth - 4);
-  const hThumbWidth = hasHorizontalOverflow
-    ? Math.max(
-        MIN_THUMB_SIZE,
-        Math.min(hInnerTrack, Math.round((metrics.clientWidth / metrics.scrollWidth) * hInnerTrack)),
-      )
-    : hInnerTrack;
-  const maxHThumbLeft = Math.max(0, hInnerTrack - hThumbWidth);
-  const hThumbLeft =
-    hasHorizontalOverflow && maxHThumbLeft > 0
-      ? Math.min(maxHThumbLeft, (metrics.scrollLeft / maxScrollLeft) * maxHThumbLeft)
-      : 0;
-
-  const handleViewportWheel = (e: React.WheelEvent<HTMLDivElement>) => {
-    e.stopPropagation();
-    const vp = viewportRef.current;
-    if (!vp) return;
-    if (e.shiftKey) {
-      e.preventDefault();
-      vp.scrollLeft += e.deltaY !== 0 ? e.deltaY : e.deltaX;
-      syncMetrics();
-      return;
-    }
-    if (!hasVerticalOverflow && hasHorizontalOverflow && e.deltaX === 0 && e.deltaY !== 0) {
-      e.preventDefault();
-      vp.scrollLeft += e.deltaY;
-      syncMetrics();
-    }
-  };
-
-  return (
-    <div className="grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)_14px] grid-rows-[minmax(0,1fr)_14px] overflow-hidden">
-      {/* 主表格视口 */}
-      <div
-        ref={assignViewportRef}
-        data-stage-table-viewport
-        onScroll={syncMetrics}
-        onWheel={handleViewportWheel}
-        className="scrollbar-hide min-h-0 min-w-0 overflow-scroll"
-      >
-        <div ref={contentRef} className="inline-block min-w-full pr-6 pb-8">
-          {children}
-        </div>
-      </div>
-
-      {/* 右侧垂直滑块 */}
-      <div
-        ref={vTrackRef}
-        data-stage-table-v-scrollbar
-        onWheel={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const vp = viewportRef.current;
-          if (!vp || !hasVerticalOverflow) return;
-          vp.scrollTop += e.deltaY !== 0 ? e.deltaY : e.deltaX;
-          syncMetrics();
-        }}
-        onPointerDown={(e) => {
-          if (e.button !== 0 || !hasVerticalOverflow || e.target !== e.currentTarget) return;
-          e.preventDefault();
-          e.stopPropagation();
-          const vp = viewportRef.current;
-          const track = vTrackRef.current;
-          if (!vp || !track || maxVThumbTop <= 0) return;
-          const rect = track.getBoundingClientRect();
-          const clickY = e.clientY - rect.top - 2;
-          const ratio = Math.max(0, Math.min(1, (clickY - vThumbHeight / 2) / maxVThumbTop));
-          vp.scrollTop = ratio * maxScrollTop;
-          syncMetrics();
-        }}
-        className="border-border/60 bg-muted/25 relative h-full w-3.5 touch-none border-l select-none"
-      >
-        <div
-          data-stage-table-v-thumb
-          style={{
-            top: `${2 + vThumbTop}px`,
-            height: `${Math.max(0, vThumbHeight)}px`,
-          }}
-          onPointerDown={(e) => {
-            if (e.button !== 0 || !hasVerticalOverflow) return;
-            e.preventDefault();
-            e.stopPropagation();
-            const vp = viewportRef.current;
-            if (!vp) return;
-            e.currentTarget.setPointerCapture(e.pointerId);
-            vDragRef.current = {
-              pointerId: e.pointerId,
-              startY: e.clientY,
-              startScrollTop: vp.scrollTop,
-              maxScrollTop,
-              maxThumbTop: maxVThumbTop,
-            };
-          }}
-          onPointerMove={(e) => {
-            const drag = vDragRef.current;
-            const vp = viewportRef.current;
-            if (!drag || drag.pointerId !== e.pointerId || !vp || drag.maxThumbTop <= 0) return;
-            const deltaY = e.clientY - drag.startY;
-            vp.scrollTop = drag.startScrollTop + (deltaY / drag.maxThumbTop) * drag.maxScrollTop;
-            syncMetrics();
-          }}
-          onPointerUp={(e) => {
-            if (vDragRef.current?.pointerId === e.pointerId) {
-              vDragRef.current = null;
-            }
-          }}
-          onLostPointerCapture={(e) => {
-            if (vDragRef.current?.pointerId === e.pointerId) {
-              vDragRef.current = null;
-            }
-          }}
-          className={cn(
-            "absolute right-[2px] left-[2px] rounded-full transition-colors",
-            hasVerticalOverflow
-              ? "bg-muted-foreground/45 hover:bg-muted-foreground/70 active:bg-primary cursor-grab active:cursor-grabbing"
-              : "bg-muted-foreground/15 cursor-default",
-          )}
-        />
-      </div>
-
-      {/* 底部水平滑块 */}
-      <div
-        ref={hTrackRef}
-        data-stage-table-h-scrollbar
-        onWheel={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const vp = viewportRef.current;
-          if (!vp || !hasHorizontalOverflow) return;
-          const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-          vp.scrollLeft += delta;
-          syncMetrics();
-        }}
-        onPointerDown={(e) => {
-          if (e.button !== 0 || !hasHorizontalOverflow || e.target !== e.currentTarget) return;
-          e.preventDefault();
-          e.stopPropagation();
-          const vp = viewportRef.current;
-          const track = hTrackRef.current;
-          if (!vp || !track || maxHThumbLeft <= 0) return;
-          const rect = track.getBoundingClientRect();
-          const clickX = e.clientX - rect.left - 2;
-          const ratio = Math.max(0, Math.min(1, (clickX - hThumbWidth / 2) / maxHThumbLeft));
-          vp.scrollLeft = ratio * maxScrollLeft;
-          syncMetrics();
-        }}
-        className="border-border/60 bg-muted/25 relative h-3.5 w-full touch-none border-t select-none"
-      >
-        <div
-          data-stage-table-h-thumb
-          style={{
-            left: `${2 + hThumbLeft}px`,
-            width: `${Math.max(0, hThumbWidth)}px`,
-          }}
-          onPointerDown={(e) => {
-            if (e.button !== 0 || !hasHorizontalOverflow) return;
-            e.preventDefault();
-            e.stopPropagation();
-            const vp = viewportRef.current;
-            if (!vp) return;
-            e.currentTarget.setPointerCapture(e.pointerId);
-            hDragRef.current = {
-              pointerId: e.pointerId,
-              startX: e.clientX,
-              startScrollLeft: vp.scrollLeft,
-              maxScrollLeft,
-              maxThumbLeft: maxHThumbLeft,
-            };
-          }}
-          onPointerMove={(e) => {
-            const drag = hDragRef.current;
-            const vp = viewportRef.current;
-            if (!drag || drag.pointerId !== e.pointerId || !vp || drag.maxThumbLeft <= 0) return;
-            const deltaX = e.clientX - drag.startX;
-            vp.scrollLeft = drag.startScrollLeft + (deltaX / drag.maxThumbLeft) * drag.maxScrollLeft;
-            syncMetrics();
-          }}
-          onPointerUp={(e) => {
-            if (hDragRef.current?.pointerId === e.pointerId) {
-              hDragRef.current = null;
-            }
-          }}
-          onLostPointerCapture={(e) => {
-            if (hDragRef.current?.pointerId === e.pointerId) {
-              hDragRef.current = null;
-            }
-          }}
-          className={cn(
-            "absolute top-[2px] bottom-[2px] rounded-full transition-colors",
-            hasHorizontalOverflow
-              ? "bg-muted-foreground/45 hover:bg-muted-foreground/70 active:bg-primary cursor-grab active:cursor-grabbing"
-              : "bg-muted-foreground/15 cursor-default",
-          )}
-        />
-      </div>
-
-      {/* 右下角滑块交汇角 */}
-      <div className="border-border/60 bg-muted/35 border-t border-l" />
-    </div>
-  );
-}
-
-const FIELD_TYPE_GRID_ORDER: readonly CustomColumnType[] = [
-  "text",
-  "select",
-  "multi_select",
-  "number",
-  "date",
-  "formula",
-];
 
 function FreezeColumnIcon({ className }: { className?: string }) {
   return (
@@ -1757,36 +309,11 @@ interface SuperHeaderSegment {
   isFreezeBoundary: boolean;
 }
 
-type TableSelectionMode = "none" | "all" | "rows" | "columns" | "cells";
-
-interface TableSelectionState {
-  mode: TableSelectionMode;
-  rowIds: Set<string>;
-  colIds: Set<string>;
-  cells: Set<string>;
-  anchorRowId: string | null;
-  anchorColId: string | null;
-  activeCell: { rowId: string; colId: string } | null;
-}
-
-const EMPTY_SELECTION: TableSelectionState = {
-  mode: "none",
-  rowIds: new Set<string>(),
-  colIds: new Set<string>(),
-  cells: new Set<string>(),
-  anchorRowId: null,
-  anchorColId: null,
-  activeCell: null,
-};
-
-function makeCellKey(rowId: string, colId: string): string {
-  return `${rowId}\0${colId}`;
-}
-
 function ColumnFilterSortPopoverContent({
   columnId,
   customCol,
   allRows,
+  dataSource,
   activeSort,
   activeFilter,
   onSetSort,
@@ -1795,7 +322,8 @@ function ColumnFilterSortPopoverContent({
 }: {
   columnId: string;
   customCol?: TableColumnSchema;
-  allRows: StageTableRow[];
+  allRows: readonly StageTableRow[];
+  dataSource: TableDataSource;
   activeSort: TableSortConfig | null;
   activeFilter: TableColumnFilter | null;
   onSetSort: (sort: TableSortConfig | null) => void;
@@ -1803,10 +331,37 @@ function ColumnFilterSortPopoverContent({
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
   const [search, setSearch] = useState("");
-  const { buckets, emptyCount } = useMemo(
-    () => collectColumnFilterBuckets(allRows, columnId, customCol),
-    [allRows, columnId, customCol],
+  const isSqlite = dataSource.isSqliteBacked();
+
+  const syncFallback = useMemo(
+    () =>
+      isSqlite
+        ? { buckets: [] as ColumnFilterBucket[], emptyCount: 0 }
+        : collectColumnFilterBuckets(allRows, columnId, customCol),
+    [isSqlite, allRows, columnId, customCol],
   );
+
+  const [remoteBuckets, setRemoteBuckets] = useState<{
+    buckets: ColumnFilterBucket[];
+    emptyCount: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!isSqlite) {
+      setRemoteBuckets(null);
+      return;
+    }
+    let cancelled = false;
+    void dataSource.queryFilterBuckets({ columnId, limit: 500 }).then((res) => {
+      if (cancelled) return;
+      setRemoteBuckets({ buckets: res.buckets, emptyCount: res.emptyCount });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isSqlite, dataSource, columnId]);
+
+  const { buckets, emptyCount } = remoteBuckets ?? syncFallback;
 
   const isSortAsc = activeSort?.columnId === columnId && activeSort.direction === "asc";
   const isSortDesc = activeSort?.columnId === columnId && activeSort.direction === "desc";
@@ -1929,7 +484,7 @@ function ColumnFilterSortPopoverContent({
         </div>
       </div>
 
-      {/* 筛选区：值复选列表（类 Windows 文件资源管理器列筛选） */}
+      {/* 筛选区：值复选列表 */}
       <div className="border-border/60 border-t pt-2">
         <div className="mb-1.5 flex items-center justify-between px-0.5">
           <span className="text-muted-foreground text-[11px] font-medium">{t("sortFilter.filterTitle")}</span>
@@ -2014,25 +569,435 @@ function ColumnFilterSortPopoverContent({
   );
 }
 
-export default function StageTablePanel({ project }: { project: Project }) {
+// 原子化订阅选中状态的局部 Header / Badge 子组件（避免 StageTablePanel 顶层因选中态变动全表重渲染）
+
+function SelectAllHeaderCell({
+  selectionStore,
+  frozenEndIndex,
+  title,
+  onToggleSelectAll,
+}: {
+  selectionStore: StageTableSelectionStore;
+  frozenEndIndex: number;
+  title: string;
+  onToggleSelectAll: () => void;
+}) {
+  const mode = useTableSelectionMode(selectionStore);
+  return (
+    <th
+      data-stage-table-select-all
+      title={title}
+      onClick={onToggleSelectAll}
+      style={frozenEndIndex >= 0 ? { left: "0px" } : undefined}
+      className={cn(
+        "border-border/50 bg-muted hover:bg-accent/70 h-9 cursor-pointer border-r px-1 text-center text-[11px] font-medium transition-colors select-none",
+        mode === "all"
+          ? "text-primary after:bg-primary/18 font-semibold after:pointer-events-none after:absolute after:inset-0"
+          : "text-muted-foreground/70",
+        frozenEndIndex >= 0 ? "sticky z-30" : "relative",
+      )}
+    >
+      #
+    </th>
+  );
+}
+
+function SelectionSummaryBadge({
+  selectionStore,
+  totalRowCount,
+  onClear,
+  t,
+}: {
+  selectionStore: StageTableSelectionStore;
+  totalRowCount: number;
+  onClear: (clearCanvas: boolean) => void;
+  t: (key: string, opts?: Record<string, unknown>) => string;
+}) {
+  const { mode, count } = useTableSelectionBadgeInfo(selectionStore);
+  const summaryText =
+    mode === "all"
+      ? t("selection.allSelected", { count: totalRowCount })
+      : mode === "rows" && count > 0
+        ? t("selection.rowsCount", { count })
+        : mode === "columns" && count > 0
+          ? t("selection.colsCount", { count })
+          : mode === "cells" && count > 0
+            ? t("selection.cellsCount", { count })
+            : null;
+
+  if (!summaryText) return null;
+
+  return (
+    <div
+      data-stage-table-selection-badge
+      className="bg-primary/12 text-primary ml-auto inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] font-medium select-none"
+    >
+      <span>{summaryText}</span>
+      <button
+        type="button"
+        aria-label={t("dateCell.clear")}
+        onClick={() => onClear(mode === "rows" || mode === "all" || mode === "cells")}
+        className="hover:bg-primary/20 cursor-pointer rounded-full p-0.5 transition-colors"
+      >
+        <X className="size-3" />
+      </button>
+    </div>
+  );
+}
+
+function SelectableColumnHeaderCell({
+  colId,
+  colIdx,
+  selectionStore,
+  isFrozen,
+  isFreezeBoundary,
+  stickyLeftPx,
+  isNameCol,
+  isCreatingThis,
+  isDraggingThis,
+  colSortDir,
+  isColFiltered,
+  isFilterMenuOpen,
+  onPointerDown,
+  children,
+}: {
+  colId: string;
+  colIdx: number;
+  selectionStore: StageTableSelectionStore;
+  isFrozen: boolean;
+  isFreezeBoundary: boolean;
+  stickyLeftPx: number;
+  isNameCol: boolean;
+  isCreatingThis: boolean;
+  isDraggingThis: boolean;
+  colSortDir: TableSortDirection | null;
+  isColFiltered: boolean;
+  isFilterMenuOpen: boolean;
+  onPointerDown: (e: React.PointerEvent) => void;
+  children: React.ReactNode;
+}) {
+  const isColSelected = useIsColumnSelected(selectionStore, colId);
+  return (
+    <th
+      data-table-col-id={colId}
+      data-col-idx={colIdx}
+      data-col-selected={isColSelected ? "true" : undefined}
+      data-col-sort={colSortDir ?? undefined}
+      data-col-filtered={isColFiltered ? "true" : undefined}
+      style={isFrozen ? { left: `${stickyLeftPx}px` } : undefined}
+      onPointerDown={onPointerDown}
+      className={cn(
+        "group/th border-border/50 bg-muted text-muted-foreground h-9 border-r p-0 font-medium select-none",
+        !isNameCol && !isCreatingThis ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
+        isDraggingThis && "bg-accent/60 opacity-60",
+        isFrozen ? "sticky z-30" : "relative",
+        isFreezeBoundary && "border-r-primary/45 border-r-2",
+        (colSortDir || isColFiltered) && "text-foreground",
+        isColSelected &&
+          "text-foreground after:bg-primary/15 after:border-b-primary after:pointer-events-none after:absolute after:inset-0 after:border-b-2",
+        !isColSelected &&
+          (colSortDir || isColFiltered || isFilterMenuOpen) &&
+          "after:bg-primary/10 after:pointer-events-none after:absolute after:inset-0",
+      )}
+    >
+      {children}
+    </th>
+  );
+}
+
+/**
+ * 非表格视图路由容器：仅在激活看板/甘特/画册/日历/间隔重复视图时才订阅选中行快照，
+ * 保证主表格视图下选中变更对顶层 `StageTablePanel` 为 0 次重渲染。
+ */
+function NonTableViewBridge({
+  activeViewType,
+  project,
+  dataSource,
+  dataRevision,
+  selectionStore,
+  activeView,
+  allRows,
+  rows,
+  allColumnIds,
+  filterableColumnIds,
+  filterColumnGroups,
+  visibleColumnIds,
+  customColumns,
+  customColumnMap,
+  activeFilters,
+  activeFilterGroup,
+  activeSort,
+  getColumnLabel,
+  onSelectRows,
+  onOpenRecord,
+  onPreviewImage,
+  onOpenFormulaEditor,
+  t,
+}: {
+  activeViewType: Exclude<TableViewType, "table">;
+  project?: Project | null;
+  dataSource: TableDataSource;
+  dataRevision: number;
+  selectionStore: StageTableSelectionStore;
+  activeView: TableViewSchema;
+  allRows: readonly StageTableRow[];
+  rows: readonly StageTableRow[];
+  allColumnIds: readonly string[];
+  filterableColumnIds: readonly string[];
+  filterColumnGroups: readonly TableColumnGroup[];
+  visibleColumnIds: readonly string[];
+  customColumns: readonly TableColumnSchema[];
+  customColumnMap: ReadonlyMap<string, TableColumnSchema>;
+  activeFilters: readonly TableColumnFilter[];
+  activeFilterGroup: TableFilterGroup;
+  activeSort: TableSortConfig | null;
+  getColumnLabel: (colId: string) => string;
+  onSelectRows: (uuids: string[], focusCamera?: boolean) => void;
+  onOpenRecord: (rowUuid: string, row?: StageTableRow) => void;
+  onPreviewImage: (attachmentId: string, rowUuid?: string, docId?: string) => void;
+  onOpenFormulaEditor: (colId: string, rowUuid: string) => void;
+  t: (key: string, opts?: Record<string, unknown>) => string;
+}) {
+  const selectedRowIds = useSelectedRowIdsSnapshot(selectionStore);
+
+  if (activeViewType === "kanban") {
+    return (
+      <StageTableKanbanView
+        project={project}
+        dataSource={dataSource}
+        dataRevision={dataRevision}
+        activeView={activeView}
+        allRows={allRows}
+        rows={rows}
+        allColumnIds={allColumnIds}
+        filterableColumnIds={filterableColumnIds}
+        filterColumnGroups={filterColumnGroups}
+        visibleColumnIds={visibleColumnIds}
+        customColumns={customColumns}
+        customColumnMap={customColumnMap}
+        activeFilters={activeFilters}
+        activeFilterGroup={activeFilterGroup}
+        activeSort={activeSort}
+        selectedRowIds={selectedRowIds}
+        getColumnLabel={getColumnLabel}
+        onSelectRows={onSelectRows}
+        onOpenRecord={onOpenRecord}
+        onPreviewImage={onPreviewImage}
+        t={t}
+      />
+    );
+  }
+  if (activeViewType === "gantt") {
+    return (
+      <StageTableGanttView
+        project={project}
+        dataSource={dataSource}
+        dataRevision={dataRevision}
+        activeView={activeView}
+        allRows={allRows}
+        rows={rows}
+        allColumnIds={allColumnIds}
+        filterableColumnIds={filterableColumnIds}
+        filterColumnGroups={filterColumnGroups}
+        visibleColumnIds={visibleColumnIds}
+        customColumns={customColumns}
+        customColumnMap={customColumnMap}
+        activeFilters={activeFilters}
+        activeFilterGroup={activeFilterGroup}
+        activeSort={activeSort}
+        selectedRowIds={selectedRowIds}
+        getColumnLabel={getColumnLabel}
+        onSelectRows={onSelectRows}
+        onOpenRecord={onOpenRecord}
+        onPreviewImage={onPreviewImage}
+        t={t}
+      />
+    );
+  }
+  if (activeViewType === "gallery") {
+    return (
+      <StageTableGalleryView
+        project={project}
+        dataSource={dataSource}
+        dataRevision={dataRevision}
+        activeView={activeView}
+        allRows={allRows}
+        rows={rows}
+        allColumnIds={allColumnIds}
+        filterableColumnIds={filterableColumnIds}
+        filterColumnGroups={filterColumnGroups}
+        visibleColumnIds={visibleColumnIds}
+        customColumns={customColumns}
+        customColumnMap={customColumnMap}
+        activeFilters={activeFilters}
+        activeFilterGroup={activeFilterGroup}
+        activeSort={activeSort}
+        selectedRowIds={selectedRowIds}
+        getColumnLabel={getColumnLabel}
+        onSelectRows={onSelectRows}
+        onOpenRecord={onOpenRecord}
+        onPreviewImage={onPreviewImage}
+        t={t}
+      />
+    );
+  }
+  if (activeViewType === "calendar") {
+    return (
+      <StageTableCalendarView
+        project={project}
+        dataSource={dataSource}
+        dataRevision={dataRevision}
+        activeView={activeView}
+        allRows={allRows}
+        rows={rows}
+        allColumnIds={allColumnIds}
+        filterableColumnIds={filterableColumnIds}
+        filterColumnGroups={filterColumnGroups}
+        visibleColumnIds={visibleColumnIds}
+        customColumns={customColumns}
+        customColumnMap={customColumnMap}
+        activeFilters={activeFilters}
+        activeFilterGroup={activeFilterGroup}
+        activeSort={activeSort}
+        selectedRowIds={selectedRowIds}
+        getColumnLabel={getColumnLabel}
+        onSelectRows={onSelectRows}
+        onOpenRecord={onOpenRecord}
+        onPreviewImage={onPreviewImage}
+        t={t}
+      />
+    );
+  }
+  return (
+    <StageTableSpacedRepetitionView
+      project={project}
+      dataSource={dataSource}
+      dataRevision={dataRevision}
+      activeView={activeView}
+      allRows={allRows}
+      rows={rows}
+      allColumnIds={allColumnIds}
+      filterableColumnIds={filterableColumnIds}
+      filterColumnGroups={filterColumnGroups}
+      customColumns={customColumns}
+      customColumnMap={customColumnMap}
+      activeFilters={activeFilters}
+      activeFilterGroup={activeFilterGroup}
+      activeSort={activeSort}
+      selectedRowIds={selectedRowIds}
+      getColumnLabel={getColumnLabel}
+      onSelectRows={onSelectRows}
+      onOpenRecord={onOpenRecord}
+      onPreviewImage={onPreviewImage}
+      onOpenFormulaEditor={onOpenFormulaEditor}
+      t={t}
+    />
+  );
+}
+
+export default function StageTablePanel({
+  project,
+  dataSource: externalDataSource,
+}: {
+  project?: Project | null;
+  dataSource?: TableDataSource;
+}) {
   const { t } = useTranslation("stageTable");
-  const [, setRevision] = useState(0);
+  const [revision, setRevision] = useState(0);
   const [propertySearch, setPropertySearch] = useState("");
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const tableGridRef = useRef<HTMLTableElement | null>(null);
 
-  // 多维表格选中状态（全选 / 行 / 多行 / 列 / 多列 / 单格 / 多格）
-  const [selection, setSelection] = useState<TableSelectionState>(EMPTY_SELECTION);
-  const selectionRef = useRef<TableSelectionState>(EMPTY_SELECTION);
-  selectionRef.current = selection;
+  // 单例共享图片上传 input（避免 5,000 行每行挂载 1 个 input[type=file]）
+  const rowImageUploadRef = useRef<HTMLInputElement>(null);
+  const rowImageUploadTargetRef = useRef<{ rowUuid: string; docId?: string } | null>(null);
+
+  // 入口 1：画布分屏顶部「范围切换」（当前画布 / 当前文件夹 / 整个工作空间）
+  const [dockScopeMode, setDockScopeMode] = useState<"current_doc" | "current_folder" | "workspace">("current_doc");
+  const [dockWorkspaceSource, setDockWorkspaceSource] = useState<WorkspaceTableSource | null>(null);
+  const [workspaceColumnsDialogOpen, setWorkspaceColumnsDialogOpen] = useState(false);
+  const [scopeSearch, setScopeSearch] = useState("");
+
+  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
+  useEffect(() => {
+    if (!WorkspaceClient.isAvailable()) {
+      setWorkspaceRoot(null);
+      return;
+    }
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+    void import("@/core/service/workspace/WorkspaceManager")
+      .then(({ WorkspaceManager }) => {
+        if (cancelled) return;
+        const syncRoot = () => setWorkspaceRoot(WorkspaceManager.root ?? null);
+        syncRoot();
+        WorkspaceManager.on("root-change", syncRoot);
+        unsubscribe = () => WorkspaceManager.off("root-change", syncRoot);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
+  const canSwitchDockScope = Boolean(project && !externalDataSource && workspaceRoot && WorkspaceClient.isAvailable());
+
+  const currentRelFolder = useMemo(() => {
+    if (!project || !workspaceRoot || project.uri?.scheme !== "file") return "";
+    const normRoot = workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+    const normFile = project.uri.fsPath.replace(/\\/g, "/");
+    if (!normFile.toLowerCase().startsWith(`${normRoot.toLowerCase()}/`)) return "";
+    const rel = normFile.slice(normRoot.length + 1);
+    const idx = rel.lastIndexOf("/");
+    return idx > 0 ? rel.slice(0, idx) : "";
+  }, [project, workspaceRoot]);
+
+  useEffect(() => {
+    setDockScopeMode("current_doc");
+  }, [project]);
+
+  useEffect(() => {
+    if (!canSwitchDockScope || dockScopeMode === "current_doc") {
+      setDockWorkspaceSource(null);
+      return;
+    }
+    const scope: WorkspaceTableScope =
+      dockScopeMode === "current_folder" && currentRelFolder
+        ? { kind: "folders", paths: [currentRelFolder] }
+        : { kind: "all", paths: [] };
+    const ws = createWorkspaceTableSource({
+      overrideScope: scope,
+      defaultCreateDocId: project?.v3DocId ?? null,
+    });
+    setDockWorkspaceSource(ws);
+    return () => {
+      ws.dispose();
+    };
+  }, [canSwitchDockScope, dockScopeMode, currentRelFolder, project?.v3DocId]);
+
+  const singleDocSource = useMemo(() => (project ? createSingleFileTableSource(project) : null), [project]);
+  const dataSource = useMemo<TableDataSource | null>(
+    () =>
+      externalDataSource ??
+      (dockScopeMode === "current_doc" ? singleDocSource : dockWorkspaceSource) ??
+      singleDocSource,
+    [externalDataSource, dockScopeMode, singleDocSource, dockWorkspaceSource],
+  );
+
+  // 原子化外部选中态 Store（彻底避免顶层 selection state 引发全表重渲染）
+  const selectionStore = useMemo(() => new StageTableSelectionStore(), []);
   const wasSoleActiveOnDownRef = useRef(false);
   const suppressCellClickRef = useRef(false);
   const lastCanvasSelectedRef = useRef<string[]>([]);
 
-  // 列筛选/排序弹窗状态（Windows 文件管理器风格列头下拉）
+  // 单例单元格浮层 / 内联编辑器状态
+  const [activeEditor, setActiveEditor] = useState<ActiveCellEditorState | null>(null);
+
+  // 列筛选/排序弹窗状态
   const [filterPopoverColId, setFilterPopoverColId] = useState<string | null>(null);
 
-  // 图 1 + 图 2：右键表头「修改字段」或属性面板「>」触发的字段修改面板状态
+  // 字段修改面板状态
   const [editingFieldState, setEditingFieldState] = useState<{
     colId: string;
     anchor: "header" | "floating";
@@ -2048,7 +1013,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
     previewRowUuid?: string | null;
   } | null>(null);
 
-  // 图 3 + 图 4：插入字段 / 右侧 + 创建新列后的表头内联标题 + 双列类型面板状态
+  // 插入字段 / 新建列内联标题 + 双列类型面板状态
   const [creatingColState, setCreatingColState] = useState<{
     colId: string;
     draftTitle: string;
@@ -2058,12 +1023,12 @@ export default function StageTablePanel({ project }: { project: Project }) {
   creatingColStateRef.current = creatingColState;
   const creatingTitleInputRef = useRef<HTMLInputElement>(null);
 
-  // 图 6：顶部分组表头重命名状态
+  // 顶部分组表头重命名状态
   const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
   const [renamingGroupDraft, setRenamingGroupDraft] = useState("");
   const groupRenameInputRef = useRef<HTMLInputElement>(null);
 
-  // 图片放大预览灯箱状态（支持底部缩略图跳转、左右箭头切换与节点/全表作用域）
+  // 图片放大预览灯箱状态
   const [previewLightboxState, setPreviewLightboxState] = useState<{
     items: ImageLightboxItem[];
     initialIndex: number;
@@ -2071,7 +1036,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
     allInitialIndex?: number;
   } | null>(null);
 
-  // 多视图切换、新建菜单、重命名、指针拖拽排序与记录详情弹窗状态
+  // 多视图标签栏状态
   const viewBarRef = useRef<HTMLDivElement>(null);
   const suppressViewClickRef = useRef(false);
   const [addViewPopoverOpen, setAddViewPopoverOpen] = useState(false);
@@ -2081,9 +1046,14 @@ export default function StageTablePanel({ project }: { project: Project }) {
   const viewRenameInputRef = useRef<HTMLInputElement>(null);
   const [draggingViewId, setDraggingViewId] = useState<string | null>(null);
   const [dropViewHint, setDropViewHint] = useState<{ targetViewId: string; position: "before" | "after" } | null>(null);
-  const [recordDialogRowUuid, setRecordDialogRowUuid] = useState<string | null>(null);
+  const [recordDialogTarget, setRecordDialogTarget] = useState<{
+    uuid: string;
+    docId?: string;
+    snapshot?: StageTableRow;
+  } | null>(null);
+  const recordDialogRowUuid = recordDialogTarget?.uuid ?? null;
 
-  // 表头拖拽重排状态（首列「名称」固定不可移动）
+  // 表头拖拽重排状态
   const headerRowRef = useRef<HTMLTableRowElement>(null);
   const [draggingColId, setDraggingColId] = useState<string | null>(null);
   const [dropHint, setDropHint] = useState<{ targetColId: string; position: "before" | "after" } | null>(null);
@@ -2092,44 +1062,271 @@ export default function StageTablePanel({ project }: { project: Project }) {
     setRevision((v) => v + 1);
   }, []);
 
-  const scrollRowIntoViewIfNeeded = useCallback((rowUuid: string) => {
-    const vp = viewportRef.current;
-    if (!vp) return;
-    const rowEl = Array.from(vp.querySelectorAll<HTMLElement>("tr[data-stage-table-row-id]")).find(
-      (el) => el.dataset.stageTableRowId === rowUuid,
-    );
-    if (!rowEl) return;
-    const theadHeight = vp.querySelector("thead")?.getBoundingClientRect().height ?? 0;
-    const vpRect = vp.getBoundingClientRect();
-    const rowRect = rowEl.getBoundingClientRect();
-    const visibleTop = vpRect.top + theadHeight;
-    const visibleBottom = vpRect.bottom;
-    if (rowRect.top < visibleTop) {
-      vp.scrollTop -= visibleTop - rowRect.top + 4;
-    } else if (rowRect.bottom > visibleBottom) {
-      vp.scrollTop += rowRect.bottom - visibleBottom + 4;
+  const isWorkspaceMode = dataSource?.scopeKind === "workspace";
+  const hasStageTableService = Boolean(dataSource && (isWorkspaceMode || project?.getService?.("stageTable")));
+
+  // 计算视图配置与表结构（仅在 revision/dataSource 变化时更新）
+  const activeView = hasStageTableService && dataSource ? dataSource.getActiveView() : null;
+  const views: TableViewSchema[] = hasStageTableService && dataSource ? dataSource.getViews() : [];
+  const activeViewType: TableViewType = activeView?.type ?? "table";
+  const tableRowHeight: TableRowHeight = activeView?.rowHeight ?? "medium";
+  const customColumns = useMemo(
+    () => (hasStageTableService && dataSource ? dataSource.getColumns() : []),
+    [hasStageTableService, dataSource, revision],
+  );
+  const customColumnMap = useMemo(
+    () => new Map<string, TableColumnSchema>(customColumns.map((col) => [col.id, col])),
+    [customColumns],
+  );
+
+  const visibleColumnIds = useMemo(
+    () => (hasStageTableService && dataSource ? dataSource.getVisibleColumnIds() : ["name"]),
+    [hasStageTableService, dataSource, revision],
+  );
+  const visibleColumnSet = useMemo(() => new Set(visibleColumnIds), [visibleColumnIds]);
+
+  const activeSort: TableSortConfig | null = useMemo(
+    () => (hasStageTableService && dataSource ? dataSource.getSort() : null),
+    [hasStageTableService, dataSource, revision],
+  );
+  const activeFilters: TableColumnFilter[] = useMemo(
+    () => (hasStageTableService && dataSource ? dataSource.getFilters() : []),
+    [hasStageTableService, dataSource, revision],
+  );
+  const activeFilterGroup: TableFilterGroup = useMemo(
+    () => (hasStageTableService && dataSource ? dataSource.getFilterGroup() : { conjunction: "and", conditions: [] }),
+    [hasStageTableService, dataSource, revision],
+  );
+  const activeWorkspaceScope = useMemo(
+    () => (hasStageTableService && dataSource?.getScope ? dataSource.getScope() : null),
+    [hasStageTableService, dataSource, revision],
+  );
+
+  // SQLite 模式下由 Rust 引擎分页查询主表格；非 SQLite / 单文件非表格视图使用内存热缓存（O(dirty) 公式 DAG）
+  const isSqliteBacked = Boolean(hasStageTableService && dataSource?.isSqliteBacked());
+  const useSqliteTablePaging = isSqliteBacked && activeViewType === "table";
+
+  const [sqliteTableState, setSqliteTableState] = useState<{
+    queryKey: string;
+    totalCount: number;
+    unfilteredTotalCount: number;
+    rowsByIndex: Map<number, StageTableRow>;
+  }>({
+    queryKey: "",
+    totalCount: 0,
+    unfilteredTotalCount: 0,
+    rowsByIndex: new Map(),
+  });
+  const sqliteInFlightChunksRef = useRef<Set<string>>(new Set());
+
+  const queryFingerprint = useMemo(
+    () =>
+      JSON.stringify({
+        rev: revision,
+        scopeKind: dataSource?.scopeKind ?? "",
+        scope: activeWorkspaceScope,
+        docId: dataSource?.getDocId() ?? null,
+        viewId: activeView?.id ?? "",
+        filters: activeFilters,
+        filterGroup: activeFilterGroup,
+        sort: activeSort,
+      }),
+    [revision, dataSource, activeWorkspaceScope, activeView?.id, activeFilters, activeFilterGroup, activeSort],
+  );
+
+  // 内存/同步查询（仅单文件模式在未使用 SQLite 分页或打开公式编辑器/详情弹窗等需要时按需计算）
+  const needAllRowsInMemory =
+    hasStageTableService &&
+    !isWorkspaceMode &&
+    (!useSqliteTablePaging || Boolean(formulaEditorState) || Boolean(recordDialogRowUuid));
+
+  const syncData = useMemo(() => {
+    if (!needAllRowsInMemory || !dataSource) {
+      return { allRows: [] as StageTableRow[], rows: [] as StageTableRow[], unfilteredTotalCount: 0 };
     }
-  }, []);
+    const allRows = dataSource.getAllRowsSync();
+    const page = dataSource.queryPageSync({
+      filters: activeFilters,
+      filterGroup: activeFilterGroup,
+      sort: activeSort,
+      offset: 0,
+      limit: Math.max(allRows.length, 1),
+    });
+    return {
+      allRows,
+      rows: page.rows,
+      unfilteredTotalCount: page.unfilteredTotalCount,
+    };
+  }, [needAllRowsInMemory, dataSource, revision, activeFilters, activeFilterGroup, activeSort]);
+
+  const fetchSqliteChunk = useCallback(
+    (chunkIndex: number, targetQueryKey: string) => {
+      if (!useSqliteTablePaging || !dataSource) return;
+      const chunkKey = `${targetQueryKey}#${chunkIndex}`;
+      if (sqliteInFlightChunksRef.current.has(chunkKey)) return;
+      sqliteInFlightChunksRef.current.add(chunkKey);
+
+      const offset = chunkIndex * SQLITE_PAGE_CHUNK_SIZE;
+      void dataSource
+        .queryPage({
+          offset,
+          limit: SQLITE_PAGE_CHUNK_SIZE,
+          filters: activeFilters,
+          filterGroup: activeFilterGroup,
+          sort: activeSort,
+        })
+        .then((res) => {
+          sqliteInFlightChunksRef.current.delete(chunkKey);
+          setSqliteTableState((prev) => {
+            const nextMap =
+              prev.queryKey === targetQueryKey ? new Map(prev.rowsByIndex) : new Map<number, StageTableRow>();
+            res.rows.forEach((row, i) => {
+              nextMap.set(res.offset + i, row);
+            });
+            return {
+              queryKey: targetQueryKey,
+              totalCount: res.totalCount,
+              unfilteredTotalCount: res.unfilteredTotalCount,
+              rowsByIndex: nextMap,
+            };
+          });
+        })
+        .catch(() => {
+          sqliteInFlightChunksRef.current.delete(chunkKey);
+        });
+    },
+    [useSqliteTablePaging, dataSource, activeFilters, activeFilterGroup, activeSort],
+  );
+
+  // SQLite 模式下查询条件/数据版本变更时拉取首页
+  useEffect(() => {
+    if (!useSqliteTablePaging) return;
+    sqliteInFlightChunksRef.current.clear();
+    fetchSqliteChunk(0, queryFingerprint);
+  }, [useSqliteTablePaging, queryFingerprint, fetchSqliteChunk]);
+
+  const effectiveTotalRowCount = useSqliteTablePaging ? sqliteTableState.totalCount : syncData.rows.length;
+  const effectiveUnfilteredCount = useSqliteTablePaging
+    ? sqliteTableState.unfilteredTotalCount
+    : syncData.unfilteredTotalCount;
+
+  const getRowAtIndex = useCallback(
+    (index: number): StageTableRow | undefined => {
+      if (useSqliteTablePaging) {
+        return sqliteTableState.rowsByIndex.get(index);
+      }
+      return syncData.rows[index];
+    },
+    [useSqliteTablePaging, sqliteTableState.rowsByIndex, syncData.rows],
+  );
+
+  const loadedRowsList = useMemo<StageTableRow[]>(() => {
+    if (!useSqliteTablePaging) return syncData.rows;
+    return Array.from(sqliteTableState.rowsByIndex.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([, row]) => row);
+  }, [useSqliteTablePaging, syncData.rows, sqliteTableState.rowsByIndex]);
+
+  const displayedRowIndexById = useMemo(() => {
+    const map = new Map<string, number>();
+    if (useSqliteTablePaging) {
+      for (const [idx, row] of sqliteTableState.rowsByIndex) {
+        map.set(row.uuid, idx);
+      }
+    } else {
+      syncData.rows.forEach((r, idx) => map.set(r.uuid, idx));
+    }
+    return map;
+  }, [useSqliteTablePaging, sqliteTableState.rowsByIndex, syncData.rows]);
+
+  const loadedRowByUuid = useMemo(() => {
+    const map = new Map<string, StageTableRow>();
+    for (const r of loadedRowsList) map.set(r.uuid, r);
+    return map;
+  }, [loadedRowsList]);
+
+  const estimatedRowHeight = tableRowHeight === "compact" ? 32 : tableRowHeight === "tall" ? 56 : 40;
+
+  // @tanstack/react-virtual 行虚拟化器（initialRect 确保 jsdom 单测与首帧均正确渲染可视行）
+  const rowVirtualizer = useVirtualizer({
+    count: activeViewType === "table" ? effectiveTotalRowCount : 0,
+    getScrollElement: () => viewportRef.current,
+    estimateSize: () => estimatedRowHeight,
+    overscan: 4,
+    initialRect: { width: 1000, height: 600 },
+    observeElementRect: OBSERVE_TABLE_VIRTUAL_RECT,
+  });
+
+  const virtualItems = activeViewType === "table" ? rowVirtualizer.getVirtualItems() : [];
+  const totalVirtualSize = activeViewType === "table" ? rowVirtualizer.getTotalSize() : 0;
+  const virtualPaddingTop = virtualItems.length > 0 ? virtualItems[0].start : 0;
+  const virtualPaddingBottom =
+    virtualItems.length > 0 ? Math.max(0, totalVirtualSize - virtualItems[virtualItems.length - 1].end) : 0;
+
+  // 滚动时按需拉取尚未加载的 SQLite 分页块
+  useEffect(() => {
+    if (!useSqliteTablePaging || virtualItems.length === 0) return;
+    const firstChunk = Math.floor(virtualItems[0].index / SQLITE_PAGE_CHUNK_SIZE);
+    const lastChunk = Math.floor(virtualItems[virtualItems.length - 1].index / SQLITE_PAGE_CHUNK_SIZE);
+    for (let c = firstChunk; c <= lastChunk; c++) {
+      const sampleIdx = c * SQLITE_PAGE_CHUNK_SIZE;
+      if (sampleIdx < sqliteTableState.totalCount && !sqliteTableState.rowsByIndex.has(sampleIdx)) {
+        fetchSqliteChunk(c, queryFingerprint);
+      }
+    }
+  }, [
+    useSqliteTablePaging,
+    virtualItems,
+    sqliteTableState.totalCount,
+    sqliteTableState.rowsByIndex,
+    queryFingerprint,
+    fetchSqliteChunk,
+  ]);
+
+  const scrollRowIntoViewIfNeeded = useCallback(
+    (rowUuid: string) => {
+      const idx = displayedRowIndexById.get(rowUuid);
+      if (idx !== undefined && activeViewType === "table") {
+        rowVirtualizer.scrollToIndex(idx, { align: "auto" });
+        return;
+      }
+      const vp = viewportRef.current;
+      if (!vp) return;
+      const rowEl = Array.from(vp.querySelectorAll<HTMLElement>("tr[data-stage-table-row-id]")).find(
+        (el) => el.dataset.stageTableRowId === rowUuid,
+      );
+      if (!rowEl) return;
+      const theadHeight = vp.querySelector("thead")?.getBoundingClientRect().height ?? 0;
+      const vpRect = vp.getBoundingClientRect();
+      const rowRect = rowEl.getBoundingClientRect();
+      const visibleTop = vpRect.top + theadHeight;
+      const visibleBottom = vpRect.bottom;
+      if (rowRect.top < visibleTop) {
+        vp.scrollTop -= visibleTop - rowRect.top + 4;
+      } else if (rowRect.bottom > visibleBottom) {
+        vp.scrollTop += rowRect.bottom - visibleBottom + 4;
+      }
+    },
+    [displayedRowIndexById, activeViewType, rowVirtualizer],
+  );
+  const scrollRowIntoViewRef = useRef(scrollRowIntoViewIfNeeded);
+  scrollRowIntoViewRef.current = scrollRowIntoViewIfNeeded;
 
   useEffect(() => {
-    if (!project.getService?.("stageTable")) return;
+    if (!hasStageTableService || !dataSource) return;
     forceRefresh();
-    const unsubTable = project.stageTable.subscribe(forceRefresh);
-    const onCommit = () => forceRefresh();
-    const onStateChange = () => forceRefresh();
-    project.on("stage-commit", onCommit);
-    project.on("state-change", onStateChange);
+    const unsubChanges = dataSource.subscribeChanges(forceRefresh);
 
-    // 画布选中变化 -> 同步高亮多维表格对应行（单选与多选均适用）
+    // 画布选中变化 -> 直接写入外部原子 SelectionStore，不触发顶层 StageTablePanel 重渲染！
     const applyCanvasSelection = (selectedUUIDs: string[], shouldScroll: boolean) => {
       const prevSet = new Set(lastCanvasSelectedRef.current);
       lastCanvasSelectedRef.current = selectedUUIDs;
       if (selectedUUIDs.length === 0) {
-        setSelection((prev) => (prev.mode === "rows" || prev.mode === "all" ? EMPTY_SELECTION : prev));
+        selectionStore.setState((prev) => (prev.mode === "rows" || prev.mode === "all" ? EMPTY_TABLE_SELECTION : prev));
         return;
       }
       const nextRowSet = new Set(selectedUUIDs);
-      setSelection({
+      selectionStore.setState({
         mode: "rows",
         rowIds: nextRowSet,
         colIds: new Set<string>(),
@@ -2140,27 +1337,25 @@ export default function StageTablePanel({ project }: { project: Project }) {
       });
       if (shouldScroll) {
         const newlySelected = selectedUUIDs.find((id) => !prevSet.has(id)) ?? selectedUUIDs[0];
-        requestAnimationFrame(() => scrollRowIntoViewIfNeeded(newlySelected));
+        requestAnimationFrame(() => scrollRowIntoViewRef.current(newlySelected));
       }
     };
 
-    const initialSelected = project.stageTable.getSelectedRowUUIDs?.() ?? [];
+    const initialSelected = dataSource.getSelectedRowUUIDs();
     if (initialSelected.length > 0) {
       applyCanvasSelection(initialSelected, true);
     } else {
       lastCanvasSelectedRef.current = [];
-      setSelection(EMPTY_SELECTION);
+      selectionStore.setState(EMPTY_TABLE_SELECTION);
     }
 
-    const unsubSelection = project.stageTable.subscribeSelection?.((uuids) => applyCanvasSelection(uuids, true));
+    const unsubSelection = dataSource.subscribeSelection((uuids) => applyCanvasSelection(uuids, true));
 
     return () => {
-      unsubTable();
-      unsubSelection?.();
-      project.off("stage-commit", onCommit);
-      project.off("state-change", onStateChange);
+      unsubChanges();
+      unsubSelection();
     };
-  }, [project, forceRefresh, scrollRowIntoViewIfNeeded]);
+  }, [hasStageTableService, dataSource, selectionStore, forceRefresh]);
 
   useEffect(() => {
     if (editingFieldState) {
@@ -2202,40 +1397,471 @@ export default function StageTablePanel({ project }: { project: Project }) {
     }
   }, [renamingViewId]);
 
-  const hasVolatileFormulaCols = project.getService?.("stageTable")
-    ? hasVolatileFormulas(project.stageTable.getColumns?.() ?? [])
-    : false;
+  // 彻底移除 60 秒全表 setInterval：改用跨午夜单次定时器 + 切回前台日期检查刷新易变公式列
+  const hasVolatileFormulaCols = useMemo(
+    () => (hasStageTableService ? hasVolatileFormulas(customColumns) : false),
+    [hasStageTableService, customColumns],
+  );
 
   useEffect(() => {
-    if (!hasVolatileFormulaCols) return;
-    const timer = window.setInterval(() => {
-      forceRefresh();
-    }, 60_000);
-    return () => window.clearInterval(timer);
-  }, [hasVolatileFormulaCols, forceRefresh]);
+    if (!hasVolatileFormulaCols || !hasStageTableService || !dataSource) return;
+    return registerMidnightVolatileWatcher(() => {
+      const refreshed = dataSource.refreshVolatileFormulasIfDayChanged?.();
+      if (!refreshed) {
+        forceRefresh();
+      }
+    });
+  }, [hasVolatileFormulaCols, hasStageTableService, dataSource, forceRefresh]);
 
-  if (!project.getService?.("stageTable")) {
+  const visibleColIndexById = useMemo(
+    () => new Map<string, number>(visibleColumnIds.map((c, idx) => [c, idx])),
+    [visibleColumnIds],
+  );
+
+  // Refs 用于保持 StageTableVirtualRow 回调引用稳定，避免破坏 React.memo
+  const rowsContextRef = useRef({
+    loadedRowsList,
+    displayedRowIndexById,
+    visibleColumnIds,
+    visibleColIndexById,
+    getRowAtIndex,
+    effectiveTotalRowCount,
+  });
+  rowsContextRef.current = {
+    loadedRowsList,
+    displayedRowIndexById,
+    visibleColumnIds,
+    visibleColIndexById,
+    getRowAtIndex,
+    effectiveTotalRowCount,
+  };
+
+  const syncSelectedRowsToCanvas = useCallback(
+    (rowIds: Iterable<string>, focusCamera?: boolean) => {
+      if (!dataSource) return;
+      const ids = Array.from(rowIds);
+      lastCanvasSelectedRef.current = ids;
+      if (focusCamera === undefined) {
+        dataSource.selectRows(ids);
+      } else {
+        dataSource.selectRows(ids, { focusCamera });
+      }
+    },
+    [dataSource],
+  );
+
+  const clearSelection = useCallback(
+    (clearCanvas = false) => {
+      selectionStore.clear();
+      if (clearCanvas) {
+        syncSelectedRowsToCanvas([], false);
+      }
+    },
+    [selectionStore, syncSelectedRowsToCanvas],
+  );
+
+  const selectRowsRange = useCallback(
+    (startRowId: string, endRowId: string, commitToCanvas: boolean) => {
+      const ctx = rowsContextRef.current;
+      const startIdx = ctx.displayedRowIndexById.get(startRowId);
+      const endIdx = ctx.displayedRowIndexById.get(endRowId);
+      if (startIdx === undefined || endIdx === undefined) return;
+      const lo = Math.min(startIdx, endIdx);
+      const hi = Math.max(startIdx, endIdx);
+      const nextRowIds = new Set<string>();
+      for (let i = lo; i <= hi; i++) {
+        const row = ctx.getRowAtIndex(i);
+        if (row) nextRowIds.add(row.uuid);
+      }
+      selectionStore.setState({
+        mode: "rows",
+        rowIds: nextRowIds,
+        colIds: new Set<string>(),
+        cells: new Set<string>(),
+        anchorRowId: startRowId,
+        anchorColId: null,
+        activeCell: null,
+      });
+      if (commitToCanvas) {
+        syncSelectedRowsToCanvas(nextRowIds);
+      }
+    },
+    [selectionStore, syncSelectedRowsToCanvas],
+  );
+
+  const buildCellRectSet = useCallback((r1: string, c1: string, r2: string, c2: string): Set<string> => {
+    const ctx = rowsContextRef.current;
+    const ri1 = ctx.displayedRowIndexById.get(r1);
+    const ri2 = ctx.displayedRowIndexById.get(r2);
+    const ci1 = ctx.visibleColIndexById.get(c1);
+    const ci2 = ctx.visibleColIndexById.get(c2);
+    if (ri1 === undefined || ri2 === undefined || ci1 === undefined || ci2 === undefined) {
+      return new Set([makeTableCellKey(r2, c2)]);
+    }
+    const rLo = Math.min(ri1, ri2);
+    const rHi = Math.max(ri1, ri2);
+    const cLo = Math.min(ci1, ci2);
+    const cHi = Math.max(ci1, ci2);
+    const result = new Set<string>();
+    for (let r = rLo; r <= rHi; r++) {
+      const row = ctx.getRowAtIndex(r);
+      if (!row) continue;
+      for (let c = cLo; c <= cHi; c++) {
+        result.add(makeTableCellKey(row.uuid, ctx.visibleColumnIds[c]));
+      }
+    }
+    return result;
+  }, []);
+
+  const handleRowIndexPointerDown = useCallback(
+    (rowId: string, event: React.PointerEvent) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      panelRef.current?.focus({ preventScroll: true });
+
+      const ctx = rowsContextRef.current;
+      const isToggle = event.ctrlKey || event.metaKey;
+      const isRange = event.shiftKey;
+      const prev = selectionStore.getState();
+
+      if (isRange) {
+        const anchor = prev.anchorRowId && ctx.displayedRowIndexById.has(prev.anchorRowId) ? prev.anchorRowId : rowId;
+        selectRowsRange(anchor, rowId, true);
+        return;
+      }
+
+      if (isToggle) {
+        const base =
+          prev.mode === "all"
+            ? new Set(ctx.loadedRowsList.map((r) => r.uuid))
+            : prev.mode === "rows"
+              ? new Set(prev.rowIds)
+              : new Set<string>();
+        if (base.has(rowId)) {
+          base.delete(rowId);
+        } else {
+          base.add(rowId);
+        }
+        if (base.size === 0) {
+          clearSelection(true);
+        } else {
+          selectionStore.setState({
+            mode: "rows",
+            rowIds: base,
+            colIds: new Set<string>(),
+            cells: new Set<string>(),
+            anchorRowId: rowId,
+            anchorColId: null,
+            activeCell: null,
+          });
+          syncSelectedRowsToCanvas(base);
+        }
+        return;
+      }
+
+      const initialSet = new Set([rowId]);
+      selectionStore.setState({
+        mode: "rows",
+        rowIds: initialSet,
+        colIds: new Set<string>(),
+        cells: new Set<string>(),
+        anchorRowId: rowId,
+        anchorColId: null,
+        activeCell: null,
+      });
+      syncSelectedRowsToCanvas(initialSet);
+
+      let lastHoveredId = rowId;
+      let draggedMulti = false;
+
+      const onPointerMove = (moveEvent: PointerEvent) => {
+        const el = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+        const tr = el?.closest<HTMLElement>("tr[data-stage-table-row-id]");
+        const hoveredRowId = tr?.dataset.stageTableRowId;
+        if (!hoveredRowId || hoveredRowId === lastHoveredId) return;
+        lastHoveredId = hoveredRowId;
+        draggedMulti = true;
+        selectRowsRange(rowId, hoveredRowId, false);
+      };
+
+      const onPointerUp = () => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        if (draggedMulti) {
+          syncSelectedRowsToCanvas(selectionStore.getState().rowIds);
+        }
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+    },
+    [selectionStore, selectRowsRange, clearSelection, syncSelectedRowsToCanvas],
+  );
+
+  const handleCellPointerDown = useCallback(
+    (rowId: string, colId: string, event: React.PointerEvent) => {
+      if (event.button !== 0) return;
+      const targetEl = event.target as HTMLElement | null;
+      if (
+        targetEl?.closest(
+          "[data-slot='popover-content'], [role='dialog'], [role='menu'], input, textarea, [data-cell-action]",
+        )
+      ) {
+        return;
+      }
+
+      const ctx = rowsContextRef.current;
+      const prev = selectionStore.getState();
+      const key = makeTableCellKey(rowId, colId);
+      const isToggle = event.ctrlKey || event.metaKey;
+      const isRange = event.shiftKey;
+
+      if (isRange) {
+        event.preventDefault();
+        wasSoleActiveOnDownRef.current = false;
+        const anchorRow =
+          prev.anchorRowId && ctx.displayedRowIndexById.has(prev.anchorRowId) ? prev.anchorRowId : rowId;
+        const anchorCol = prev.anchorColId && ctx.visibleColIndexById.has(prev.anchorColId) ? prev.anchorColId : colId;
+        const nextCells = buildCellRectSet(anchorRow, anchorCol, rowId, colId);
+        selectionStore.setState({
+          mode: "cells",
+          rowIds: new Set<string>(),
+          colIds: new Set<string>(),
+          cells: nextCells,
+          anchorRowId: anchorRow,
+          anchorColId: anchorCol,
+          activeCell: { rowId, colId },
+        });
+        syncSelectedRowsToCanvas(extractRowIdsFromCellKeys(nextCells));
+        return;
+      }
+
+      if (isToggle) {
+        event.preventDefault();
+        wasSoleActiveOnDownRef.current = false;
+        const base = prev.mode === "cells" ? new Set(prev.cells) : new Set<string>();
+        if (base.has(key)) {
+          base.delete(key);
+        } else {
+          base.add(key);
+        }
+        if (base.size === 0) {
+          clearSelection(true);
+        } else {
+          selectionStore.setState({
+            mode: "cells",
+            rowIds: new Set<string>(),
+            colIds: new Set<string>(),
+            cells: base,
+            anchorRowId: rowId,
+            anchorColId: colId,
+            activeCell: { rowId, colId },
+          });
+          syncSelectedRowsToCanvas(extractRowIdsFromCellKeys(base));
+        }
+        return;
+      }
+
+      const wasSoleActive =
+        prev.mode === "cells" &&
+        prev.cells.size === 1 &&
+        prev.activeCell?.rowId === rowId &&
+        prev.activeCell?.colId === colId;
+      wasSoleActiveOnDownRef.current = wasSoleActive;
+
+      selectionStore.setState({
+        mode: "cells",
+        rowIds: new Set<string>(),
+        colIds: new Set<string>(),
+        cells: new Set([key]),
+        anchorRowId: rowId,
+        anchorColId: colId,
+        activeCell: { rowId, colId },
+      });
+      syncSelectedRowsToCanvas([rowId]);
+
+      let didDragCells = false;
+      let lastHoverKey = key;
+
+      const onPointerMove = (moveEvent: PointerEvent) => {
+        const el = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+        const td = el?.closest<HTMLElement>("td[data-stage-table-cell]");
+        const hoverRowId = td?.dataset.rowId;
+        const hoverColId = td?.dataset.colId;
+        if (!hoverRowId || !hoverColId) return;
+        const hoverKey = makeTableCellKey(hoverRowId, hoverColId);
+        if (hoverKey === lastHoverKey) return;
+        lastHoverKey = hoverKey;
+        didDragCells = true;
+        wasSoleActiveOnDownRef.current = false;
+        selectionStore.setState({
+          mode: "cells",
+          rowIds: new Set<string>(),
+          colIds: new Set<string>(),
+          cells: buildCellRectSet(rowId, colId, hoverRowId, hoverColId),
+          anchorRowId: rowId,
+          anchorColId: colId,
+          activeCell: { rowId: hoverRowId, colId: hoverColId },
+        });
+      };
+
+      const onPointerUp = () => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+        if (didDragCells) {
+          syncSelectedRowsToCanvas(extractRowIdsFromCellKeys(selectionStore.getState().cells));
+          suppressCellClickRef.current = true;
+          queueMicrotask(() => {
+            suppressCellClickRef.current = false;
+          });
+        }
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+    },
+    [selectionStore, buildCellRectSet, clearSelection, syncSelectedRowsToCanvas],
+  );
+
+  const openImagePreview = useCallback(
+    (attachmentId: string, sourceRowUuid?: string, sourceDocId?: string) => {
+      const currentRows = rowsContextRef.current.loadedRowsList;
+      const allTableImages: ImageLightboxItem[] = [];
+      for (const r of currentRows) {
+        const label = getDisplayLabel(r, t);
+        for (const img of r.images ?? []) {
+          allTableImages.push({
+            attachmentId: img.attachmentId,
+            docId: r.docId,
+            label,
+            rowUuid: r.uuid,
+            imageNodeUuid: img.uuid,
+          });
+        }
+      }
+
+      const findIdx = (list: ImageLightboxItem[]) => {
+        const exact = sourceRowUuid
+          ? list.findIndex(
+              (item) =>
+                item.attachmentId === attachmentId &&
+                item.rowUuid === sourceRowUuid &&
+                (!sourceDocId || !item.docId || item.docId === sourceDocId),
+            )
+          : -1;
+        if (exact >= 0) return exact;
+        const byAtt = list.findIndex((item) => item.attachmentId === attachmentId);
+        return byAtt >= 0 ? byAtt : 0;
+      };
+
+      const sourceRow = sourceRowUuid
+        ? (currentRows.find((r) => r.uuid === sourceRowUuid && (!sourceDocId || !r.docId || r.docId === sourceDocId)) ??
+          dataSource?.getCachedRow?.(sourceRowUuid, sourceDocId))
+        : undefined;
+      const rowImages: ImageLightboxItem[] = sourceRow
+        ? (sourceRow.images ?? []).map((img) => ({
+            attachmentId: img.attachmentId,
+            docId: sourceRow.docId ?? sourceDocId,
+            label: getDisplayLabel(sourceRow, t),
+            rowUuid: sourceRow.uuid,
+            imageNodeUuid: img.uuid,
+          }))
+        : [];
+
+      if (rowImages.length > 1) {
+        setPreviewLightboxState({
+          items: rowImages,
+          initialIndex: findIdx(rowImages),
+          allItems: allTableImages.length > rowImages.length ? allTableImages : undefined,
+          allInitialIndex: allTableImages.length > rowImages.length ? findIdx(allTableImages) : undefined,
+        });
+        return;
+      }
+
+      if (allTableImages.length > 0 && rowImages.length <= 1 && !sourceDocId) {
+        setPreviewLightboxState({
+          items: allTableImages,
+          initialIndex: findIdx(allTableImages),
+        });
+        return;
+      }
+
+      if (rowImages.length === 1) {
+        setPreviewLightboxState({
+          items: rowImages,
+          initialIndex: 0,
+          allItems: allTableImages.length > 1 ? allTableImages : undefined,
+          allInitialIndex: allTableImages.length > 1 ? findIdx(allTableImages) : undefined,
+        });
+        return;
+      }
+
+      setPreviewLightboxState({
+        items: [{ attachmentId, docId: sourceDocId }],
+        initialIndex: 0,
+      });
+    },
+    [t, dataSource],
+  );
+
+  const openFormulaEditorForColumn = useCallback((colId: string, previewRowUuid?: string | null) => {
+    setCreatingColState(null);
+    setEditTypeDropdownOpen(false);
+    setEditingFieldState(null);
+    setFormulaEditorState({ colId, previewRowUuid: previewRowUuid ?? null });
+  }, []);
+
+  const rowCallbacks = useMemo<StageTableVirtualRowCallbacks>(
+    () => ({
+      onRowIndexPointerDown: handleRowIndexPointerDown,
+      onCellPointerDown: handleCellPointerDown,
+      shouldSuppressCellClick: () => suppressCellClickRef.current,
+      canEditOnClick: () => wasSoleActiveOnDownRef.current,
+      onStartInlineEdit: (rowUuid, colId, docId) => setActiveEditor({ kind: "inline_text", rowUuid, docId, colId }),
+      onCloseEditor: () => setActiveEditor(null),
+      onOpenPopoverEditor: (state) => setActiveEditor(state),
+      onCommitPrimaryText: (rowUuid, nextText, docId) => {
+        void dataSource?.executeMutation({ type: "update_primary_text", docId, rowUuid, text: nextText });
+      },
+      onCommitCustomField: (rowUuid, columnId, value, docId) => {
+        void dataSource?.executeMutation({ type: "update_custom_field", docId, rowUuid, columnId, value });
+      },
+      onJumpToRow: (rowUuid, docId) => {
+        dataSource?.jumpToNode(docId ?? dataSource.getDocId(), rowUuid);
+      },
+      onRequestUploadImages: (rowUuid, docId) => {
+        rowImageUploadTargetRef.current = { rowUuid, docId };
+        rowImageUploadRef.current?.click();
+      },
+      onAddImages: (rowUuid, blobs, docId) => {
+        void dataSource?.executeMutation({ type: "add_images", docId, rowUuid, blobs });
+      },
+      onRemoveImage: (rowUuid, imageNodeUuid, docId) => {
+        void dataSource?.executeMutation({ type: "remove_image", docId, rowUuid, imageNodeUuid });
+      },
+      onPreviewImage: (attId, rowUuid, docId) => openImagePreview(attId, rowUuid, docId),
+      onRemoveRelationItem: (rowUuid, kind, nextIds, docId) => {
+        if (!dataSource) return;
+        if (kind === "outer") {
+          void dataSource.executeMutation({ type: "set_outer", docId, rowUuid, outerUuid: null });
+        } else if (kind === "parents") {
+          void dataSource.executeMutation({ type: "set_parents", docId, rowUuid, parentUuids: nextIds ?? [] });
+        } else if (kind === "children") {
+          void dataSource.executeMutation({ type: "set_children", docId, rowUuid, childUuids: nextIds ?? [] });
+        } else {
+          void dataSource.executeMutation({ type: "set_inner", docId, rowUuid, innerUuids: nextIds ?? [] });
+        }
+      },
+      onOpenFormulaEditor: (colId, rowUuid) => openFormulaEditorForColumn(colId, rowUuid),
+    }),
+    [handleRowIndexPointerDown, handleCellPointerDown, dataSource, openImagePreview, openFormulaEditorForColumn],
+  );
+
+  if (!hasStageTableService || !activeView || !dataSource) {
     return null;
   }
 
-  const activeView = project.stageTable.getActiveView();
-  const views: TableViewSchema[] = project.stageTable.getViews?.() ?? project.table?.views ?? [activeView];
-  const activeViewType: TableViewType = activeView.type ?? "table";
-  const tableRowHeight: TableRowHeight = activeView.rowHeight ?? "medium";
-  const customColumns = project.stageTable.getColumns?.() ?? [];
-  const customColumnMap = new Map<string, TableColumnSchema>(customColumns.map((col) => [col.id, col]));
-
-  const visibleColumnIds: string[] = project.stageTable.getVisibleColumnIds?.() ?? [
-    "name",
-    ...activeView.visibleColumnIds.filter((colId) => colId !== "name"),
-  ];
-  const visibleColumnSet = new Set(visibleColumnIds);
-
-  const allRows = project.stageTable.getRows();
-  const activeSort: TableSortConfig | null = project.stageTable.getSort?.() ?? activeView.sort ?? null;
-  const activeFilters: TableColumnFilter[] = project.stageTable.getFilters?.() ?? activeView.filters ?? [];
-  const activeFilterGroup: TableFilterGroup = project.stageTable.getFilterGroup?.() ??
-    activeView.filterGroup ?? { conjunction: "and", conditions: [] };
   const activeFilterByColId = new Map<string, TableColumnFilter>(activeFilters.map((f) => [f.columnId, f]));
   const activeFilterGroupColIds = new Set<string>(
     activeFilterGroup.conditions
@@ -2244,44 +1870,14 @@ export default function StageTablePanel({ project }: { project: Project }) {
   );
   const activeFilterConditionCount = countActiveFilterConditions(activeFilterGroup, customColumns);
   const hasAnyActiveFilter = activeFilters.length > 0 || activeFilterConditionCount > 0;
-  const rows = applyTableFiltersAndSort(allRows, customColumns, activeFilters, activeSort, activeFilterGroup);
-
-  const displayedRowIndexById = new Map<string, number>(rows.map((r, idx) => [r.uuid, idx]));
-  const visibleColIndexById = new Map<string, number>(visibleColumnIds.map((c, idx) => [c, idx]));
-
-  const extractRowIdsFromCells = (cells: Iterable<string>): string[] => {
-    const ids = new Set<string>();
-    for (const key of cells) {
-      const sep = key.indexOf("\0");
-      if (sep > 0) ids.add(key.slice(0, sep));
-    }
-    return Array.from(ids);
-  };
-
-  const syncSelectedRowsToCanvas = (rowIds: Iterable<string>, focusCamera?: boolean) => {
-    const ids = Array.from(rowIds);
-    lastCanvasSelectedRef.current = ids;
-    if (focusCamera === undefined) {
-      project.stageTable.selectRowsOnCanvas?.(ids);
-    } else {
-      project.stageTable.selectRowsOnCanvas?.(ids, { focusCamera });
-    }
-  };
-
-  const clearSelection = (clearCanvas = false) => {
-    setSelection(EMPTY_SELECTION);
-    if (clearCanvas) {
-      syncSelectedRowsToCanvas([], false);
-    }
-  };
 
   const handleToggleSelectAll = () => {
-    if (selection.mode === "all") {
+    if (selectionStore.getState().mode === "all") {
       clearSelection(true);
       return;
     }
-    const allIds = rows.map((r) => r.uuid);
-    setSelection({
+    const allIds = loadedRowsList.map((r) => r.uuid);
+    selectionStore.setState({
       mode: "all",
       rowIds: new Set(allIds),
       colIds: new Set(visibleColumnIds),
@@ -2293,119 +1889,12 @@ export default function StageTablePanel({ project }: { project: Project }) {
     syncSelectedRowsToCanvas(allIds);
   };
 
-  const selectRowsRange = (startRowId: string, endRowId: string, commitToCanvas: boolean) => {
-    const startIdx = displayedRowIndexById.get(startRowId);
-    const endIdx = displayedRowIndexById.get(endRowId);
-    if (startIdx === undefined || endIdx === undefined) return;
-    const lo = Math.min(startIdx, endIdx);
-    const hi = Math.max(startIdx, endIdx);
-    const nextRowIds = new Set<string>();
-    for (let i = lo; i <= hi; i++) {
-      nextRowIds.add(rows[i].uuid);
-    }
-    setSelection({
-      mode: "rows",
-      rowIds: nextRowIds,
-      colIds: new Set<string>(),
-      cells: new Set<string>(),
-      anchorRowId: startRowId,
-      anchorColId: null,
-      activeCell: null,
-    });
-    if (commitToCanvas) {
-      syncSelectedRowsToCanvas(nextRowIds);
-    }
-  };
-
-  const handleRowIndexPointerDown = (rowId: string, event: React.PointerEvent) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    panelRef.current?.focus({ preventScroll: true });
-
-    const isToggle = event.ctrlKey || event.metaKey;
-    const isRange = event.shiftKey;
-    const prev = selectionRef.current;
-
-    if (isRange) {
-      const anchor = prev.anchorRowId && displayedRowIndexById.has(prev.anchorRowId) ? prev.anchorRowId : rowId;
-      selectRowsRange(anchor, rowId, true);
-      return;
-    }
-
-    if (isToggle) {
-      const base =
-        prev.mode === "all"
-          ? new Set(rows.map((r) => r.uuid))
-          : prev.mode === "rows"
-            ? new Set(prev.rowIds)
-            : new Set<string>();
-      if (base.has(rowId)) {
-        base.delete(rowId);
-      } else {
-        base.add(rowId);
-      }
-      if (base.size === 0) {
-        clearSelection(true);
-      } else {
-        setSelection({
-          mode: "rows",
-          rowIds: base,
-          colIds: new Set<string>(),
-          cells: new Set<string>(),
-          anchorRowId: rowId,
-          anchorColId: null,
-          activeCell: null,
-        });
-        syncSelectedRowsToCanvas(base);
-      }
-      return;
-    }
-
-    // 单击行号立即选中并联动画布；按住向下/向上拖动可连续框选多行
-    const initialSet = new Set([rowId]);
-    setSelection({
-      mode: "rows",
-      rowIds: initialSet,
-      colIds: new Set<string>(),
-      cells: new Set<string>(),
-      anchorRowId: rowId,
-      anchorColId: null,
-      activeCell: null,
-    });
-    syncSelectedRowsToCanvas(initialSet);
-
-    let lastHoveredId = rowId;
-    let draggedMulti = false;
-
-    const onPointerMove = (moveEvent: PointerEvent) => {
-      const el = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
-      const tr = el?.closest<HTMLElement>("tr[data-stage-table-row-id]");
-      const hoveredRowId = tr?.dataset.stageTableRowId;
-      if (!hoveredRowId || hoveredRowId === lastHoveredId) return;
-      lastHoveredId = hoveredRowId;
-      draggedMulti = true;
-      selectRowsRange(rowId, hoveredRowId, false);
-    };
-
-    const onPointerUp = () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-      if (draggedMulti) {
-        syncSelectedRowsToCanvas(selectionRef.current.rowIds);
-      }
-    };
-
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-  };
-
   const selectColumnByInteraction = (
     colId: string,
     modifiers: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean },
   ) => {
     panelRef.current?.focus({ preventScroll: true });
-    const prev = selectionRef.current;
+    const prev = selectionStore.getState();
     const isToggle = modifiers.ctrlKey || modifiers.metaKey;
     const isRange = modifiers.shiftKey;
 
@@ -2420,7 +1909,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
       for (let i = lo; i <= hi; i++) {
         nextCols.add(visibleColumnIds[i]);
       }
-      setSelection({
+      selectionStore.setState({
         mode: "columns",
         rowIds: new Set<string>(),
         colIds: nextCols,
@@ -2445,9 +1934,9 @@ export default function StageTablePanel({ project }: { project: Project }) {
         base.add(colId);
       }
       if (base.size === 0) {
-        setSelection(EMPTY_SELECTION);
+        selectionStore.clear();
       } else {
-        setSelection({
+        selectionStore.setState({
           mode: "columns",
           rowIds: new Set<string>(),
           colIds: base,
@@ -2460,7 +1949,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
       return;
     }
 
-    setSelection({
+    selectionStore.setState({
       mode: "columns",
       rowIds: new Set<string>(),
       colIds: new Set([colId]),
@@ -2471,151 +1960,14 @@ export default function StageTablePanel({ project }: { project: Project }) {
     });
   };
 
-  const buildCellRectSet = (r1: string, c1: string, r2: string, c2: string): Set<string> => {
-    const ri1 = displayedRowIndexById.get(r1);
-    const ri2 = displayedRowIndexById.get(r2);
-    const ci1 = visibleColIndexById.get(c1);
-    const ci2 = visibleColIndexById.get(c2);
-    if (ri1 === undefined || ri2 === undefined || ci1 === undefined || ci2 === undefined) {
-      return new Set([makeCellKey(r2, c2)]);
-    }
-    const rLo = Math.min(ri1, ri2);
-    const rHi = Math.max(ri1, ri2);
-    const cLo = Math.min(ci1, ci2);
-    const cHi = Math.max(ci1, ci2);
-    const result = new Set<string>();
-    for (let r = rLo; r <= rHi; r++) {
-      for (let c = cLo; c <= cHi; c++) {
-        result.add(makeCellKey(rows[r].uuid, visibleColumnIds[c]));
-      }
-    }
-    return result;
-  };
-
-  const handleCellPointerDown = (rowId: string, colId: string, event: React.PointerEvent) => {
-    if (event.button !== 0) return;
-    const targetEl = event.target as HTMLElement | null;
-    if (
-      targetEl?.closest(
-        "[data-slot='popover-content'], [role='dialog'], [role='menu'], input, textarea, [data-cell-action]",
-      )
-    ) {
-      return;
-    }
-
-    const prev = selectionRef.current;
-    const key = makeCellKey(rowId, colId);
-    const isToggle = event.ctrlKey || event.metaKey;
-    const isRange = event.shiftKey;
-
-    if (isRange) {
-      event.preventDefault();
-      wasSoleActiveOnDownRef.current = false;
-      const anchorRow = prev.anchorRowId && displayedRowIndexById.has(prev.anchorRowId) ? prev.anchorRowId : rowId;
-      const anchorCol = prev.anchorColId && visibleColIndexById.has(prev.anchorColId) ? prev.anchorColId : colId;
-      const nextCells = buildCellRectSet(anchorRow, anchorCol, rowId, colId);
-      setSelection({
-        mode: "cells",
-        rowIds: new Set<string>(),
-        colIds: new Set<string>(),
-        cells: nextCells,
-        anchorRowId: anchorRow,
-        anchorColId: anchorCol,
-        activeCell: { rowId, colId },
-      });
-      syncSelectedRowsToCanvas(extractRowIdsFromCells(nextCells));
-      return;
-    }
-
-    if (isToggle) {
-      event.preventDefault();
-      wasSoleActiveOnDownRef.current = false;
-      const base = prev.mode === "cells" ? new Set(prev.cells) : new Set<string>();
-      if (base.has(key)) {
-        base.delete(key);
-      } else {
-        base.add(key);
-      }
-      if (base.size === 0) {
-        clearSelection(true);
-      } else {
-        setSelection({
-          mode: "cells",
-          rowIds: new Set<string>(),
-          colIds: new Set<string>(),
-          cells: base,
-          anchorRowId: rowId,
-          anchorColId: colId,
-          activeCell: { rowId, colId },
-        });
-        syncSelectedRowsToCanvas(extractRowIdsFromCells(base));
-      }
-      return;
-    }
-
-    const wasSoleActive =
-      prev.mode === "cells" &&
-      prev.cells.size === 1 &&
-      prev.activeCell?.rowId === rowId &&
-      prev.activeCell?.colId === colId;
-    wasSoleActiveOnDownRef.current = wasSoleActive;
-
-    setSelection({
-      mode: "cells",
-      rowIds: new Set<string>(),
-      colIds: new Set<string>(),
-      cells: new Set([key]),
-      anchorRowId: rowId,
-      anchorColId: colId,
-      activeCell: { rowId, colId },
-    });
-    syncSelectedRowsToCanvas([rowId]);
-
-    let didDragCells = false;
-    let lastHoverKey = key;
-
-    const onPointerMove = (moveEvent: PointerEvent) => {
-      const el = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
-      const td = el?.closest<HTMLElement>("td[data-stage-table-cell]");
-      const hoverRowId = td?.dataset.rowId;
-      const hoverColId = td?.dataset.colId;
-      if (!hoverRowId || !hoverColId) return;
-      const hoverKey = makeCellKey(hoverRowId, hoverColId);
-      if (hoverKey === lastHoverKey) return;
-      lastHoverKey = hoverKey;
-      didDragCells = true;
-      wasSoleActiveOnDownRef.current = false;
-      setSelection({
-        mode: "cells",
-        rowIds: new Set<string>(),
-        colIds: new Set<string>(),
-        cells: buildCellRectSet(rowId, colId, hoverRowId, hoverColId),
-        anchorRowId: rowId,
-        anchorColId: colId,
-        activeCell: { rowId: hoverRowId, colId: hoverColId },
-      });
-    };
-
-    const onPointerUp = () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
-      if (didDragCells) {
-        syncSelectedRowsToCanvas(extractRowIdsFromCells(selectionRef.current.cells));
-        suppressCellClickRef.current = true;
-        queueMicrotask(() => {
-          suppressCellClickRef.current = false;
-        });
-      }
-    };
-
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-  };
-
   const getCellCopyText = (row: StageTableRow, colId: string): string => {
     switch (colId) {
       case "name":
         return row.primaryText;
+      case "sourceFile":
+        return row.sourceFile ?? "";
+      case "sourceFolder":
+        return row.sourceFolder ?? "";
       case "images":
         return row.images.length > 0 ? t("imagesCell.countLabel", { count: row.images.length }) : "";
       case "createdAt":
@@ -2632,6 +1984,9 @@ export default function StageTablePanel({ project }: { project: Project }) {
         return row.inner.map((i) => getDisplayLabel(i, t)).join(", ");
       default: {
         const customCol = customColumnMap.get(colId);
+        if (customCol?.type === "formula") {
+          return row.formulaValues?.[colId]?.displayText ?? "";
+        }
         const val = row.tableFields?.[colId];
         if (!customCol || val === undefined || val === null) return "";
         if (customCol.type === "select" || customCol.type === "multi_select") {
@@ -2650,6 +2005,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
   const handlePanelKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement | null;
     if (target?.closest("input, textarea, [contenteditable='true']")) return;
+    const selection = selectionStore.getState();
 
     if (e.key === "Escape" && selection.mode !== "none") {
       e.preventDefault();
@@ -2661,8 +2017,8 @@ export default function StageTablePanel({ project }: { project: Project }) {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
       e.preventDefault();
       e.stopPropagation();
-      const allIds = rows.map((r) => r.uuid);
-      setSelection({
+      const allIds = loadedRowsList.map((r) => r.uuid);
+      selectionStore.setState({
         mode: "all",
         rowIds: new Set(allIds),
         colIds: new Set(visibleColumnIds),
@@ -2680,16 +2036,20 @@ export default function StageTablePanel({ project }: { project: Project }) {
       if (nativeSelected) return;
       const selectedRowsList =
         selection.mode === "all" || selection.mode === "columns"
-          ? rows
+          ? loadedRowsList
           : selection.mode === "rows"
-            ? rows.filter((r) => selection.rowIds.has(r.uuid))
-            : rows.filter((r) => visibleColumnIds.some((c) => selection.cells.has(makeCellKey(r.uuid, c))));
+            ? loadedRowsList.filter((r) => selection.rowIds.has(r.uuid))
+            : loadedRowsList.filter((r) =>
+                visibleColumnIds.some((c) => selection.cells.has(makeTableCellKey(r.uuid, c))),
+              );
       const selectedColsList =
         selection.mode === "all" || selection.mode === "rows"
           ? visibleColumnIds
           : selection.mode === "columns"
             ? visibleColumnIds.filter((c) => selection.colIds.has(c))
-            : visibleColumnIds.filter((c) => selectedRowsList.some((r) => selection.cells.has(makeCellKey(r.uuid, c))));
+            : visibleColumnIds.filter((c) =>
+                selectedRowsList.some((r) => selection.cells.has(makeTableCellKey(r.uuid, c))),
+              );
       if (selectedRowsList.length > 0 && selectedColsList.length > 0) {
         e.preventDefault();
         e.stopPropagation();
@@ -2697,7 +2057,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
           .map((row) =>
             selectedColsList
               .map((colId) =>
-                selection.mode === "cells" && !selection.cells.has(makeCellKey(row.uuid, colId))
+                selection.mode === "cells" && !selection.cells.has(makeTableCellKey(row.uuid, colId))
                   ? ""
                   : getCellCopyText(row, colId).replace(/\t|\r?\n/g, " "),
               )
@@ -2723,7 +2083,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
         e.key === "ArrowUp"
           ? Math.max(0, curRowIdx - 1)
           : e.key === "ArrowDown"
-            ? Math.min(rows.length - 1, curRowIdx + 1)
+            ? Math.min(effectiveTotalRowCount - 1, curRowIdx + 1)
             : curRowIdx;
       const nextColIdx =
         e.key === "ArrowLeft"
@@ -2731,14 +2091,15 @@ export default function StageTablePanel({ project }: { project: Project }) {
           : e.key === "ArrowRight"
             ? Math.min(visibleColumnIds.length - 1, curColIdx + 1)
             : curColIdx;
-      const nextRowId = rows[nextRowIdx]?.uuid;
+      const nextRow = getRowAtIndex(nextRowIdx);
       const nextColId = visibleColumnIds[nextColIdx];
-      if (!nextRowId || !nextColId) return;
+      if (!nextRow || !nextColId) return;
+      const nextRowId = nextRow.uuid;
       if (e.shiftKey) {
         const anchorRow = selection.anchorRowId ?? selection.activeCell.rowId;
         const anchorCol = selection.anchorColId ?? selection.activeCell.colId;
         const nextCells = buildCellRectSet(anchorRow, anchorCol, nextRowId, nextColId);
-        setSelection({
+        selectionStore.setState({
           mode: "cells",
           rowIds: new Set<string>(),
           colIds: new Set<string>(),
@@ -2747,13 +2108,13 @@ export default function StageTablePanel({ project }: { project: Project }) {
           anchorColId: anchorCol,
           activeCell: { rowId: nextRowId, colId: nextColId },
         });
-        syncSelectedRowsToCanvas(extractRowIdsFromCells(nextCells));
+        syncSelectedRowsToCanvas(extractRowIdsFromCellKeys(nextCells));
       } else {
-        setSelection({
+        selectionStore.setState({
           mode: "cells",
           rowIds: new Set<string>(),
           colIds: new Set<string>(),
-          cells: new Set([makeCellKey(nextRowId, nextColId)]),
+          cells: new Set([makeTableCellKey(nextRowId, nextColId)]),
           anchorRowId: nextRowId,
           anchorColId: nextColId,
           activeCell: { rowId: nextRowId, colId: nextColId },
@@ -2766,11 +2127,9 @@ export default function StageTablePanel({ project }: { project: Project }) {
 
   const getColumnLabel = (colId: string): string => {
     const customCol = customColumnMap.get(colId);
-    if (customCol) {
-      return customCol.name;
-    }
+    if (customCol) return customCol.name;
     if (isSystemColumnId(colId)) {
-      const override = project.stageTable.getSystemColumnCustomName?.(colId);
+      const override = dataSource.getSystemColumnCustomName(colId);
       return override || t(`columns.${colId}`);
     }
     return colId;
@@ -2778,35 +2137,23 @@ export default function StageTablePanel({ project }: { project: Project }) {
 
   const getColumnTypeName = (colId: string): string => {
     const customCol = customColumnMap.get(colId);
-    if (customCol) {
-      return t(`columnTypes.${customCol.type}`);
-    }
-    if (isSystemColumnId(colId)) {
-      return t(`columns.${colId}`);
-    }
+    if (customCol) return t(`columnTypes.${customCol.type}`);
+    if (isSystemColumnId(colId)) return t(`columns.${colId}`);
     return "";
   };
 
   const getColumnWidth = (colId: string): number => {
     const saved = activeView.columnWidths?.[colId];
-    if (typeof saved === "number" && Number.isFinite(saved)) {
-      return saved;
-    }
+    if (typeof saved === "number" && Number.isFinite(saved)) return saved;
     const customCol = customColumnMap.get(colId);
-    if (customCol) {
-      return customCol.width ?? DEFAULT_CUSTOM_COLUMN_WIDTHS[customCol.type];
-    }
-    if (isSystemColumnId(colId)) {
-      return DEFAULT_SYSTEM_COLUMN_WIDTHS[colId];
-    }
+    if (customCol) return customCol.width ?? DEFAULT_CUSTOM_COLUMN_WIDTHS[customCol.type];
+    if (isSystemColumnId(colId)) return DEFAULT_SYSTEM_COLUMN_WIDTHS[colId];
     return 160;
   };
 
   const buildUniqueDefaultColumnName = (type: CustomColumnType, excludeColId?: string): string => {
     const base = t(`columnTypes.${type}`);
-    const existingNames = new Set(
-      (project.stageTable.getColumns?.() ?? []).filter((c) => c.id !== excludeColId).map((c) => c.name),
-    );
+    const existingNames = new Set(customColumns.filter((c) => c.id !== excludeColId).map((c) => c.name));
     if (!existingNames.has(base)) return base;
     let suffix = 2;
     while (existingNames.has(`${base} ${suffix}`)) {
@@ -2815,20 +2162,70 @@ export default function StageTablePanel({ project }: { project: Project }) {
     return `${base} ${suffix}`;
   };
 
+  // 冻结列计算
+  const frozenColumnId: string | null = dataSource.getFrozenColumnId();
+  const frozenEndIndex = frozenColumnId ? visibleColumnIds.indexOf(frozenColumnId) : -1;
+
+  const columnLeftOffsets: number[] = [];
+  let runningLeft = INDEX_COLUMN_WIDTH;
+  for (const colId of visibleColumnIds) {
+    columnLeftOffsets.push(runningLeft);
+    runningLeft += getColumnWidth(colId);
+  }
+  const totalTableWidth = runningLeft + ADD_COLUMN_WIDTH;
+
+  /**
+   * 零重渲染列宽拖拽：
+   * 拖动期间仅通过 DOM / CSS 变量实时更新当前列宽、总宽与冻结列偏移，
+   * 仅在 `pointerup` 时落库提交 1 次 `setColumnWidth`。
+   */
   const startColumnResize = (columnId: string, currentWidth: number, event: React.PointerEvent) => {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     const startX = event.clientX;
+    let latestWidth = currentWidth;
+    const resizedColIdx = visibleColumnIds.indexOf(columnId);
+    const gridEl = tableGridRef.current;
+    const targetColEl =
+      Array.from(gridEl?.querySelectorAll<HTMLElement>("colgroup col[data-col-width-id]") ?? []).find(
+        (el) => el.dataset.colWidthId === columnId,
+      ) ?? null;
+    const baseTotalWidth = totalTableWidth;
+    const baseOffsets = [...columnLeftOffsets];
 
     const onPointerMove = (moveEvent: PointerEvent) => {
-      const nextWidth = Math.max(80, Math.min(600, currentWidth + (moveEvent.clientX - startX)));
-      project.stageTable.setColumnWidth(columnId, nextWidth);
+      const nextWidth = Math.max(80, Math.min(600, Math.round(currentWidth + (moveEvent.clientX - startX))));
+      if (nextWidth === latestWidth) return;
+      latestWidth = nextWidth;
+      const delta = nextWidth - currentWidth;
+      if (targetColEl) {
+        targetColEl.style.width = `${nextWidth}px`;
+      }
+      if (gridEl) {
+        gridEl.style.width = `${baseTotalWidth + delta}px`;
+        if (resizedColIdx >= 0 && frozenEndIndex >= 0) {
+          for (let i = resizedColIdx + 1; i <= frozenEndIndex; i++) {
+            const nextLeft = baseOffsets[i] + delta;
+            gridEl.style.setProperty(`--col-left-${i}`, `${nextLeft}px`);
+            const th = gridEl.querySelector<HTMLElement>(`thead th[data-col-idx="${i}"]`);
+            if (th) th.style.left = `${nextLeft}px`;
+          }
+        }
+      }
     };
 
     const onPointerUp = () => {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
+      if (gridEl && resizedColIdx >= 0 && frozenEndIndex >= 0) {
+        for (let i = resizedColIdx + 1; i <= frozenEndIndex; i++) {
+          gridEl.style.removeProperty(`--col-left-${i}`);
+        }
+      }
+      if (latestWidth !== currentWidth) {
+        dataSource.setColumnWidth(columnId, latestWidth);
+      }
     };
 
     window.addEventListener("pointermove", onPointerMove);
@@ -2898,7 +2295,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
       if (isDragging && latestHint) {
-        project.stageTable.reorderColumn?.(colId, latestHint.targetColId, latestHint.position);
+        dataSource.reorderColumn(colId, latestHint.targetColId, latestHint.position);
       } else if (!isDragging) {
         selectColumnByInteraction(colId, modifiers);
       }
@@ -2910,7 +2307,6 @@ export default function StageTablePanel({ project }: { project: Project }) {
     window.addEventListener("pointerup", onPointerUp);
   };
 
-  // 打开图 1「修改字段」面板（从表头右键打开时锚定在对应表头下方；从属性面板打开隐藏列时居中悬浮）
   const openEditFieldPanel = (colId: string, preferredAnchor: "header" | "floating" = "header") => {
     const customCol = customColumnMap.get(colId);
     const effectiveAnchor = preferredAnchor === "header" && visibleColumnSet.has(colId) ? "header" : "floating";
@@ -2921,20 +2317,13 @@ export default function StageTablePanel({ project }: { project: Project }) {
     setEditingFieldState({ colId, anchor: effectiveAnchor });
   };
 
-  const openFormulaEditorForColumn = (colId: string, previewRowUuid?: string | null) => {
-    setCreatingColState(null);
-    setEditTypeDropdownOpen(false);
-    setEditingFieldState(null);
-    setFormulaEditorState({ colId, previewRowUuid: previewRowUuid ?? null });
-  };
-
   const handleSaveEditField = () => {
     if (!editingFieldState) return;
     const { colId } = editingFieldState;
     const existingCol = customColumnMap.get(colId);
     const isCustom = Boolean(existingCol);
     const switchedToNewFormula = isCustom && existingCol?.type !== "formula" && editFieldType === "formula";
-    project.stageTable.updateColumn?.(colId, {
+    dataSource.updateColumn(colId, {
       name: editFieldName,
       ...(isCustom ? { type: editFieldType } : {}),
     });
@@ -2945,13 +2334,12 @@ export default function StageTablePanel({ project }: { project: Project }) {
     }
   };
 
-  // 提交图 4「插入字段 / 新建字段」内联编辑状态
   const commitCreatingColumn = (explicitType?: CustomColumnType, options?: { openFormulaEditor?: boolean }) => {
     const current = creatingColStateRef.current;
     if (!current) return null;
     const chosenType = explicitType ?? current.selectedType;
     const finalName = current.draftTitle.trim() || buildUniqueDefaultColumnName(chosenType, current.colId);
-    project.stageTable.updateColumn?.(current.colId, {
+    dataSource.updateColumn(current.colId, {
       name: finalName,
       type: chosenType,
     });
@@ -2963,7 +2351,6 @@ export default function StageTablePanel({ project }: { project: Project }) {
     return finishedColId;
   };
 
-  // 在目标列左侧/右侧（或表格最右侧 +）插入新自定义列并进入图 4 内联编辑态
   const triggerInsertNewColumn = (targetColumnId?: string, side?: "left" | "right") => {
     if (creatingColStateRef.current) {
       commitCreatingColumn();
@@ -2971,13 +2358,13 @@ export default function StageTablePanel({ project }: { project: Project }) {
     setEditingFieldState(null);
     const defaultName = buildUniqueDefaultColumnName("text");
     const created =
-      project.stageTable.insertCustomColumn?.({
+      dataSource.insertCustomColumn({
         name: defaultName,
         type: "text",
         targetColumnId,
         side,
       }) ??
-      project.stageTable.addCustomColumn?.({
+      dataSource.addCustomColumn({
         name: defaultName,
         type: "text",
       });
@@ -3032,17 +2419,19 @@ export default function StageTablePanel({ project }: { project: Project }) {
     }
   };
 
-  const allPropertyIds: string[] = ["name", ...OPTIONAL_SYSTEM_COLUMN_IDS, ...customColumns.map((col) => col.id)];
+  const allPropertyIds: string[] = [...dataSource.getSystemColumnIds(), ...customColumns.map((col) => col.id)];
   const originalTableView = views.find((v) => !v.deletable) ?? views[0] ?? activeView;
   const validPropertyIdSet = new Set<string>(allPropertyIds);
-  const filterableColumnIds: string[] = Array.from(
-    new Set([
-      "name",
-      ...(originalTableView.visibleColumnIds ?? []).filter(
-        (colId) => colId !== "name" && validPropertyIdSet.has(colId),
-      ),
-    ]),
-  );
+  const filterableColumnIds: string[] = isWorkspaceMode
+    ? allPropertyIds
+    : Array.from(
+        new Set([
+          "name",
+          ...(originalTableView.visibleColumnIds ?? []).filter(
+            (colId) => colId !== "name" && validPropertyIdSet.has(colId),
+          ),
+        ]),
+      );
   const filterColumnGroups: TableColumnGroup[] = originalTableView.columnGroups ?? [];
 
   const filteredPropertyIds = allPropertyIds.filter((colId) => {
@@ -3051,45 +2440,8 @@ export default function StageTablePanel({ project }: { project: Project }) {
     return getColumnLabel(colId).toLowerCase().includes(q);
   });
 
-  const getOuterCandidatesForRow = (row: StageTableRow): StageTableRow[] => {
-    return allRows.filter((candidate) => {
-      if (candidate.uuid === row.uuid) return false;
-      if (candidate.kind !== "section" && candidate.kind !== "text") return false;
-      if (row.kind === "section" && project.sectionMethods.isEntityInSection(candidate.entity, row.entity as any)) {
-        return false;
-      }
-      return true;
-    });
-  };
-
-  const getInnerCandidatesForRow = (row: StageTableRow): StageTableRow[] => {
-    return allRows.filter((candidate) => {
-      if (candidate.uuid === row.uuid) return false;
-      if (
-        candidate.kind === "section" &&
-        project.sectionMethods.isEntityInSection(row.entity, candidate.entity as any)
-      ) {
-        return false;
-      }
-      return true;
-    });
-  };
-
-  // 冻结列计算（冻结从左侧行号列起至 frozenColumnId 为止的全部列）
-  const frozenColumnId: string | null =
-    project.stageTable.getFrozenColumnId?.() ??
-    (activeView.frozenColumnId && visibleColumnSet.has(activeView.frozenColumnId) ? activeView.frozenColumnId : null);
-  const frozenEndIndex = frozenColumnId ? visibleColumnIds.indexOf(frozenColumnId) : -1;
-
-  const columnLeftOffsets: number[] = [];
-  let runningLeft = INDEX_COLUMN_WIDTH;
-  for (const colId of visibleColumnIds) {
-    columnLeftOffsets.push(runningLeft);
-    runningLeft += getColumnWidth(colId);
-  }
-
-  // 图 6：跨列分组表头（columnGroups）连续区间计算
-  const columnGroups: TableColumnGroup[] = project.stageTable.getColumnGroups?.() ?? activeView.columnGroups ?? [];
+  // 跨列分组表头连续区间计算
+  const columnGroups: TableColumnGroup[] = dataSource.getColumnGroups();
   const groupByColId = new Map<string, TableColumnGroup>();
   for (const grp of columnGroups) {
     for (const cid of grp.columnIds) {
@@ -3122,20 +2474,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
     });
   }
 
-  const totalTableWidth = runningLeft + ADD_COLUMN_WIDTH;
-
-  const layoutDepsKey = `${project.uri?.toString?.() ?? ""}:${rows.length}:${activeSort ? `${activeSort.columnId}:${activeSort.direction}` : ""}:${activeFilters.length}:${activeFilterConditionCount}:${frozenColumnId ?? ""}:${hasVisibleColumnGroups ? 1 : 0}:${visibleColumnIds.map((c) => `${c}=${getColumnWidth(c)}`).join(",")}`;
-
-  const selectionSummaryText =
-    selection.mode === "all"
-      ? t("selection.allSelected", { count: rows.length })
-      : selection.mode === "rows" && selection.rowIds.size > 0
-        ? t("selection.rowsCount", { count: selection.rowIds.size })
-        : selection.mode === "columns" && selection.colIds.size > 0
-          ? t("selection.colsCount", { count: selection.colIds.size })
-          : selection.mode === "cells" && selection.cells.size > 0
-            ? t("selection.cellsCount", { count: selection.cells.size })
-            : null;
+  const layoutDepsKey = `${project?.uri?.toString?.() ?? dataSource.scopeKind}:${effectiveTotalRowCount}:${tableRowHeight}:${activeSort ? `${activeSort.columnId}:${activeSort.direction}` : ""}:${activeFilters.length}:${activeFilterConditionCount}:${frozenColumnId ?? ""}:${hasVisibleColumnGroups ? 1 : 0}:${visibleColumnIds.map((c) => `${c}=${getColumnWidth(c)}`).join(",")}`;
 
   const systemColumnLabels: Partial<Record<SystemColumnId, string>> = {
     name: t("columns.name"),
@@ -3173,7 +2512,6 @@ export default function StageTablePanel({ project }: { project: Project }) {
     const isTypeLockedCol = Boolean(customCol?.protectedRole);
     return (
       <div data-stage-table-edit-field-panel className="w-64 p-3 text-xs select-none">
-        {/* 第一行：字段名称输入框（自动聚焦全选，蓝框高亮，对应图 1） */}
         <Input
           ref={editNameInputRef}
           value={editFieldName}
@@ -3191,7 +2529,6 @@ export default function StageTablePanel({ project }: { project: Project }) {
           className="border-primary/80 focus-visible:ring-primary/50 h-8 text-xs"
         />
 
-        {/* 第二行：字段类型下拉选择（点击展开图 2 双列面板；系统属性与间隔重复核心列锁定类型） */}
         <div className="mt-2.5">
           {isCustom && !isTypeLockedCol ? (
             <Popover open={editTypeDropdownOpen} onOpenChange={setEditTypeDropdownOpen}>
@@ -3247,14 +2584,13 @@ export default function StageTablePanel({ project }: { project: Project }) {
           )}
         </div>
 
-        {/* 公式表达式预览与编辑入口 */}
         {isCustom && editFieldType === "formula" && (
           <div className="mt-2.5 space-y-1.5">
             <button
               type="button"
               data-open-formula-editor
               onClick={() => {
-                project.stageTable.updateColumn?.(colId, {
+                dataSource.updateColumn(colId, {
                   name: editFieldName,
                   type: "formula",
                 });
@@ -3277,14 +2613,12 @@ export default function StageTablePanel({ project }: { project: Project }) {
           </div>
         )}
 
-        {/* 从公式转为静态列时的固化提示 */}
         {isCustom && customCol?.type === "formula" && editFieldType !== "formula" && (
           <div className="text-muted-foreground bg-muted/40 mt-2 rounded-md px-2 py-1.5 text-[11px] leading-snug">
             {t("formulaEditor.solidifyHint")}
           </div>
         )}
 
-        {/* 底部操作区：确定 / 取消（对应图 1） */}
         <div className="border-border/60 mt-3 flex items-center justify-end gap-2 border-t pt-2.5">
           <Button type="button" size="sm" onClick={handleSaveEditField} className="h-7 px-3 text-xs">
             {t("fieldDialog.confirm")}
@@ -3306,22 +2640,12 @@ export default function StageTablePanel({ project }: { project: Project }) {
     );
   };
 
-  const selectedRowIdsForViews = new Set<string>(
-    selection.mode === "all"
-      ? rows.map((r) => r.uuid)
-      : selection.mode === "rows"
-        ? selection.rowIds
-        : selection.mode === "cells"
-          ? extractRowIdsFromCells(selection.cells)
-          : [],
-  );
-
   const handleViewSelectRows = (uuids: string[], focusCamera?: boolean) => {
     if (uuids.length === 0) {
       clearSelection(true);
       return;
     }
-    setSelection({
+    selectionStore.setState({
       mode: "rows",
       rowIds: new Set(uuids),
       colIds: new Set<string>(),
@@ -3336,86 +2660,31 @@ export default function StageTablePanel({ project }: { project: Project }) {
   const commitRenameView = (viewId: string) => {
     const trimmed = renamingViewDraft.trim();
     if (trimmed) {
-      project.stageTable.renameView?.(viewId, trimmed);
+      dataSource.renameView(viewId, trimmed);
     }
     setRenamingViewId(null);
   };
 
   const handleCreateView = (type: TableViewType) => {
-    project.stageTable.createView?.({
+    dataSource.createView({
       type,
       name: t(`views.defaultName_${type}`),
     });
     setAddViewPopoverOpen(false);
-    setSelection(EMPTY_SELECTION);
+    setActiveEditor(null);
+    selectionStore.clear();
   };
 
   const handleTableAddRow = () => {
-    const created = project.stageTable.createRow?.({ text: "" });
-    if (created) {
-      handleViewSelectRows([created.uuid], false);
-      requestAnimationFrame(() => scrollRowIntoViewIfNeeded(created.uuid));
-    }
+    void Promise.resolve(dataSource.createRow({ text: "" })).then((created) => {
+      if (created) {
+        handleViewSelectRows([created.uuid], false);
+        requestAnimationFrame(() => scrollRowIntoViewIfNeeded(created.uuid));
+      }
+    });
   };
 
   const tableRowHeightClass = tableRowHeight === "compact" ? "h-8" : tableRowHeight === "tall" ? "h-14" : "h-10";
-
-  const openImagePreview = (attachmentId: string, sourceRowUuid?: string) => {
-    const allTableImages: ImageLightboxItem[] = [];
-    for (const r of rows) {
-      const label = getDisplayLabel(r, t);
-      for (const img of r.images ?? []) {
-        allTableImages.push({
-          attachmentId: img.attachmentId,
-          label,
-          rowUuid: r.uuid,
-          imageNodeUuid: img.uuid,
-        });
-      }
-    }
-
-    const findIdx = (list: ImageLightboxItem[]) => {
-      const exact = sourceRowUuid
-        ? list.findIndex((item) => item.attachmentId === attachmentId && item.rowUuid === sourceRowUuid)
-        : -1;
-      if (exact >= 0) return exact;
-      const byAtt = list.findIndex((item) => item.attachmentId === attachmentId);
-      return byAtt >= 0 ? byAtt : 0;
-    };
-
-    const sourceRow = sourceRowUuid ? rows.find((r) => r.uuid === sourceRowUuid) : undefined;
-    const rowImages: ImageLightboxItem[] = sourceRow
-      ? (sourceRow.images ?? []).map((img) => ({
-          attachmentId: img.attachmentId,
-          label: getDisplayLabel(sourceRow, t),
-          rowUuid: sourceRow.uuid,
-          imageNodeUuid: img.uuid,
-        }))
-      : [];
-
-    if (rowImages.length > 1) {
-      setPreviewLightboxState({
-        items: rowImages,
-        initialIndex: findIdx(rowImages),
-        allItems: allTableImages.length > rowImages.length ? allTableImages : undefined,
-        allInitialIndex: allTableImages.length > rowImages.length ? findIdx(allTableImages) : undefined,
-      });
-      return;
-    }
-
-    if (allTableImages.length > 0) {
-      setPreviewLightboxState({
-        items: allTableImages,
-        initialIndex: findIdx(allTableImages),
-      });
-      return;
-    }
-
-    setPreviewLightboxState({
-      items: [{ attachmentId }],
-      initialIndex: 0,
-    });
-  };
 
   const startViewTabDragReorder = (viewId: string, event: React.PointerEvent) => {
     if (event.button !== 0 || renamingViewId === viewId) return;
@@ -3476,7 +2745,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
           suppressViewClickRef.current = false;
         });
         if (latestHint) {
-          project.stageTable.reorderViews?.(viewId, latestHint.targetViewId, latestHint.position);
+          dataSource.reorderViews(viewId, latestHint.targetViewId, latestHint.position);
         }
       }
       setDraggingViewId(null);
@@ -3487,7 +2756,44 @@ export default function StageTablePanel({ project }: { project: Project }) {
     window.addEventListener("pointerup", onPointerUp);
   };
 
-  const recordDialogRow = recordDialogRowUuid ? (allRows.find((r) => r.uuid === recordDialogRowUuid) ?? null) : null;
+  const activeEditorRow = activeEditor
+    ? (loadedRowsList.find(
+        (r) => r.uuid === activeEditor.rowUuid && (!activeEditor.docId || !r.docId || r.docId === activeEditor.docId),
+      ) ??
+      loadedRowByUuid.get(activeEditor.rowUuid) ??
+      null)
+    : null;
+  const activeEditorCol = activeEditor ? customColumnMap.get(activeEditor.colId) : undefined;
+  const recordDialogRow = recordDialogTarget
+    ? (syncData.allRows.find((r) => r.uuid === recordDialogTarget.uuid) ??
+      dataSource.getCachedRow?.(recordDialogTarget.uuid, recordDialogTarget.docId) ??
+      loadedRowByUuid.get(recordDialogTarget.uuid) ??
+      recordDialogTarget.snapshot ??
+      null)
+    : null;
+
+  const workspaceDocs = dataSource.getWorkspaceDocs?.() ?? [];
+  const workspaceFolders = Array.from(
+    new Set(workspaceDocs.map((d) => d.folderPath).filter((f) => f.length > 0)),
+  ).sort();
+  const filteredScopeDocs = scopeSearch.trim()
+    ? workspaceDocs.filter(
+        (d) =>
+          d.title.toLowerCase().includes(scopeSearch.trim().toLowerCase()) ||
+          d.relPath.toLowerCase().includes(scopeSearch.trim().toLowerCase()),
+      )
+    : workspaceDocs;
+  const workspaceScopeLabel = (() => {
+    if (!activeWorkspaceScope || activeWorkspaceScope.kind === "all") return t("scope.allWorkspace");
+    if (activeWorkspaceScope.kind === "folders") {
+      return activeWorkspaceScope.paths.length > 0
+        ? t("scope.selectedFolders", { count: activeWorkspaceScope.paths.length })
+        : t("scope.allWorkspace");
+    }
+    return activeWorkspaceScope.paths.length > 0
+      ? t("scope.selectedDocs", { count: activeWorkspaceScope.paths.length })
+      : t("scope.allWorkspace");
+  })();
 
   return (
     <div
@@ -3500,7 +2806,30 @@ export default function StageTablePanel({ project }: { project: Project }) {
       onMouseUp={(e) => e.stopPropagation()}
       className="bg-background relative flex size-full min-h-0 min-w-0 flex-col overflow-hidden outline-none"
     >
-      {/* 第一行：顶部多视图标签栏（支持多视图创建、切换、重命名、复制、删除、指针拖拽排序） */}
+      {/* 共享隐藏图片上传 input */}
+      <input
+        ref={rowImageUploadRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={(e) => {
+          const selected = Array.from(e.target.files ?? []);
+          const target = rowImageUploadTargetRef.current;
+          if (target && selected.length > 0) {
+            void dataSource.executeMutation({
+              type: "add_images",
+              docId: target.docId,
+              rowUuid: target.rowUuid,
+              blobs: selected,
+            });
+          }
+          rowImageUploadTargetRef.current = null;
+          e.target.value = "";
+        }}
+      />
+
+      {/* 第一行：顶部多视图标签栏 */}
       <div
         ref={viewBarRef}
         data-stage-table-view-bar
@@ -3524,8 +2853,9 @@ export default function StageTablePanel({ project }: { project: Project }) {
                   onClick={() => {
                     if (suppressViewClickRef.current) return;
                     if (!isActive && !isRenaming) {
-                      project.stageTable.setActiveView?.(view.id);
-                      setSelection(EMPTY_SELECTION);
+                      dataSource.setActiveView(view.id);
+                      setActiveEditor(null);
+                      selectionStore.clear();
                     }
                   }}
                   onDoubleClick={(e) => {
@@ -3615,7 +2945,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                           data-view-action-duplicate
                           onClick={() => {
                             setViewMenuOpenId(null);
-                            project.stageTable.duplicateView?.(view.id, t("headerMenu.copySuffix"));
+                            dataSource.duplicateView(view.id, t("headerMenu.copySuffix"));
                           }}
                           className="hover:bg-accent flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left"
                         >
@@ -3629,7 +2959,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                           disabled={!canDelete}
                           onClick={() => {
                             setViewMenuOpenId(null);
-                            project.stageTable.deleteView?.(view.id);
+                            dataSource.deleteView(view.id);
                           }}
                           className="text-destructive hover:bg-destructive/12 flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left disabled:pointer-events-none disabled:opacity-40"
                         >
@@ -3659,7 +2989,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                   <span>{t("views.renameView")}</span>
                 </ContextMenuItem>
                 <ContextMenuItem
-                  onSelect={() => project.stageTable.duplicateView?.(view.id, t("headerMenu.copySuffix"))}
+                  onSelect={() => dataSource.duplicateView(view.id, t("headerMenu.copySuffix"))}
                   className="text-xs"
                 >
                   <CopyPlus className="size-3.5" />
@@ -3669,7 +2999,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                 <ContextMenuItem
                   variant="destructive"
                   disabled={!canDelete}
-                  onSelect={() => project.stageTable.deleteView?.(view.id)}
+                  onSelect={() => dataSource.deleteView(view.id)}
                   className="text-xs"
                 >
                   <Trash2 className="size-3.5" />
@@ -3682,7 +3012,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
 
         <div className="bg-border mx-1 h-3.5 w-px shrink-0" />
 
-        {/* 新建视图菜单（表格视图 / 看板视图 / 甘特视图 / 画册视图 / 日历视图） */}
+        {/* 新建视图菜单 */}
         <Popover open={addViewPopoverOpen} onOpenChange={setAddViewPopoverOpen}>
           <PopoverTrigger asChild>
             <button
@@ -3730,15 +3060,241 @@ export default function StageTablePanel({ project }: { project: Project }) {
             </div>
           </PopoverContent>
         </Popover>
+
+        {/* 工作空间范围切换（入口 1：画布分屏快捷切换 / 入口 2：全屏工作空间视图级范围选择）+ 共享字段管理 */}
+        {(canSwitchDockScope || isWorkspaceMode) && (
+          <div className="ml-auto flex shrink-0 items-center gap-1.5 pl-2">
+            {canSwitchDockScope && (
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    data-stage-table-dock-scope-trigger
+                    className={cn(
+                      "border-border/70 hover:bg-accent inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-md border px-2 text-[11px] transition-colors select-none",
+                      dockScopeMode !== "current_doc"
+                        ? "border-primary/50 bg-primary/10 text-primary font-medium"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {dockScopeMode === "current_doc" ? (
+                      <FileText className="size-3" />
+                    ) : dockScopeMode === "current_folder" ? (
+                      <Folder className="size-3" />
+                    ) : (
+                      <Globe className="size-3" />
+                    )}
+                    <span>
+                      {dockScopeMode === "current_doc"
+                        ? t("scope.currentDoc")
+                        : dockScopeMode === "current_folder"
+                          ? t("scope.currentFolder")
+                          : t("scope.allWorkspace")}
+                    </span>
+                    <ChevronDown className="size-3 opacity-70" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="end"
+                  className="w-44 p-1 text-xs select-none"
+                  onWheel={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  {(
+                    [
+                      { id: "current_doc", label: t("scope.currentDoc"), icon: FileText },
+                      ...(currentRelFolder
+                        ? [{ id: "current_folder" as const, label: t("scope.currentFolder"), icon: Folder }]
+                        : []),
+                      { id: "workspace", label: t("scope.allWorkspace"), icon: Globe },
+                    ] as Array<{
+                      id: "current_doc" | "current_folder" | "workspace";
+                      label: string;
+                      icon: typeof FileText;
+                    }>
+                  ).map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          setDockScopeMode(item.id);
+                          setActiveEditor(null);
+                          selectionStore.clear();
+                        }}
+                        className="hover:bg-accent flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-left"
+                      >
+                        <Icon className="text-muted-foreground size-3.5" />
+                        <span className="flex-1 truncate">{item.label}</span>
+                        {dockScopeMode === item.id && <Check className="text-primary size-3.5" />}
+                      </button>
+                    );
+                  })}
+                </PopoverContent>
+              </Popover>
+            )}
+
+            {isWorkspaceMode && !project && dataSource.setScope && (
+              <Popover
+                onOpenChange={(open) => {
+                  if (!open) setScopeSearch("");
+                }}
+              >
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    data-workspace-scope-picker
+                    className="border-border/70 hover:bg-accent text-foreground inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-md border px-2 text-[11px] transition-colors select-none"
+                  >
+                    <Globe className="text-primary size-3" />
+                    <span className="max-w-36 truncate">{workspaceScopeLabel}</span>
+                    <ChevronDown className="size-3 opacity-70" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="end"
+                  className="w-72 space-y-2 p-2.5 text-xs select-none"
+                  onWheel={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  <div className="bg-muted grid grid-cols-3 rounded-md p-0.5 text-[11px]">
+                    {(["all", "folders", "docs"] as const).map((kind) => {
+                      const active = (activeWorkspaceScope?.kind ?? "all") === kind;
+                      return (
+                        <button
+                          key={kind}
+                          type="button"
+                          onClick={() => {
+                            if (kind === "all") {
+                              dataSource.setScope?.({ kind: "all", paths: [] });
+                            } else if (kind === "folders") {
+                              dataSource.setScope?.({
+                                kind: "folders",
+                                paths: activeWorkspaceScope?.kind === "folders" ? activeWorkspaceScope.paths : [],
+                              });
+                            } else {
+                              dataSource.setScope?.({
+                                kind: "docs",
+                                paths: activeWorkspaceScope?.kind === "docs" ? activeWorkspaceScope.paths : [],
+                              });
+                            }
+                          }}
+                          className={cn(
+                            "cursor-pointer rounded px-2 py-1 text-center transition-colors",
+                            active
+                              ? "bg-background text-foreground font-medium shadow-xs"
+                              : "text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          {t(`scope.mode_${kind}`)}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {activeWorkspaceScope?.kind === "all" && (
+                    <div className="text-muted-foreground px-1 py-2 text-[11px]">
+                      {t("scope.allSummary", { count: workspaceDocs.length })}
+                    </div>
+                  )}
+
+                  {activeWorkspaceScope?.kind === "folders" && (
+                    <div className="max-h-52 space-y-0.5 overflow-y-auto">
+                      {workspaceFolders.length === 0 ? (
+                        <div className="text-muted-foreground py-4 text-center text-[11px]">{t("scope.noFolders")}</div>
+                      ) : (
+                        workspaceFolders.map((folder) => {
+                          const checked = activeWorkspaceScope.paths.includes(folder);
+                          return (
+                            <label
+                              key={folder}
+                              className="hover:bg-accent flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1"
+                            >
+                              <Checkbox
+                                checked={checked}
+                                onCheckedChange={(val) => {
+                                  const next = val
+                                    ? Array.from(new Set([...activeWorkspaceScope.paths, folder]))
+                                    : activeWorkspaceScope.paths.filter((p) => p !== folder);
+                                  dataSource.setScope?.({ kind: "folders", paths: next });
+                                }}
+                              />
+                              <Folder className="text-muted-foreground size-3.5 shrink-0" />
+                              <span className="min-w-0 flex-1 truncate">{folder}</span>
+                            </label>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
+
+                  {activeWorkspaceScope?.kind === "docs" && (
+                    <div className="space-y-1.5">
+                      <Input
+                        value={scopeSearch}
+                        onChange={(e) => setScopeSearch(e.target.value)}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        placeholder={t("propertiesPopover.searchPlaceholder")}
+                        className="h-7 text-xs"
+                      />
+                      <div className="max-h-52 space-y-0.5 overflow-y-auto">
+                        {filteredScopeDocs.map((doc) => {
+                          const checked = activeWorkspaceScope.paths.includes(doc.relPath);
+                          return (
+                            <label
+                              key={doc.docId}
+                              className="hover:bg-accent flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1"
+                            >
+                              <Checkbox
+                                checked={checked}
+                                onCheckedChange={(val) => {
+                                  const next = val
+                                    ? Array.from(new Set([...activeWorkspaceScope.paths, doc.relPath]))
+                                    : activeWorkspaceScope.paths.filter((p) => p !== doc.relPath);
+                                  dataSource.setScope?.({ kind: "docs", paths: next });
+                                }}
+                              />
+                              <FileText className="text-muted-foreground size-3.5 shrink-0" />
+                              <span className="min-w-0 flex-1 truncate" title={doc.relPath}>
+                                {doc.title}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </PopoverContent>
+              </Popover>
+            )}
+
+            {isWorkspaceMode && (
+              <button
+                type="button"
+                data-workspace-columns-trigger
+                onClick={() => setWorkspaceColumnsDialogOpen(true)}
+                className="border-border/70 text-muted-foreground hover:bg-accent hover:text-foreground inline-flex h-6 shrink-0 cursor-pointer items-center gap-1 rounded-md border px-2 text-[11px] transition-colors select-none"
+              >
+                <Layers className="size-3" />
+                <span>{t("workspaceColumns.button")}</span>
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* 按当前激活视图类型渲染功能栏与主体 */}
-      {activeViewType === "kanban" && (
-        <StageTableKanbanView
-          project={project}
+      {/* 非表格 5 大视图 */}
+      {activeViewType !== "table" && (
+        <NonTableViewBridge
+          activeViewType={activeViewType}
+          project={project ?? null}
+          dataSource={dataSource}
+          dataRevision={revision}
+          selectionStore={selectionStore}
           activeView={activeView}
-          allRows={allRows}
-          rows={rows}
+          allRows={syncData.allRows}
+          rows={syncData.rows}
           allColumnIds={allPropertyIds}
           filterableColumnIds={filterableColumnIds}
           filterColumnGroups={filterColumnGroups}
@@ -3748,114 +3304,18 @@ export default function StageTablePanel({ project }: { project: Project }) {
           activeFilters={activeFilters}
           activeFilterGroup={activeFilterGroup}
           activeSort={activeSort}
-          selectedRowIds={selectedRowIdsForViews}
           getColumnLabel={getColumnLabel}
           onSelectRows={handleViewSelectRows}
-          onOpenRecord={(uuid) => setRecordDialogRowUuid(uuid)}
-          onPreviewImage={(attId, rowUuid) => openImagePreview(attId, rowUuid)}
-          t={t}
-        />
-      )}
-
-      {activeViewType === "gantt" && (
-        <StageTableGanttView
-          project={project}
-          activeView={activeView}
-          allRows={allRows}
-          rows={rows}
-          allColumnIds={allPropertyIds}
-          filterableColumnIds={filterableColumnIds}
-          filterColumnGroups={filterColumnGroups}
-          visibleColumnIds={visibleColumnIds}
-          customColumns={customColumns}
-          customColumnMap={customColumnMap}
-          activeFilters={activeFilters}
-          activeFilterGroup={activeFilterGroup}
-          activeSort={activeSort}
-          selectedRowIds={selectedRowIdsForViews}
-          getColumnLabel={getColumnLabel}
-          onSelectRows={handleViewSelectRows}
-          onOpenRecord={(uuid) => setRecordDialogRowUuid(uuid)}
-          onPreviewImage={(attId, rowUuid) => openImagePreview(attId, rowUuid)}
-          t={t}
-        />
-      )}
-
-      {activeViewType === "gallery" && (
-        <StageTableGalleryView
-          project={project}
-          activeView={activeView}
-          allRows={allRows}
-          rows={rows}
-          allColumnIds={allPropertyIds}
-          filterableColumnIds={filterableColumnIds}
-          filterColumnGroups={filterColumnGroups}
-          visibleColumnIds={visibleColumnIds}
-          customColumns={customColumns}
-          customColumnMap={customColumnMap}
-          activeFilters={activeFilters}
-          activeFilterGroup={activeFilterGroup}
-          activeSort={activeSort}
-          selectedRowIds={selectedRowIdsForViews}
-          getColumnLabel={getColumnLabel}
-          onSelectRows={handleViewSelectRows}
-          onOpenRecord={(uuid) => setRecordDialogRowUuid(uuid)}
-          onPreviewImage={(attId, rowUuid) => openImagePreview(attId, rowUuid)}
-          t={t}
-        />
-      )}
-
-      {activeViewType === "calendar" && (
-        <StageTableCalendarView
-          project={project}
-          activeView={activeView}
-          allRows={allRows}
-          rows={rows}
-          allColumnIds={allPropertyIds}
-          filterableColumnIds={filterableColumnIds}
-          filterColumnGroups={filterColumnGroups}
-          visibleColumnIds={visibleColumnIds}
-          customColumns={customColumns}
-          customColumnMap={customColumnMap}
-          activeFilters={activeFilters}
-          activeFilterGroup={activeFilterGroup}
-          activeSort={activeSort}
-          selectedRowIds={selectedRowIdsForViews}
-          getColumnLabel={getColumnLabel}
-          onSelectRows={handleViewSelectRows}
-          onOpenRecord={(uuid) => setRecordDialogRowUuid(uuid)}
-          onPreviewImage={(attId, rowUuid) => openImagePreview(attId, rowUuid)}
-          t={t}
-        />
-      )}
-
-      {activeViewType === "spaced_repetition" && (
-        <StageTableSpacedRepetitionView
-          project={project}
-          activeView={activeView}
-          allRows={allRows}
-          rows={rows}
-          allColumnIds={allPropertyIds}
-          filterableColumnIds={filterableColumnIds}
-          filterColumnGroups={filterColumnGroups}
-          customColumns={customColumns}
-          customColumnMap={customColumnMap}
-          activeFilters={activeFilters}
-          activeFilterGroup={activeFilterGroup}
-          activeSort={activeSort}
-          selectedRowIds={selectedRowIdsForViews}
-          getColumnLabel={getColumnLabel}
-          onSelectRows={handleViewSelectRows}
-          onOpenRecord={(uuid) => setRecordDialogRowUuid(uuid)}
-          onPreviewImage={(attId, rowUuid) => openImagePreview(attId, rowUuid)}
+          onOpenRecord={(uuid, row) => setRecordDialogTarget({ uuid, docId: row?.docId, snapshot: row })}
+          onPreviewImage={(attId, rowUuid, docId) => openImagePreview(attId, rowUuid, docId)}
           onOpenFormulaEditor={(colId, rowUuid) => openFormulaEditorForColumn(colId, rowUuid)}
           t={t}
         />
       )}
 
+      {/* 主表格视图（虚拟化行 + 单例浮层 + 零重渲染列宽拖拽） */}
       {activeViewType === "table" && (
         <>
-          {/* 第二行：表格视图功能区 */}
           <div className="border-border/60 flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b px-3 text-xs [scrollbar-width:none]">
             <button
               type="button"
@@ -3869,7 +3329,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
 
             <div className="bg-border mx-0.5 h-3.5 w-px shrink-0" />
 
-            {/* 功能区 - 属性弹窗（含系统列 + 自定义列显隐与编辑入口） */}
+            {/* 属性显隐弹窗 */}
             <Popover
               onOpenChange={(open) => {
                 if (!open) setPropertySearch("");
@@ -3905,7 +3365,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                 <div className="max-h-72 overflow-y-auto p-1">
                   {filteredPropertyIds.map((colId) => {
                     const isPrimary = colId === "name";
-                    const checked = project.stageTable.isColumnVisible(colId);
+                    const checked = dataSource.isColumnVisible(colId);
                     const customCol = customColumnMap.get(colId);
                     return (
                       <div
@@ -3920,7 +3380,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                           disabled={isPrimary}
                           onCheckedChange={(val) => {
                             if (!isPrimary) {
-                              project.stageTable.setColumnVisible(colId, Boolean(val));
+                              dataSource.setColumnVisible(colId, Boolean(val));
                             }
                           }}
                         />
@@ -3928,7 +3388,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                           type="button"
                           onClick={() => {
                             if (!isPrimary) {
-                              project.stageTable.setColumnVisible(colId, !checked);
+                              dataSource.setColumnVisible(colId, !checked);
                             }
                           }}
                           className={cn(
@@ -3964,20 +3424,19 @@ export default function StageTablePanel({ project }: { project: Project }) {
               columnGroups={filterColumnGroups}
               customColumns={customColumns}
               customColumnMap={customColumnMap}
-              allRows={allRows}
+              allRows={loadedRowsList}
+              dataSource={dataSource}
               activeFilters={activeFilters}
               filterGroup={activeFilterGroup}
               getColumnLabel={getColumnLabel}
-              onSetConjunction={(conj) => project.stageTable.setFilterConjunction?.(conj)}
-              onAddCondition={(cid) => project.stageTable.addFilterCondition?.(cid)}
-              onUpdateCondition={(id, patch) => project.stageTable.updateFilterCondition?.(id, patch)}
-              onRemoveCondition={(id) => project.stageTable.removeFilterCondition?.(id)}
-              onToggleConditionCollapse={(id) => project.stageTable.toggleFilterConditionCollapsed?.(id)}
-              onReorderConditions={(dragId, targetId, pos) =>
-                project.stageTable.reorderFilterConditions?.(dragId, targetId, pos)
-              }
-              onSetColumnFilter={(cid, flt) => project.stageTable.setColumnFilter?.(cid, flt)}
-              onClearAllFilters={() => project.stageTable.clearAllFilters?.()}
+              onSetConjunction={(conj) => dataSource.setFilterConjunction(conj)}
+              onAddCondition={(cid) => dataSource.addFilterCondition(cid)}
+              onUpdateCondition={(id, patch) => dataSource.updateFilterCondition(id, patch)}
+              onRemoveCondition={(id) => dataSource.removeFilterCondition(id)}
+              onToggleConditionCollapse={(id) => dataSource.toggleFilterConditionCollapsed(id)}
+              onReorderConditions={(dragId, targetId, pos) => dataSource.reorderFilterConditions(dragId, targetId, pos)}
+              onSetColumnFilter={(cid, flt) => dataSource.setColumnFilter(cid, flt)}
+              onClearAllFilters={() => dataSource.clearAllFilters()}
               t={t}
             />
 
@@ -4020,7 +3479,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                   {activeSort && (
                     <button
                       type="button"
-                      onClick={() => project.stageTable.setSort?.(null)}
+                      onClick={() => dataSource.setSort(null)}
                       className="text-primary cursor-pointer text-[11px] hover:underline"
                     >
                       {t("sortFilter.clearSort")}
@@ -4045,9 +3504,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                         <button
                           type="button"
                           aria-label={t("sortFilter.sortAsc")}
-                          onClick={() =>
-                            project.stageTable.setSort?.(isAsc ? null : { columnId: cid, direction: "asc" })
-                          }
+                          onClick={() => dataSource.setSort(isAsc ? null : { columnId: cid, direction: "asc" })}
                           className={cn(
                             "flex size-6 cursor-pointer items-center justify-center rounded border transition-colors",
                             isAsc
@@ -4060,9 +3517,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                         <button
                           type="button"
                           aria-label={t("sortFilter.sortDesc")}
-                          onClick={() =>
-                            project.stageTable.setSort?.(isDesc ? null : { columnId: cid, direction: "desc" })
-                          }
+                          onClick={() => dataSource.setSort(isDesc ? null : { columnId: cid, direction: "desc" })}
                           className={cn(
                             "flex size-6 cursor-pointer items-center justify-center rounded border transition-colors",
                             isDesc
@@ -4102,7 +3557,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                   <button
                     key={h}
                     type="button"
-                    onClick={() => project.stageTable.updateActiveViewConfig?.({ rowHeight: h })}
+                    onClick={() => dataSource.updateActiveViewConfig({ rowHeight: h })}
                     className="hover:bg-accent flex w-full cursor-pointer items-center justify-between rounded px-2 py-1.5"
                   >
                     <span>{t(`calendar.height_${h}`)}</span>
@@ -4112,29 +3567,17 @@ export default function StageTablePanel({ project }: { project: Project }) {
               </PopoverContent>
             </Popover>
 
-            {selectionSummaryText && (
-              <div
-                data-stage-table-selection-badge
-                className="bg-primary/12 text-primary ml-auto inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] font-medium select-none"
-              >
-                <span>{selectionSummaryText}</span>
-                <button
-                  type="button"
-                  aria-label={t("dateCell.clear")}
-                  onClick={() =>
-                    clearSelection(selection.mode === "rows" || selection.mode === "all" || selection.mode === "cells")
-                  }
-                  className="hover:bg-primary/20 cursor-pointer rounded-full p-0.5 transition-colors"
-                >
-                  <X className="size-3" />
-                </button>
-              </div>
-            )}
+            <SelectionSummaryBadge
+              selectionStore={selectionStore}
+              totalRowCount={effectiveTotalRowCount}
+              onClear={clearSelection}
+              t={t}
+            />
           </div>
 
-          {/* 表格主体（tableLayout: fixed + 精确总像素宽，确保调整单列宽度时其它列绝不自动伸缩） */}
           <TableScrollContainer layoutDepsKey={layoutDepsKey} externalViewportRef={viewportRef}>
             <table
+              ref={tableGridRef}
               data-stage-table-grid
               style={{ width: `${totalTableWidth}px`, tableLayout: "fixed" }}
               className="border-collapse text-left text-xs"
@@ -4142,13 +3585,12 @@ export default function StageTablePanel({ project }: { project: Project }) {
               <colgroup>
                 <col style={{ width: `${INDEX_COLUMN_WIDTH}px` }} />
                 {visibleColumnIds.map((colId) => (
-                  <col key={colId} style={{ width: `${getColumnWidth(colId)}px` }} />
+                  <col key={colId} data-col-width-id={colId} style={{ width: `${getColumnWidth(colId)}px` }} />
                 ))}
                 <col style={{ width: `${ADD_COLUMN_WIDTH}px` }} />
               </colgroup>
 
               <thead className="bg-muted sticky top-0 z-20">
-                {/* 图 6：跨列合并的顶部分组表头（如「基础信息 / 自我理解 / 后台数据」） */}
                 {hasVisibleColumnGroups && (
                   <tr data-stage-table-group-row className="border-border/60 border-b">
                     <th
@@ -4180,7 +3622,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                 onChange={(e) => setRenamingGroupDraft(e.target.value)}
                                 onBlur={() => {
                                   if (renamingGroupDraft.trim()) {
-                                    project.stageTable.renameColumnGroup?.(grp.id, renamingGroupDraft);
+                                    dataSource.renameColumnGroup(grp.id, renamingGroupDraft);
                                   }
                                   setRenamingGroupId(null);
                                 }}
@@ -4189,7 +3631,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                   if (e.key === "Enter") {
                                     e.preventDefault();
                                     if (renamingGroupDraft.trim()) {
-                                      project.stageTable.renameColumnGroup?.(grp.id, renamingGroupDraft);
+                                      dataSource.renameColumnGroup(grp.id, renamingGroupDraft);
                                     }
                                     setRenamingGroupId(null);
                                   } else if (e.key === "Escape") {
@@ -4233,7 +3675,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                         defaultValue={grp.name}
                                         onBlur={(e) => {
                                           if (e.target.value.trim()) {
-                                            project.stageTable.renameColumnGroup?.(grp.id, e.target.value);
+                                            dataSource.renameColumnGroup(grp.id, e.target.value);
                                           }
                                         }}
                                         onKeyDown={(e) => {
@@ -4242,7 +3684,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                             e.preventDefault();
                                             const val = (e.currentTarget as HTMLInputElement).value;
                                             if (val.trim()) {
-                                              project.stageTable.renameColumnGroup?.(grp.id, val);
+                                              dataSource.renameColumnGroup(grp.id, val);
                                             }
                                           }
                                         }}
@@ -4263,7 +3705,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                             <Checkbox
                                               checked={inThisGroup}
                                               onCheckedChange={(checked) => {
-                                                project.stageTable.setColumnInGroup?.(cid, checked ? grp.id : null);
+                                                dataSource.setColumnInGroup(cid, checked ? grp.id : null);
                                               }}
                                             />
                                             <ColumnIcon columnId={cid} customColumn={customColumnMap.get(cid)} />
@@ -4277,7 +3719,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                         type="button"
                                         variant="ghost"
                                         size="sm"
-                                        onClick={() => project.stageTable.dissolveColumnGroup?.(grp.id)}
+                                        onClick={() => dataSource.dissolveColumnGroup(grp.id)}
                                         className="text-destructive hover:text-destructive h-7 w-full justify-start gap-1.5 px-2 text-xs"
                                       >
                                         <Trash2 className="size-3.5" />
@@ -4293,7 +3735,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                               <button
                                 type="button"
                                 onClick={() => {
-                                  const createdGrp = project.stageTable.createColumnGroup?.(
+                                  const createdGrp = dataSource.createColumnGroup(
                                     t("columnGroups.defaultName"),
                                     seg.colIds,
                                   );
@@ -4317,24 +3759,13 @@ export default function StageTablePanel({ project }: { project: Project }) {
                 )}
 
                 <tr ref={headerRowRef} className="border-border/60 border-b">
-                  {/* 行计数表头（点击全选/取消全选） */}
-                  <th
-                    data-stage-table-select-all
+                  <SelectAllHeaderCell
+                    selectionStore={selectionStore}
+                    frozenEndIndex={frozenEndIndex}
                     title={t("selection.selectAllAria")}
-                    onClick={handleToggleSelectAll}
-                    style={frozenEndIndex >= 0 ? { left: "0px" } : undefined}
-                    className={cn(
-                      "border-border/50 bg-muted hover:bg-accent/70 h-9 cursor-pointer border-r px-1 text-center text-[11px] font-medium transition-colors select-none",
-                      selection.mode === "all"
-                        ? "text-primary after:bg-primary/18 font-semibold after:pointer-events-none after:absolute after:inset-0"
-                        : "text-muted-foreground/70",
-                      frozenEndIndex >= 0 ? "sticky z-30" : "relative",
-                    )}
-                  >
-                    #
-                  </th>
+                    onToggleSelectAll={handleToggleSelectAll}
+                  />
 
-                  {/* 数据列表头 */}
                   {visibleColumnIds.map((colId, colIdx) => {
                     const width = getColumnWidth(colId);
                     const customCol = customColumnMap.get(colId);
@@ -4348,8 +3779,6 @@ export default function StageTablePanel({ project }: { project: Project }) {
                     const isHeaderEditing = editingFieldState?.colId === colId && editingFieldState.anchor === "header";
                     const isCreatingThis = creatingColState?.colId === colId;
                     const currentGroup = groupByColId.get(colId);
-                    const isColSelected =
-                      selection.mode === "all" || (selection.mode === "columns" && selection.colIds.has(colId));
                     const colSortDir: TableSortDirection | null =
                       activeSort?.columnId === colId ? activeSort.direction : null;
                     const colFilter = activeFilterByColId.get(colId) ?? null;
@@ -4357,29 +3786,22 @@ export default function StageTablePanel({ project }: { project: Project }) {
                     const isFilterMenuOpen = filterPopoverColId === colId;
 
                     return (
-                      <th
+                      <SelectableColumnHeaderCell
                         key={colId}
-                        data-table-col-id={colId}
-                        data-col-selected={isColSelected ? "true" : undefined}
-                        data-col-sort={colSortDir ?? undefined}
-                        data-col-filtered={isColFiltered ? "true" : undefined}
-                        style={isFrozen ? { left: `${columnLeftOffsets[colIdx]}px` } : undefined}
+                        colId={colId}
+                        colIdx={colIdx}
+                        selectionStore={selectionStore}
+                        isFrozen={isFrozen}
+                        isFreezeBoundary={isFreezeBoundary}
+                        stickyLeftPx={columnLeftOffsets[colIdx]}
+                        isNameCol={isNameCol}
+                        isCreatingThis={isCreatingThis}
+                        isDraggingThis={isDraggingThis}
+                        colSortDir={colSortDir}
+                        isColFiltered={isColFiltered}
+                        isFilterMenuOpen={isFilterMenuOpen}
                         onPointerDown={(e) => startColumnDragReorder(colId, e)}
-                        className={cn(
-                          "group/th border-border/50 bg-muted text-muted-foreground h-9 border-r p-0 font-medium select-none",
-                          !isNameCol && !isCreatingThis ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
-                          isDraggingThis && "bg-accent/60 opacity-60",
-                          isFrozen ? "sticky z-30" : "relative",
-                          isFreezeBoundary && "border-r-primary/45 border-r-2",
-                          (colSortDir || isColFiltered) && "text-foreground",
-                          isColSelected &&
-                            "text-foreground after:bg-primary/15 after:border-b-primary after:pointer-events-none after:absolute after:inset-0 after:border-b-2",
-                          !isColSelected &&
-                            (colSortDir || isColFiltered || isFilterMenuOpen) &&
-                            "after:bg-primary/10 after:pointer-events-none after:absolute after:inset-0",
-                        )}
                       >
-                        {/* 锚定在当前列表头下方的图 1「修改字段」或图 4「新建/插入字段」浮层 */}
                         <Popover
                           open={isHeaderEditing || isCreatingThis}
                           onOpenChange={(open) => {
@@ -4397,7 +3819,6 @@ export default function StageTablePanel({ project }: { project: Project }) {
                           <PopoverAnchor asChild>
                             <div data-col-popover-anchor={colId} className="size-full">
                               {isCreatingThis ? (
-                                /* 图 4：创建/插入字段后的表头内联标题输入框（蓝底线高亮） */
                                 <div className="border-b-primary bg-background/90 flex h-full w-full items-center border-b-2 px-2">
                                   <input
                                     ref={creatingTitleInputRef}
@@ -4421,11 +3842,10 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                           return;
                                         }
                                         e.stopPropagation();
-                                        project.stageTable.toggleColumnSort?.(colId);
+                                        dataSource.toggleColumnSort(colId);
                                       }}
                                       className="hover:bg-accent/40 relative flex h-full w-full items-stretch"
                                     >
-                                      {/* Windows 文件管理器风格顶部居中排序小箭头（向上升序 / 向下排序） */}
                                       {colSortDir && (
                                         <button
                                           type="button"
@@ -4438,10 +3858,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                           onPointerDown={(e) => e.stopPropagation()}
                                           onClick={(e) => {
                                             e.stopPropagation();
-                                            project.stageTable.toggleColumnSort?.(
-                                              colId,
-                                              colSortDir === "asc" ? "desc" : "asc",
-                                            );
+                                            dataSource.toggleColumnSort(colId, colSortDir === "asc" ? "desc" : "asc");
                                           }}
                                           className="text-primary hover:bg-primary/15 absolute top-0 left-1/2 z-10 flex h-3.5 w-6 -translate-x-1/2 cursor-pointer items-center justify-center rounded-b transition-colors"
                                         >
@@ -4453,7 +3870,6 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                         </button>
                                       )}
 
-                                      {/* 列标题主体 */}
                                       <div
                                         className={cn(
                                           "flex min-w-0 flex-1 items-center gap-1.5 truncate pr-1 pl-2.5",
@@ -4464,7 +3880,6 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                         <span className="truncate">{getColumnLabel(colId)}</span>
                                       </div>
 
-                                      {/* 右侧分隔下拉按钮（类 Windows 文件管理器列筛选/排序下拉） */}
                                       <Popover
                                         open={isFilterMenuOpen}
                                         onOpenChange={(open) => setFilterPopoverColId(open ? colId : null)}
@@ -4489,32 +3904,32 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                             )}
                                           </button>
                                         </PopoverTrigger>
-                                        <PopoverContent
-                                          align="end"
-                                          sideOffset={4}
-                                          className="w-auto p-0"
-                                          onWheel={(e) => e.stopPropagation()}
-                                          onMouseDown={(e) => e.stopPropagation()}
-                                          onPointerDown={(e) => e.stopPropagation()}
-                                        >
-                                          <ColumnFilterSortPopoverContent
-                                            columnId={colId}
-                                            customCol={customCol}
-                                            allRows={allRows}
-                                            activeSort={activeSort}
-                                            activeFilter={colFilter}
-                                            onSetSort={(nextSort) => project.stageTable.setSort?.(nextSort)}
-                                            onSetFilter={(nextFlt) =>
-                                              project.stageTable.setColumnFilter?.(colId, nextFlt)
-                                            }
-                                            t={t}
-                                          />
-                                        </PopoverContent>
+                                        {isFilterMenuOpen && (
+                                          <PopoverContent
+                                            align="end"
+                                            sideOffset={4}
+                                            className="w-auto p-0"
+                                            onWheel={(e) => e.stopPropagation()}
+                                            onMouseDown={(e) => e.stopPropagation()}
+                                            onPointerDown={(e) => e.stopPropagation()}
+                                          >
+                                            <ColumnFilterSortPopoverContent
+                                              columnId={colId}
+                                              customCol={customCol}
+                                              allRows={syncData.allRows}
+                                              dataSource={dataSource}
+                                              activeSort={activeSort}
+                                              activeFilter={colFilter}
+                                              onSetSort={(nextSort) => dataSource.setSort(nextSort)}
+                                              onSetFilter={(nextFlt) => dataSource.setColumnFilter(colId, nextFlt)}
+                                              t={t}
+                                            />
+                                          </PopoverContent>
+                                        )}
                                       </Popover>
                                     </div>
                                   </ContextMenuTrigger>
 
-                                  {/* 表头右键菜单（整合图 1 修改字段 + 图 3 左右插入子菜单 + 图 6 字段编组 + 图 5 底部五图标栏） */}
                                   <ContextMenuContent
                                     className="w-52"
                                     onWheel={(e) => e.stopPropagation()}
@@ -4545,7 +3960,6 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                       </ContextMenuItem>
                                     )}
 
-                                    {/* 图 3：插入字段 -> 向左插入 / 向右插入 */}
                                     <ContextMenuSub>
                                       <ContextMenuSubTrigger inset className="text-xs">
                                         <span>{t("headerMenu.insertField")}</span>
@@ -4577,7 +3991,6 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                       </ContextMenuSubContent>
                                     </ContextMenuSub>
 
-                                    {/* 图 6：跨列分组表头（字段编组）管理入口 */}
                                     <ContextMenuSub>
                                       <ContextMenuSubTrigger className="text-xs">
                                         <FolderPlus className="size-3.5" />
@@ -4591,10 +4004,9 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                         <ContextMenuItem
                                           onSelect={() =>
                                             scheduleAfterContextMenu(() => {
-                                              const grp = project.stageTable.createColumnGroup?.(
-                                                t("columnGroups.defaultName"),
-                                                [colId],
-                                              );
+                                              const grp = dataSource.createColumnGroup(t("columnGroups.defaultName"), [
+                                                colId,
+                                              ]);
                                               if (grp) {
                                                 setRenamingGroupId(grp.id);
                                                 setRenamingGroupDraft(grp.name);
@@ -4615,7 +4027,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                             <ContextMenuItem
                                               key={grp.id}
                                               onSelect={() =>
-                                                project.stageTable.setColumnInGroup?.(colId, active ? null : grp.id)
+                                                dataSource.setColumnInGroup(colId, active ? null : grp.id)
                                               }
                                               className="text-xs"
                                             >
@@ -4631,7 +4043,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                           <>
                                             <ContextMenuSeparator />
                                             <ContextMenuItem
-                                              onSelect={() => project.stageTable.setColumnInGroup?.(colId, null)}
+                                              onSelect={() => dataSource.setColumnInGroup(colId, null)}
                                               className="text-xs"
                                             >
                                               <X className="size-3.5" />
@@ -4639,7 +4051,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                             </ContextMenuItem>
                                             <ContextMenuItem
                                               variant="destructive"
-                                              onSelect={() => project.stageTable.dissolveColumnGroup?.(currentGroup.id)}
+                                              onSelect={() => dataSource.dissolveColumnGroup(currentGroup.id)}
                                               className="text-xs"
                                             >
                                               <Trash2 className="size-3.5" />
@@ -4676,9 +4088,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                         onMouseDown={(e) => e.stopPropagation()}
                                       >
                                         <ContextMenuItem
-                                          onSelect={() =>
-                                            project.stageTable.setSort?.({ columnId: colId, direction: "asc" })
-                                          }
+                                          onSelect={() => dataSource.setSort({ columnId: colId, direction: "asc" })}
                                           className="text-xs"
                                         >
                                           <ArrowUp className="size-3.5" />
@@ -4686,9 +4096,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                           {colSortDir === "asc" && <Check className="text-primary ml-auto size-3.5" />}
                                         </ContextMenuItem>
                                         <ContextMenuItem
-                                          onSelect={() =>
-                                            project.stageTable.setSort?.({ columnId: colId, direction: "desc" })
-                                          }
+                                          onSelect={() => dataSource.setSort({ columnId: colId, direction: "desc" })}
                                           className="text-xs"
                                         >
                                           <ArrowDown className="size-3.5" />
@@ -4699,7 +4107,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                           <>
                                             <ContextMenuSeparator />
                                             <ContextMenuItem
-                                              onSelect={() => project.stageTable.setSort?.(null)}
+                                              onSelect={() => dataSource.setSort(null)}
                                               className="text-xs"
                                             >
                                               <X className="size-3.5" />
@@ -4712,7 +4120,6 @@ export default function StageTablePanel({ project }: { project: Project }) {
 
                                     <ContextMenuSeparator />
 
-                                    {/* 图 5：底部五图标栏（复制 | 自适应列宽 | 冻结 | 隐藏 | 分隔竖线 | 删除） */}
                                     <div
                                       data-header-menu-bottom-actions
                                       className="flex items-center justify-between gap-0.5 px-1 py-0.5"
@@ -4723,10 +4130,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                             disabled={!customCol}
                                             aria-label={t("headerMenu.duplicate")}
                                             onSelect={() =>
-                                              project.stageTable.duplicateCustomColumn?.(
-                                                colId,
-                                                t("headerMenu.copySuffix"),
-                                              )
+                                              dataSource.duplicateCustomColumn?.(colId, t("headerMenu.copySuffix"))
                                             }
                                             className="text-muted-foreground hover:bg-accent hover:text-foreground focus:bg-accent focus:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-35"
                                           >
@@ -4741,7 +4145,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                           <ContextMenuPrimitive.Item
                                             aria-label={t("headerMenu.autoFitWidth")}
                                             onSelect={() =>
-                                              project.stageTable.autoFitColumnWidth?.(colId, getColumnLabel(colId))
+                                              dataSource.autoFitColumnWidth?.(colId, undefined, getColumnLabel(colId))
                                             }
                                             className="text-muted-foreground hover:bg-accent hover:text-foreground focus:bg-accent focus:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md outline-none"
                                           >
@@ -4757,7 +4161,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                             aria-label={
                                               isFrozenTarget ? t("headerMenu.unfreeze") : t("headerMenu.freeze")
                                             }
-                                            onSelect={() => project.stageTable.toggleFreezeUpToColumn?.(colId)}
+                                            onSelect={() => dataSource.toggleFreezeColumn(colId)}
                                             className={cn(
                                               "hover:bg-accent hover:text-foreground focus:bg-accent focus:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md outline-none",
                                               isFrozenTarget ? "bg-accent text-primary" : "text-muted-foreground",
@@ -4776,7 +4180,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                           <ContextMenuPrimitive.Item
                                             disabled={isNameCol}
                                             aria-label={t("headerMenu.hide")}
-                                            onSelect={() => project.stageTable.setColumnVisible(colId, false)}
+                                            onSelect={() => dataSource.setColumnVisible(colId, false)}
                                             className="text-muted-foreground hover:bg-accent hover:text-foreground focus:bg-accent focus:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-35"
                                           >
                                             <EyeOff className="size-3.5" />
@@ -4796,7 +4200,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
                                                 ? t("headerMenu.protectedCannotDelete")
                                                 : t("headerMenu.delete")
                                             }
-                                            onSelect={() => project.stageTable.deleteCustomColumn?.(colId)}
+                                            onSelect={() => dataSource.deleteCustomColumn(colId)}
                                             className="text-muted-foreground hover:bg-destructive/15 hover:text-destructive focus:bg-destructive/15 focus:text-destructive flex size-7 cursor-pointer items-center justify-center rounded-md outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-35"
                                           >
                                             <Trash2 className="size-3.5" />
@@ -4822,14 +4226,20 @@ export default function StageTablePanel({ project }: { project: Project }) {
                             onOpenAutoFocus={(e) => e.preventDefault()}
                             onFocusOutside={(e) => {
                               const target = e.target as Element | null;
-                              if (target?.closest?.(`[data-col-popover-anchor="${colId}"]`)) {
+                              if (
+                                target
+                                  ?.closest?.("[data-col-popover-anchor]")
+                                  ?.getAttribute("data-col-popover-anchor") === colId
+                              ) {
                                 e.preventDefault();
                               }
                             }}
                             onPointerDownOutside={(e) => {
                               const target = e.target as Element | null;
                               if (
-                                target?.closest?.(`[data-col-popover-anchor="${colId}"]`) ||
+                                target
+                                  ?.closest?.("[data-col-popover-anchor]")
+                                  ?.getAttribute("data-col-popover-anchor") === colId ||
                                 target?.closest?.("[data-stage-table-add-col]")
                               ) {
                                 e.preventDefault();
@@ -4850,7 +4260,6 @@ export default function StageTablePanel({ project }: { project: Project }) {
                           </PopoverContent>
                         </Popover>
 
-                        {/* 拖拽落点高亮指示线 */}
                         {showDropBefore && (
                           <div className="bg-primary pointer-events-none absolute top-0 bottom-0 left-0 z-30 w-0.5" />
                         )}
@@ -4858,7 +4267,6 @@ export default function StageTablePanel({ project }: { project: Project }) {
                           <div className="bg-primary pointer-events-none absolute top-0 right-0 bottom-0 z-30 w-0.5" />
                         )}
 
-                        {/* 列宽拖拽手柄 */}
                         <div
                           role="separator"
                           data-col-resizer={colId}
@@ -4866,11 +4274,10 @@ export default function StageTablePanel({ project }: { project: Project }) {
                           onPointerDown={(e) => startColumnResize(colId, width, e)}
                           className="hover:bg-primary/60 absolute top-0 -right-0.5 bottom-0 z-20 w-1.5 cursor-col-resize"
                         />
-                      </th>
+                      </SelectableColumnHeaderCell>
                     );
                   })}
 
-                  {/* 列最右侧 + 号：点击新建自定义列并直接进入图 4 内联标题 + 双列类型选择 */}
                   <th className="border-border/50 bg-muted h-9 p-0 text-center select-none">
                     <button
                       type="button"
@@ -4886,20 +4293,20 @@ export default function StageTablePanel({ project }: { project: Project }) {
               </thead>
 
               <tbody>
-                {rows.length === 0 ? (
+                {effectiveTotalRowCount === 0 ? (
                   <tr>
                     <td
                       colSpan={visibleColumnIds.length + 2}
                       className="text-muted-foreground py-12 text-center text-xs"
                     >
-                      {allRows.length > 0 && hasAnyActiveFilter ? (
+                      {effectiveUnfilteredCount > 0 && hasAnyActiveFilter ? (
                         <div className="flex flex-col items-center gap-2">
                           <span>{t("sortFilter.noFilterMatch")}</span>
                           <Button
                             type="button"
                             variant="outline"
                             size="sm"
-                            onClick={() => project.stageTable.clearAllFilters?.()}
+                            onClick={() => dataSource.clearAllFilters()}
                             className="h-7 px-3 text-xs"
                           >
                             {t("sortFilter.clearAllFilters")}
@@ -4911,314 +4318,146 @@ export default function StageTablePanel({ project }: { project: Project }) {
                     </td>
                   </tr>
                 ) : (
-                  rows.map((row, rowIndex) => {
-                    const isRowSelected =
-                      selection.mode === "all" || (selection.mode === "rows" && selection.rowIds.has(row.uuid));
-                    return (
-                      <tr
-                        key={row.uuid}
-                        data-stage-table-row-id={row.uuid}
-                        data-row-selected={isRowSelected ? "true" : undefined}
-                        className={cn(
-                          "group/row border-border/40 border-b transition-colors",
-                          tableRowHeightClass,
-                          !isRowSelected && "hover:bg-muted/30",
-                        )}
-                      >
-                        {/* 从上到下 1, 2, 3... 行计数（点击/Shift/Ctrl/拖动选中单行或多行并同步画布） */}
+                  <>
+                    {virtualPaddingTop > 0 && (
+                      <tr aria-hidden data-virtual-spacer="top">
                         <td
-                          data-stage-table-row-index
-                          data-row-id={row.uuid}
-                          onPointerDown={(e) => handleRowIndexPointerDown(row.uuid, e)}
-                          style={frozenEndIndex >= 0 ? { left: "0px" } : undefined}
-                          className={cn(
-                            "border-border/40 hover:bg-accent/60 cursor-pointer border-r px-1 py-1 text-center text-[11px] tabular-nums transition-colors select-none",
-                            frozenEndIndex >= 0 ? "bg-background sticky z-10" : "relative",
-                            frozenEndIndex >= 0 && !isRowSelected && "group-hover/row:bg-muted",
-                            isRowSelected
-                              ? "text-primary after:bg-primary/18 font-semibold shadow-[inset_3px_0_0_var(--primary)] after:pointer-events-none after:absolute after:inset-0"
-                              : "text-muted-foreground",
-                          )}
-                        >
-                          {rowIndex + 1}
-                        </td>
-
-                        {visibleColumnIds.map((colId, colIdx) => {
-                          const customCol = customColumnMap.get(colId);
-                          const isFrozen = colIdx <= frozenEndIndex;
-                          const isFreezeBoundary = colIdx === frozenEndIndex;
-                          const isColSelected =
-                            selection.mode === "all" || (selection.mode === "columns" && selection.colIds.has(colId));
-                          const isCellSelected =
-                            selection.mode === "cells" && selection.cells.has(makeCellKey(row.uuid, colId));
-                          const isActiveCell =
-                            selection.mode === "cells" &&
-                            selection.activeCell?.rowId === row.uuid &&
-                            selection.activeCell?.colId === colId;
-                          const isSelectedAny = isRowSelected || isColSelected || isCellSelected;
-
-                          return (
-                            <td
-                              key={colId}
-                              data-stage-table-cell
-                              data-row-id={row.uuid}
-                              data-col-id={colId}
-                              data-cell-selected={isSelectedAny ? "true" : undefined}
-                              data-cell-active={isActiveCell ? "true" : undefined}
-                              onPointerDown={(e) => handleCellPointerDown(row.uuid, colId, e)}
-                              onClickCapture={(e) => {
-                                if (suppressCellClickRef.current || e.shiftKey || e.ctrlKey || e.metaKey) {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                }
-                              }}
-                              style={isFrozen ? { left: `${columnLeftOffsets[colIdx]}px` } : undefined}
-                              className={cn(
-                                "border-border/40 overflow-hidden border-r p-0 align-middle",
-                                isFrozen ? "bg-background sticky z-10" : "relative",
-                                isFrozen && !isSelectedAny && "group-hover/row:bg-muted",
-                                isFreezeBoundary && "border-r-primary/45 border-r-2",
-                                isSelectedAny &&
-                                  "after:bg-primary/12 after:pointer-events-none after:absolute after:inset-0",
-                                isActiveCell && "after:ring-primary after:ring-2 after:ring-inset",
-                              )}
-                            >
-                              {colId === "name" && (
-                                <PrimaryTextCell
-                                  row={row}
-                                  t={t}
-                                  canEditOnClick={() => wasSoleActiveOnDownRef.current}
-                                  onCommit={(nextText) => project.stageTable.updateRowPrimaryText(row.uuid, nextText)}
-                                  onJump={() => project.stageTable.focusRowOnCanvas(row.uuid)}
-                                />
-                              )}
-
-                              {colId === "images" && (
-                                <ImagesCell
-                                  project={project}
-                                  images={row.images ?? []}
-                                  disabled={row.canEditImages === false}
-                                  onAddImages={(blobs) => {
-                                    void project.stageTable.addRowImages?.(row.uuid, blobs);
-                                  }}
-                                  onRemoveImage={(imgUuid) => {
-                                    project.stageTable.removeRowImage?.(row.uuid, imgUuid);
-                                  }}
-                                  onPreviewImage={(attachmentId) => openImagePreview(attachmentId, row.uuid)}
-                                  t={t}
-                                />
-                              )}
-
-                              {colId === "createdAt" && (
-                                <div className="text-muted-foreground truncate px-2.5 py-1.5 text-[11px] tabular-nums select-none">
-                                  {formatTimestamp(row.createdAt)}
-                                </div>
-                              )}
-
-                              {colId === "updatedAt" && (
-                                <div className="text-muted-foreground truncate px-2.5 py-1.5 text-[11px] tabular-nums select-none">
-                                  {formatTimestamp(row.updatedAt)}
-                                </div>
-                              )}
-
-                              {colId === "parents" && (
-                                <MultiRelationCell
-                                  selectedItems={row.parents}
-                                  candidates={allRows.filter((c) => c.uuid !== row.uuid)}
-                                  placeholder={t("relationPlaceholder")}
-                                  searchPlaceholder={t("searchNodePlaceholder")}
-                                  emptyText={t("noMatchingNodes")}
-                                  onChange={(nextIds) => project.stageTable.setRowParents(row.uuid, nextIds)}
-                                  t={t}
-                                />
-                              )}
-
-                              {colId === "children" && (
-                                <MultiRelationCell
-                                  selectedItems={row.children}
-                                  candidates={allRows.filter((c) => c.uuid !== row.uuid)}
-                                  placeholder={t("relationPlaceholder")}
-                                  searchPlaceholder={t("searchNodePlaceholder")}
-                                  emptyText={t("noMatchingNodes")}
-                                  onChange={(nextIds) => project.stageTable.setRowChildren(row.uuid, nextIds)}
-                                  t={t}
-                                />
-                              )}
-
-                              {colId === "outer" && (
-                                <SingleRelationCell
-                                  selectedItem={row.outer}
-                                  candidates={getOuterCandidatesForRow(row)}
-                                  placeholder={t("relationPlaceholder")}
-                                  searchPlaceholder={t("searchNodePlaceholder")}
-                                  emptyText={t("noMatchingNodes")}
-                                  onChange={(nextId) => project.stageTable.setRowOuter(row.uuid, nextId)}
-                                  t={t}
-                                />
-                              )}
-
-                              {colId === "inner" && (
-                                <MultiRelationCell
-                                  selectedItems={row.inner}
-                                  candidates={getInnerCandidatesForRow(row)}
-                                  disabled={!row.canEditInner}
-                                  placeholder={t("relationPlaceholder")}
-                                  searchPlaceholder={t("searchNodePlaceholder")}
-                                  emptyText={t("noMatchingNodes")}
-                                  onChange={(nextIds) => project.stageTable.setRowInner(row.uuid, nextIds)}
-                                  t={t}
-                                />
-                              )}
-
-                              {customCol && customCol.type === "text" && (
-                                <TextCustomCell
-                                  value={row.tableFields?.[customCol.id]}
-                                  canEditOnClick={() => wasSoleActiveOnDownRef.current}
-                                  onCommit={(nextVal) =>
-                                    project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
-                                  }
-                                />
-                              )}
-
-                              {customCol && customCol.type === "number" && (
-                                <NumberCustomCell
-                                  value={row.tableFields?.[customCol.id]}
-                                  canEditOnClick={() => wasSoleActiveOnDownRef.current}
-                                  onCommit={(nextVal) =>
-                                    project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
-                                  }
-                                />
-                              )}
-
-                              {customCol && customCol.type === "date" && (
-                                <DateCustomCell
-                                  value={row.tableFields?.[customCol.id]}
-                                  onCommit={(nextVal) =>
-                                    project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
-                                  }
-                                  t={t}
-                                />
-                              )}
-
-                              {customCol && (customCol.type === "select" || customCol.type === "multi_select") && (
-                                <SelectCustomCell
-                                  column={customCol}
-                                  value={row.tableFields?.[customCol.id]}
-                                  onCommit={(nextVal) =>
-                                    project.stageTable.updateRowCustomField(row.uuid, customCol.id, nextVal)
-                                  }
-                                  onCreateOrGetOption={(optName) =>
-                                    project.stageTable.createOrGetSelectOption?.(customCol.id, optName) ?? null
-                                  }
-                                  t={t}
-                                />
-                              )}
-
-                              {customCol &&
-                                customCol.type === "formula" &&
-                                (() => {
-                                  const evaluated = row.formulaValues?.[customCol.id];
-                                  const hasFormulaExpr = Boolean(customCol.formula?.trim());
-                                  return (
-                                    <div
-                                      data-formula-cell={customCol.id}
-                                      onDoubleClick={(e) => {
-                                        e.stopPropagation();
-                                        openFormulaEditorForColumn(customCol.id, row.uuid);
-                                      }}
-                                      title={
-                                        evaluated?.kind === "error"
-                                          ? `${evaluated.errorCode}: ${evaluated.errorMessage ?? ""}`
-                                          : evaluated?.displayText ||
-                                            (hasFormulaExpr ? "" : t("formulaEditor.doubleClickHint"))
-                                      }
-                                      className="flex h-full min-h-8 w-full cursor-default items-center px-2.5 py-1 text-xs select-none"
-                                    >
-                                      {evaluated?.kind === "error" ? (
-                                        <Tooltip>
-                                          <TooltipTrigger asChild>
-                                            <span className="bg-destructive/15 text-destructive inline-flex max-w-full items-center truncate rounded px-1.5 py-0.5 font-mono text-[11px] font-medium">
-                                              {evaluated.errorCode ?? "#ERROR!"}
-                                            </span>
-                                          </TooltipTrigger>
-                                          <TooltipContent side="top" className="max-w-72 text-xs">
-                                            {evaluated.errorMessage || evaluated.errorCode}
-                                          </TooltipContent>
-                                        </Tooltip>
-                                      ) : evaluated?.kind === "boolean" ? (
-                                        <span
-                                          className={cn(
-                                            "inline-flex items-center rounded px-1.5 py-0.5 font-mono text-[11px] font-medium",
-                                            evaluated.booleanValue
-                                              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                                              : "bg-muted text-muted-foreground",
-                                          )}
-                                        >
-                                          {evaluated.displayText}
-                                        </span>
-                                      ) : evaluated?.kind === "list" &&
-                                        evaluated.listItems &&
-                                        evaluated.listItems.length > 0 ? (
-                                        <div className="flex max-w-full items-center gap-1 overflow-hidden">
-                                          {evaluated.listItems.map((item, idx) => (
-                                            <span
-                                              key={`${idx}-${item}`}
-                                              className="bg-muted/80 text-foreground inline-flex max-w-28 shrink-0 truncate rounded px-1.5 py-0.5 text-[11px]"
-                                            >
-                                              {item}
-                                            </span>
-                                          ))}
-                                        </div>
-                                      ) : evaluated && evaluated.kind !== "empty" ? (
-                                        <span
-                                          className={cn(
-                                            "truncate",
-                                            (evaluated.kind === "number" || evaluated.kind === "date") &&
-                                              "tabular-nums",
-                                          )}
-                                        >
-                                          {evaluated.displayText}
-                                        </span>
-                                      ) : !hasFormulaExpr ? (
-                                        <span className="text-muted-foreground/45 truncate text-[11px] italic">
-                                          {t("formulaEditor.unsetFormula")}
-                                        </span>
-                                      ) : null}
-                                    </div>
-                                  );
-                                })()}
-                            </td>
-                          );
-                        })}
-
-                        {/* + 列对应的右侧占位单元格 */}
-                        <td className="p-0" />
+                          colSpan={visibleColumnIds.length + 2}
+                          style={{ height: `${virtualPaddingTop}px`, padding: 0, border: 0 }}
+                        />
                       </tr>
-                    );
-                  })
+                    )}
+
+                    {virtualItems.map((vItem) => {
+                      const row = getRowAtIndex(vItem.index);
+                      if (!row) {
+                        return (
+                          <tr
+                            key={`loading-${vItem.index}`}
+                            style={{ height: `${vItem.size}px` }}
+                            className="border-border/40 border-b"
+                          >
+                            <td className="text-muted-foreground px-1 text-center text-[11px] tabular-nums">
+                              {vItem.index + 1}
+                            </td>
+                            <td colSpan={visibleColumnIds.length + 1} className="px-2.5 text-[11px] opacity-40">
+                              ...
+                            </td>
+                          </tr>
+                        );
+                      }
+                      const rowActiveEditor =
+                        activeEditor?.rowUuid === row.uuid &&
+                        (!activeEditor.docId || !row.docId || activeEditor.docId === row.docId)
+                          ? activeEditor
+                          : null;
+                      return (
+                        <StageTableVirtualRow
+                          key={row.docId ? `${row.docId}:${row.uuid}` : row.uuid}
+                          project={project ?? null}
+                          dataSource={dataSource}
+                          row={row}
+                          rowIndex={vItem.index}
+                          visibleColumnIds={visibleColumnIds}
+                          customColumnMap={customColumnMap}
+                          frozenEndIndex={frozenEndIndex}
+                          columnLeftOffsets={columnLeftOffsets}
+                          tableRowHeightClass={tableRowHeightClass}
+                          activeEditor={rowActiveEditor}
+                          selectionStore={selectionStore}
+                          callbacks={rowCallbacks}
+                          t={t}
+                        />
+                      );
+                    })}
+
+                    {virtualPaddingBottom > 0 && (
+                      <tr aria-hidden data-virtual-spacer="bottom">
+                        <td
+                          colSpan={visibleColumnIds.length + 2}
+                          style={{ height: `${virtualPaddingBottom}px`, padding: 0, border: 0 }}
+                        />
+                      </tr>
+                    )}
+                  </>
                 )}
               </tbody>
             </table>
           </TableScrollContainer>
+
+          {/* 单例共享单元格浮层编辑器（日期日历 / 单选多选 / 关系按需搜索） */}
+          <StageTableCellEditorPortal
+            activeEditor={activeEditor}
+            row={activeEditorRow}
+            customCol={activeEditorCol}
+            dataSource={dataSource}
+            onClose={() => setActiveEditor(null)}
+            onCommitCustomField={(rowUuid, columnId, val, docId) => {
+              void dataSource.executeMutation({ type: "update_custom_field", docId, rowUuid, columnId, value: val });
+            }}
+            onCreateOrGetOption={(colId, optName) => dataSource.createOrGetSelectOption(colId, optName)}
+            onCommitRelation={(rowUuid, relationKind: RelationColumnKind, nextIds, docId) => {
+              if (relationKind === "outer") {
+                void dataSource.executeMutation({
+                  type: "set_outer",
+                  docId,
+                  rowUuid,
+                  outerUuid: typeof nextIds === "string" ? nextIds : null,
+                });
+              } else if (relationKind === "parents") {
+                void dataSource.executeMutation({
+                  type: "set_parents",
+                  docId,
+                  rowUuid,
+                  parentUuids: Array.isArray(nextIds) ? nextIds : [],
+                });
+              } else if (relationKind === "children") {
+                void dataSource.executeMutation({
+                  type: "set_children",
+                  docId,
+                  rowUuid,
+                  childUuids: Array.isArray(nextIds) ? nextIds : [],
+                });
+              } else {
+                void dataSource.executeMutation({
+                  type: "set_inner",
+                  docId,
+                  rowUuid,
+                  innerUuids: Array.isArray(nextIds) ? nextIds : [],
+                });
+              }
+            }}
+            t={t}
+          />
         </>
       )}
 
-      {/* 记录详情编辑弹窗（供看板 / 甘特 / 画册 / 日历视图快捷编辑全部字段） */}
+      {/* 记录详情编辑弹窗 */}
       <StageTableRecordDialog
-        project={project}
+        project={project ?? null}
+        dataSource={dataSource}
         row={recordDialogRow}
         customColumns={customColumns}
         getColumnLabel={getColumnLabel}
-        onClose={() => setRecordDialogRowUuid(null)}
-        onPreviewImage={(attId, rowUuid) => openImagePreview(attId, rowUuid)}
+        onClose={() => setRecordDialogTarget(null)}
+        onPreviewImage={(attId, rowUuid, docId) => openImagePreview(attId, rowUuid, docId)}
         onOpenFormulaEditor={(colId, rowUuid) => {
-          setRecordDialogRowUuid(null);
+          setRecordDialogTarget(null);
           openFormulaEditorForColumn(colId, rowUuid);
         }}
         t={t}
       />
 
-      {/* 当从顶部「属性」面板编辑一个当前隐藏列时的悬浮图 1 面板兜底 */}
+      {/* 工作空间共享字段管理弹窗 */}
+      {isWorkspaceMode && (
+        <WorkspaceColumnsDialog
+          open={workspaceColumnsDialogOpen}
+          onOpenChange={setWorkspaceColumnsDialogOpen}
+          onChanged={() => void dataSource.refreshWorkspaceMetadata?.()}
+        />
+      )}
+
+      {/* 隐藏列修改字段悬浮兜底面板 */}
       <DialogPrimitive.Root
         open={editingFieldState !== null && editingFieldState.anchor === "floating"}
         onOpenChange={(open) => {
@@ -5242,7 +4481,7 @@ export default function StageTablePanel({ project }: { project: Project }) {
         </DialogPrimitive.Portal>
       </DialogPrimitive.Root>
 
-      {/* 公式编辑器弹窗（高配版：蓝色列胶囊 + 双栏函数文档 + 实时首行预览） */}
+      {/* 公式编辑器弹窗 */}
       {(() => {
         const targetCol = formulaEditorState ? customColumnMap.get(formulaEditorState.colId) : undefined;
         return (
@@ -5258,17 +4497,17 @@ export default function StageTablePanel({ project }: { project: Project }) {
             tableViewName={activeView.name || t("defaultViewName")}
             columns={formulaEditorColumnOptions}
             customColumnSchemas={customColumns}
-            systemColumnNames={project.table?.systemColumnNames}
+            systemColumnNames={project?.table?.systemColumnNames}
             systemColumnLabels={systemColumnLabels}
-            rows={allRows}
+            rows={isWorkspaceMode ? loadedRowsList : syncData.allRows}
             initialPreviewRowUuid={formulaEditorState?.previewRowUuid ?? null}
             onSave={({ name, formula, format }) => {
               if (!targetCol) return;
-              project.stageTable.updateColumn?.(targetCol.id, {
+              dataSource.updateColumn(targetCol.id, {
                 name,
                 type: "formula",
                 formula,
-                format,
+                format: format ?? undefined,
               });
             }}
             t={t}
@@ -5276,9 +4515,10 @@ export default function StageTablePanel({ project }: { project: Project }) {
         );
       })()}
 
-      {/* 升级版图片大图灯箱（左右箭头切换 + 底部缩略图预览跳转） */}
+      {/* 图片大图灯箱 */}
       <ImageLightbox
-        project={project}
+        project={project ?? null}
+        resolveMediaUrl={(attId, dId, opts) => dataSource.getMediaUrl(dId ?? dataSource.getDocId(), attId, opts)}
         open={previewLightboxState !== null}
         items={previewLightboxState?.items ?? []}
         initialIndex={previewLightboxState?.initialIndex ?? 0}

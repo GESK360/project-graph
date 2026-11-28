@@ -53,15 +53,19 @@ export default function OutlineWindow() {
 
   useEffect(() => {
     if (!project) return;
-    let lastHash = project.stageHash;
-    const timer = window.setInterval(() => {
-      const currentHash = project.stageHash;
-      if (currentHash !== lastHash) {
-        lastHash = currentHash;
+    let lastRevision = project.stageRevision;
+    const onCommit = () => {
+      if (project.stageRevision !== lastRevision) {
+        lastRevision = project.stageRevision;
         refresh();
       }
-    }, 300);
-    return () => window.clearInterval(timer);
+    };
+    project.on("stage-commit", onCommit);
+    project.on("document-commit", onCommit);
+    return () => {
+      project.off("stage-commit", onCommit);
+      project.off("document-commit", onCommit);
+    };
   }, [project, refresh]);
 
   const focusStructure = (structure: GraphStructure) => {

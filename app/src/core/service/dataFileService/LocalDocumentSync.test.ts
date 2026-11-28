@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 vi.mock("@/core/Project", () => ({
   Project: class Project {},
-  ProjectState: { Saved: "saved", Stashed: "stashed", Unsaved: "unsaved" },
+  ProjectState: { Saved: 0, Stashed: 1, Unsaved: 2 },
   service: (id: string) => (target: { id?: string }) => {
     target.id = id;
     return target;
@@ -22,7 +22,7 @@ vi.mock("@/core/render/canvas2d/renderer", () => ({
 vi.mock("@/utils/font", async () => {
   const { Vector } = await import("@graphif/data-structures");
   return {
-    getTextSize: vi.fn((text: string) => new Vector(text.length * 12, 24)),
+    getTextSize: vi.fn((text: string) => new Vector(Math.max(40, text.length * 12), 24)),
     getMultiLineTextSize: vi.fn((text: string) => new Vector(Math.max(40, text.length * 12), 24)),
   };
 });
@@ -40,384 +40,261 @@ vi.mock("@/core/service/Settings", () => ({
   },
 }));
 vi.mock("sonner", () => ({
-  toast: {
-    error: vi.fn(),
-    warning: vi.fn(),
-    success: vi.fn(),
-  },
+  toast: { error: vi.fn(), warning: vi.fn(), success: vi.fn() },
+}));
+vi.mock("@/core/service/feedbackService/SoundService", () => ({
+  SoundService: { play: { entityJumpSoundFile: vi.fn() } },
 }));
 
 import { ProjectState, type Project } from "@/core/Project";
+import type { DocChangeSet } from "@/core/sqlite/DocClient";
+import { serializeEntityToV3Record } from "@/core/sqlite/V3Serializer";
+import { StageManager } from "@/core/stage/stageManager/StageManager";
+import { GraphMethods } from "@/core/stage/stageManager/basicMethods/GraphMethods";
+import { SectionMethods } from "@/core/stage/stageManager/basicMethods/SectionMethods";
 import { LineEdge } from "@/core/stage/stageObject/association/LineEdge";
 import { CollisionBox } from "@/core/stage/stageObject/collisionBox/collisionBox";
 import { ImageNode } from "@/core/stage/stageObject/entity/ImageNode";
-import { PenStroke, PenStrokeSegment } from "@/core/stage/stageObject/entity/PenStroke";
 import { Section } from "@/core/stage/stageObject/entity/Section";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
 import { createDefaultMetadata } from "@/types/metadata";
 import { createDefaultTableData } from "@/types/table";
-import { Color, Vector } from "@graphif/data-structures";
+import { Vector } from "@graphif/data-structures";
 import { Rectangle } from "@graphif/shapes";
-import { serialize } from "@graphif/serializer";
-import {
-  applyUuidStagePatch,
-  canonicalJsonStringify,
-  computeUuidStageDiff,
-  exportLiveDocumentSnapshot,
-  hydrateProjectFromSnapshot,
-  reconcileProjectStage,
-  serializedStageArrayToUuidDoc,
-  serializeStageToUuidDoc,
-  uuidDocToSerializerArray,
-} from "./LocalDocumentSync";
+import { applyIncomingDocChangeSet, LocalDocumentSync } from "./LocalDocumentSync";
 
-function sortJsonKeysRecursively<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return value.map((item) => sortJsonKeysRecursively(item)) as T;
-  }
-  if (typeof value === "object" && value !== null) {
-    const sorted: Record<string, unknown> = {};
-    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      sorted[key] = sortJsonKeysRecursively((value as Record<string, unknown>)[key]);
-    }
-    return sorted as T;
-  }
-  return value;
-}
-
-function createMockProject(): Project {
-  const project = {
-    stage: [] as any[],
+function createWindowProject(docId = "doc-sync-1"): Project {
+  const services = new Map<string, unknown>();
+  const project: any = {
+    stage: [],
     attachments: new Map<string, Blob>(),
     table: createDefaultTableData(),
-    tags: [] as string[],
+    tags: [],
     references: { sections: {}, files: [] },
-    metadata: createDefaultMetadata("2.8.0"),
-    readme: undefined as string | undefined,
+    metadata: createDefaultMetadata("3.0.0"),
+    readme: undefined,
     docIdNeedsSave: false,
     projectState: ProjectState.Saved,
-    getService: vi.fn(() => undefined),
-    stageManager: {
-      updateReferences: vi.fn(),
-      getAssociations: vi.fn(() => []),
+    closing: false,
+    isSqliteV3: true,
+    v3DocId: docId,
+    v3Revision: 1,
+    stageRevision: 0,
+    bumpStageRevision: () => {
+      project.stageRevision++;
     },
-    tagManager: {
-      reset: vi.fn(),
-    },
+    getService: (id: string) => services.get(id),
+    renderer: { tick: vi.fn() },
+    loop: vi.fn(),
+    tagManager: { reset: vi.fn() },
     stageTable: {
-      flushPendingTimestamps: vi.fn(),
-      resetAfterStageRestore: vi.fn(),
+      notifyChange: vi.fn(),
       scheduleCanvasSelectionSync: vi.fn(),
     },
-    textNodeRenderer: {
-      renderTextNode: vi.fn(),
-    },
+    textNodeRenderer: { renderTextNode: vi.fn() },
+    sectionCollisionSolver: { solveOverlaps: vi.fn() },
   };
-  return project as unknown as Project;
+  const register = <T>(id: string, inst: T): T => {
+    services.set(id, inst);
+    project[id] = inst;
+    return inst;
+  };
+  register("sectionMethods", new SectionMethods(project));
+  register("graphMethods", new GraphMethods(project));
+  register("stageManager", new StageManager(project));
+  services.set("stageTable", project.stageTable);
+  services.set("renderer", project.renderer);
+  return project as Project;
 }
 
-describe("LocalDocumentSync", () => {
-  it("converts serialized stage arrays to uuid docs and back while preserving references", () => {
-    const rawStage = [
-      { _: "TextNode", uuid: "node-a", text: "A" },
-      { _: "TextNode", uuid: "node-b", text: "B" },
-      { _: "LineEdge", uuid: "edge-1", associationList: [{ $: "/0" }, { $: "/1" }] },
-    ];
+function emptyChangeSet(overrides: Partial<DocChangeSet>): DocChangeSet {
+  return {
+    docId: "doc-sync-1",
+    canonicalPath: "D:/vault/demo.prg",
+    revision: 2,
+    originWindow: "window-a",
+    source: "command",
+    dirtyEntities: [],
+    deletedEntityUuids: [],
+    dirtyEdges: [],
+    deletedEdgeUuids: [],
+    dirtyAssociations: [],
+    deletedAssociationUuids: [],
+    dirtyCells: [],
+    deletedCells: [],
+    schemaChanged: false,
+    tableColumns: null,
+    tableViews: null,
+    tableMetaJson: null,
+    metadataChanged: false,
+    tags: null,
+    references: null,
+    readme: undefined,
+    canUndo: true,
+    canRedo: false,
+    undoCursor: 1,
+    ...overrides,
+  };
+}
 
-    const doc = serializedStageArrayToUuidDoc(rawStage);
-    expect(doc.order).toEqual(["node-a", "node-b", "edge-1"]);
-    expect(doc.objects["edge-1"].associationList).toEqual([{ $u: "node-a" }, { $u: "node-b" }]);
-
-    const restored = uuidDocToSerializerArray(doc);
-    expect(restored[2].associationList).toEqual([{ $: "/0" }, { $: "/1" }]);
-  });
-
-  it("keeps stage objects whose first serialized occurrence is nested in a section", async () => {
-    const project = createMockProject();
-    const child = new TextNode(project, {
-      uuid: "11111111-1111-4111-8111-111111111111",
-      text: "Nested child",
-      collisionBox: new CollisionBox([new Rectangle(new Vector(20, 30), new Vector(120, 40))]),
-    });
-    const peer = new TextNode(project, {
-      uuid: "22222222-2222-4222-8222-222222222222",
-      text: "Peer",
-      collisionBox: new CollisionBox([new Rectangle(new Vector(220, 30), new Vector(120, 40))]),
-    });
-    const section = new Section(project, {
-      uuid: "33333333-3333-4333-8333-333333333333",
-      text: "Group",
-      children: [child],
-      collisionBox: new CollisionBox([new Rectangle(new Vector(0, 0), new Vector(400, 200))]),
-    });
-    const edge = new LineEdge(project, {
-      uuid: "44444444-4444-4444-8444-444444444444",
-      associationList: [child, peer],
-    });
-    const stage = [section, child, peer, edge];
-
-    const serializedStage = serialize(stage) as unknown[];
-    expect(serializedStage[1]).toEqual({ $: "/0/children/0" });
-
-    const doc = serializeStageToUuidDoc(stage);
-    expect(doc.order).toEqual([section.uuid, child.uuid, peer.uuid, edge.uuid]);
-    expect(doc.objects[section.uuid].children).toEqual([{ $u: child.uuid }]);
-
-    reconcileProjectStage(project, doc, new Set(doc.order));
-    const restored = project.stage as Array<Section | TextNode | LineEdge>;
-    const restoredSection = restored.find((item) => item.uuid === section.uuid) as Section;
-    const restoredChild = restored.find((item) => item.uuid === child.uuid) as TextNode;
-    const restoredEdge = restored.find((item) => item.uuid === edge.uuid) as LineEdge;
-
-    expect(restoredSection.children).toContain(restoredChild);
-    expect(restoredChild.collisionBox.getRectangle()).toBeInstanceOf(Rectangle);
-    expect(restoredEdge.associationList).toContain(restoredChild);
-
-    const snapshot = await exportLiveDocumentSnapshot(project);
-    const target = createMockProject();
-    hydrateProjectFromSnapshot(target, snapshot);
-    const hydrated = target.stage as Array<Section | TextNode | LineEdge>;
-    const hydratedSection = hydrated.find((item) => item.uuid === section.uuid) as Section;
-    const hydratedChild = hydrated.find((item) => item.uuid === child.uuid) as TextNode;
-    const hydratedEdge = hydrated.find((item) => item.uuid === edge.uuid) as LineEdge;
-
-    expect(hydratedSection.children).toContain(hydratedChild);
-    expect(hydratedChild.collisionBox.getRectangle()).toBeInstanceOf(Rectangle);
-    expect(hydratedEdge.associationList).toContain(hydratedChild);
-  });
-
-  it("computes minimal per-uuid diffs without marking untouched nodes or pen strokes dirty", () => {
-    const project = createMockProject();
-    const nodeA = new TextNode(project, {
-      uuid: "11111111-1111-4111-8111-111111111111",
-      text: "Alpha",
-      collisionBox: new CollisionBox([new Rectangle(new Vector(0, 0), new Vector(100, 40))]),
-    });
-    const nodeB = new TextNode(project, {
-      uuid: "22222222-2222-4222-8222-222222222222",
-      text: "Beta",
-      collisionBox: new CollisionBox([new Rectangle(new Vector(200, 0), new Vector(100, 40))]),
-    });
-    const stroke = new PenStroke(project, {
-      uuid: "33333333-3333-4333-8333-333333333333",
-      segments: [new PenStrokeSegment(new Vector(0, 0), 0.5), new PenStrokeSegment(new Vector(10, 20), 0.7)],
-      color: Color.Red,
-      width: 4,
-    });
-    project.stage = [nodeA, nodeB, stroke];
-
-    const doc1 = serializeStageToUuidDoc(project.stage);
-    const strings1 = new Map<string, string>();
-    for (const uuid of doc1.order) {
-      strings1.set(uuid, canonicalJsonStringify(doc1.objects[uuid]));
-    }
-
-    // 只修改 nodeA 文本，新增一条涂鸦
-    nodeA.text = "Alpha Updated";
-    const stroke2 = new PenStroke(project, {
-      uuid: "44444444-4444-4444-8444-444444444444",
-      segments: [new PenStrokeSegment(new Vector(5, 5), 1), new PenStrokeSegment(new Vector(15, 25), 1)],
-      color: Color.Blue,
-      width: 3,
-    });
-    project.stage.push(stroke2);
-
-    const doc2 = serializeStageToUuidDoc(project.stage);
-    const diff = computeUuidStageDiff(strings1, doc1.order, doc2);
-
-    expect(Object.keys(diff.upserted).sort()).toEqual([
-      "11111111-1111-4111-8111-111111111111",
-      "44444444-4444-4444-8444-444444444444",
-    ]);
-    expect(diff.removed).toEqual([]);
-    expect(diff.orderChanged).toBe(true);
-
-    const { nextDoc, dirtyUuids } = applyUuidStagePatch(doc1, {
-      upserted: diff.upserted,
-      removed: diff.removed,
-      order: doc2.order,
-    });
-    expect(nextDoc.order).toEqual(doc2.order);
-    expect(dirtyUuids.has("22222222-2222-4222-8222-222222222222")).toBe(false);
-    expect(dirtyUuids.has("33333333-3333-4333-8333-333333333333")).toBe(false);
-  });
-
-  it("preserves per-window selection, untouched ImageNode instances, and actively editing TextNode during reconcile", () => {
-    const project = createMockProject();
-    const editingNode = new TextNode(project, {
-      uuid: "aaaa1111-1111-4111-8111-111111111111",
-      text: "Typing in Window B...",
+describe("LocalDocumentSync (M2 pg-doc-changeset hot patch)", () => {
+  it("preserves local selection, active editing TextNode, and untouched ImageNode instances/bitmaps", () => {
+    const windowB = createWindowProject();
+    const editingNode = new TextNode(windowB, {
+      uuid: "node-editing",
+      text: "Typing locally in Window B...",
       collisionBox: new CollisionBox([new Rectangle(new Vector(0, 0), new Vector(120, 40))]),
     });
     editingNode.isEditing = true;
     editingNode.isSelected = true;
 
-    const peerNode = new TextNode(project, {
-      uuid: "bbbb2222-2222-4222-8222-222222222222",
+    const peerNode = new TextNode(windowB, {
+      uuid: "node-peer",
       text: "Before",
       collisionBox: new CollisionBox([new Rectangle(new Vector(200, 0), new Vector(120, 40))]),
     });
 
-    const imageNode = new ImageNode(project, {
-      uuid: "cccc3333-3333-4333-8333-333333333333",
-      attachmentId: "att-img-1",
-      collisionBox: new CollisionBox([new Rectangle(new Vector(50, 50), new Vector(100, 100))]),
+    const imageNode = new ImageNode(windowB, {
+      uuid: "img-untouched",
+      attachmentId: "att-1",
+      collisionBox: new CollisionBox([new Rectangle(new Vector(50, 80), new Vector(100, 100))]),
+      deferBitmapLoad: true,
     });
+    const fakeBitmap = { width: 100, height: 100, close: vi.fn() } as unknown as ImageBitmap;
+    imageNode.bitmap = fakeBitmap;
+    imageNode.state = "success";
 
-    const section = new Section(project, {
-      uuid: "dddd4444-4444-4444-8444-444444444444",
+    const section = new Section(windowB, {
+      uuid: "sec-1",
       text: "Group",
       children: [editingNode, imageNode],
-      collisionBox: new CollisionBox([new Rectangle(new Vector(-10, -10), new Vector(300, 200))]),
+      collisionBox: new CollisionBox([new Rectangle(new Vector(-10, -10), new Vector(300, 220))]),
     });
-    const edge = new LineEdge(project, {
-      uuid: "eeee5555-5555-4555-8555-555555555555",
+    const edge = new LineEdge(windowB, {
+      uuid: "edge-1",
       associationList: [editingNode, peerNode],
     });
+    windowB.stage.push(editingNode, peerNode, imageNode, section, edge);
+    windowB.stageManager.updateReferences();
 
-    project.stage = [editingNode, peerNode, imageNode, section, edge];
-    const baseDoc = serializeStageToUuidDoc(project.stage);
-
-    // 模拟另一窗口修改了 peerNode 的文字
-    const updatedPeer = structuredClone(baseDoc.objects[peerNode.uuid]);
+    // 模拟 Window A 修改了 peerNode 和 editingNode（但 Window B 正在编辑 editingNode）
+    const updatedPeer = serializeEntityToV3Record(peerNode, 1)!;
     updatedPeer.text = "After From Window A";
-    const { nextDoc, dirtyUuids } = applyUuidStagePatch(baseDoc, {
-      upserted: { [peerNode.uuid]: updatedPeer },
-    });
+    updatedPeer.updatedAt = 2000;
 
-    reconcileProjectStage(project, nextDoc, dirtyUuids);
+    const updatedEditing = serializeEntityToV3Record(editingNode, 0)!;
+    updatedEditing.text = "Remote Overwrite Attempt";
 
-    const syncedEditing = project.stage.find((o) => o.uuid === editingNode.uuid) as TextNode;
-    const syncedPeer = project.stage.find((o) => o.uuid === peerNode.uuid) as TextNode;
-    const syncedImage = project.stage.find((o) => o.uuid === imageNode.uuid) as ImageNode;
-    const syncedSection = project.stage.find((o) => o.uuid === section.uuid) as Section;
-    const syncedEdge = project.stage.find((o) => o.uuid === edge.uuid) as LineEdge;
+    const applied = applyIncomingDocChangeSet(
+      windowB,
+      emptyChangeSet({
+        revision: 2,
+        originWindow: "window-a",
+        dirtyEntities: [updatedPeer, updatedEditing],
+        dirtyCells: [
+          {
+            entityUuid: peerNode.uuid,
+            colId: "col_score",
+            valType: "number",
+            valText: null,
+            valNum: 99,
+            valDate: null,
+            valJson: null,
+            canonicalKey: "num:99",
+            multiOptions: [],
+          },
+        ],
+      }),
+      "window-b",
+    );
 
-    expect(syncedEditing).toBe(editingNode);
-    expect(syncedEditing.isEditing).toBe(true);
-    expect(syncedEditing.isSelected).toBe(true);
-    expect(syncedImage).toBe(imageNode);
-    expect(syncedPeer.text).toBe("After From Window A");
-    expect(syncedPeer.isSelected).toBe(false);
-    expect(syncedSection.children).toContain(editingNode);
-    expect(syncedSection.children).toContain(imageNode);
-    expect(syncedEdge.source).toBe(editingNode);
-    expect(syncedEdge.target).toBe(syncedPeer);
+    expect(applied).toBe(true);
+    expect(windowB.v3Revision).toBe(2);
+    expect(windowB.stageManager.get(editingNode.uuid)).toBe(editingNode);
+    expect(editingNode.isEditing).toBe(true);
+    expect(editingNode.isSelected).toBe(true);
+    expect(editingNode.text).toBe("Typing locally in Window B...");
+
+    expect(windowB.stageManager.get(peerNode.uuid)).toBe(peerNode);
+    expect(peerNode.text).toBe("After From Window A");
+    expect(peerNode.tableFields.col_score).toBe(99);
+    expect(peerNode.isSelected).toBe(false);
+
+    // 未变动的 ImageNode 保持原对象且 ImageBitmap 未被关闭/销毁
+    expect(windowB.stageManager.get(imageNode.uuid)).toBe(imageNode);
+    expect(imageNode.bitmap).toBe(fakeBitmap);
+    expect(fakeBitmap.close as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+
+    // 立即重绘非聚焦窗口一帧
+    expect(windowB.renderer.tick).toHaveBeenCalledWith(true);
   });
 
-  it("exports and hydrates full live unsaved snapshot including attachments, table, tags, and state", async () => {
-    const source = createMockProject();
-    const node = new TextNode(source, {
-      uuid: "99999999-9999-4999-8999-999999999999",
-      text: "Unsaved Live Note",
-      collisionBox: new CollisionBox([new Rectangle(new Vector(10, 20), new Vector(140, 50))]),
-    });
-    source.stage = [node];
-    source.tags = [node.uuid];
-    source.readme = "Hello multi-window";
-    source.projectState = ProjectState.Unsaved;
-    source.docIdNeedsSave = true;
-    source.attachments.set("att-1", new Blob(["hello-image-bytes"], { type: "image/png" }));
+  it("ignores changesets originating from the same window or stale revisions", () => {
+    const windowA = createWindowProject();
+    windowA.v3Revision = 5;
+    LocalDocumentSync.attach(windowA, "D:/vault/demo.prg");
 
-    const snapshot = await exportLiveDocumentSnapshot(source);
+    expect(
+      LocalDocumentSync.handleIncomingChangeSet(emptyChangeSet({ revision: 6, originWindow: "window-a" }), "window-a"),
+    ).toBe(false);
+    expect(windowA.v3Revision).toBe(6);
 
-    const target = createMockProject();
-    hydrateProjectFromSnapshot(target, snapshot);
+    expect(
+      LocalDocumentSync.handleIncomingChangeSet(emptyChangeSet({ revision: 6, originWindow: "window-b" }), "window-a"),
+    ).toBe(false);
 
-    expect(target.stage).toHaveLength(1);
-    expect((target.stage[0] as TextNode).text).toBe("Unsaved Live Note");
-    expect(target.tags).toEqual([node.uuid]);
-    expect(target.readme).toBe("Hello multi-window");
-    expect(target.projectState).toBe(ProjectState.Unsaved);
-    expect(target.docIdNeedsSave).toBe(true);
-    expect(target.attachments.has("att-1")).toBe(true);
-    expect(target.attachments.get("att-1")?.type).toBe("image/png");
-    expect(await target.attachments.get("att-1")?.text()).toBe("hello-image-bytes");
+    LocalDocumentSync.detach(windowA);
   });
 
-  it("preserves exact PenStroke and TextNode colors across Rust serde_json alphabetical key sorting in patches and snapshots", async () => {
-    const window1 = createMockProject();
-    const blueStroke = new PenStroke(window1, {
-      uuid: "10101010-1010-4010-8010-101010101010",
-      segments: [new PenStrokeSegment(new Vector(10, 20), 1), new PenStrokeSegment(new Vector(80, 90), 0.8)],
-      color: Color.fromCss("#2563EB"),
-      width: 5,
-    });
-    const redStroke = new PenStroke(window1, {
-      uuid: "20202020-2020-4020-8020-202020202020",
-      segments: [new PenStrokeSegment(new Vector(30, 40), 1), new PenStrokeSegment(new Vector(120, 140), 1)],
-      color: Color.fromCss("#EF4444"),
-      width: 8,
-    });
-    const blackStroke = new PenStroke(window1, {
-      uuid: "30303030-3030-4030-8030-303030303030",
-      segments: [new PenStrokeSegment(new Vector(0, 0), 1), new PenStrokeSegment(new Vector(50, 50), 1)],
-      color: Color.fromCss("#000000"),
-      width: 3,
-    });
-    const coloredNode = new TextNode(window1, {
-      uuid: "40404040-4040-4040-8040-404040404040",
-      text: "Colored",
-      color: Color.fromCss("#F97316"),
-      collisionBox: new CollisionBox([new Rectangle(new Vector(100, 100), new Vector(120, 40))]),
-    });
-    window1.stage = [blueStroke, redStroke, blackStroke, coloredNode];
-
-    // 1. 模拟“在新窗口中打开”时经 Rust serde_json::Value(BTreeMap) 字典序重排的快照同步
-    const snapshot = await exportLiveDocumentSnapshot(window1);
-    const rustSortedSnapshot = sortJsonKeysRecursively(snapshot);
-
-    const window2 = createMockProject();
-    hydrateProjectFromSnapshot(window2, rustSortedSnapshot);
-
-    const w2Blue = window2.stage.find((o) => o.uuid === blueStroke.uuid) as PenStroke;
-    const w2Red = window2.stage.find((o) => o.uuid === redStroke.uuid) as PenStroke;
-    const w2Black = window2.stage.find((o) => o.uuid === blackStroke.uuid) as PenStroke;
-    const w2Node = window2.stage.find((o) => o.uuid === coloredNode.uuid) as TextNode;
-
-    expect(w2Blue.color.toArray()).toEqual([37, 99, 235, 1]);
-    expect(w2Red.color.toArray()).toEqual([239, 68, 68, 1]);
-    expect(w2Black.color.toArray()).toEqual([0, 0, 0, 1]);
-    expect(w2Node.color.toArray()).toEqual([249, 115, 22, 1]);
-
-    // 2. 模拟实时绘制新笔迹后经 Rust serde_json::Value 广播的增量 patch 同步
-    const baseDoc = serializeStageToUuidDoc(window1.stage);
-    const baseStrings = new Map<string, string>();
-    for (const uuid of baseDoc.order) {
-      baseStrings.set(uuid, canonicalJsonStringify(baseDoc.objects[uuid]));
+  it("applies a 5,000-node dual-window single-cell changeset in < 5ms without touching other nodes", () => {
+    const windowB = createWindowProject("doc-perf-5k");
+    for (let i = 0; i < 5000; i++) {
+      windowB.stage.push(
+        new TextNode(windowB, {
+          uuid: `node-${i}`,
+          text: `Node ${i}`,
+          createdAt: 1000,
+          updatedAt: 1000,
+          collisionBox: new CollisionBox([
+            new Rectangle(new Vector((i % 100) * 180, Math.floor(i / 100) * 90), new Vector(120, 44)),
+          ]),
+        }),
+      );
     }
+    windowB.stageManager.updateReferences();
 
-    const greenStroke = new PenStroke(window1, {
-      uuid: "50505050-5050-4050-8050-505050505050",
-      segments: [new PenStrokeSegment(new Vector(15, 25), 1), new PenStrokeSegment(new Vector(75, 95), 0.6)],
-      color: Color.fromCss("#22C55E"),
-      width: 6,
+    const target = windowB.stageManager.get("node-4999") as TextNode;
+    const dirtyRec = serializeEntityToV3Record(target, 4999)!;
+    dirtyRec.text = "Synced From Window A";
+    dirtyRec.updatedAt = 999999;
+
+    const cs = emptyChangeSet({
+      docId: "doc-perf-5k",
+      revision: 2,
+      originWindow: "window-a",
+      dirtyEntities: [dirtyRec],
+      dirtyCells: [
+        {
+          entityUuid: "node-4999",
+          colId: "col_status",
+          valType: "text",
+          valText: "done",
+          valNum: null,
+          valDate: null,
+          valJson: null,
+          canonicalKey: "text:done",
+          multiOptions: [],
+        },
+      ],
     });
-    window1.stage.push(greenStroke);
 
-    const nextDocFromW1 = serializeStageToUuidDoc(window1.stage);
-    const diffFromW1 = computeUuidStageDiff(baseStrings, baseDoc.order, nextDocFromW1);
-    const rustSortedPatch = sortJsonKeysRecursively({
-      upserted: diffFromW1.upserted,
-      removed: diffFromW1.removed,
-      order: nextDocFromW1.order,
-    });
+    const t0 = performance.now();
+    const applied = applyIncomingDocChangeSet(windowB, cs, "window-b");
+    const elapsedMs = performance.now() - t0;
 
-    const { nextDoc: w2NextDoc, dirtyUuids } = applyUuidStagePatch(baseDoc, rustSortedPatch);
-    reconcileProjectStage(window2, w2NextDoc, dirtyUuids);
-
-    const w2Green = window2.stage.find((o) => o.uuid === greenStroke.uuid) as PenStroke;
-    expect(w2Green.color.toArray()).toEqual([34, 197, 94, 1]);
-
-    // 3. 验证窗口 2 接收字典序重排的 patch 后，再次 diff 不会把未改动笔迹误判为脏对象
-    const w2ShadowStrings = new Map<string, string>(baseStrings);
-    for (const [uuid, obj] of Object.entries(rustSortedPatch.upserted)) {
-      w2ShadowStrings.set(uuid, canonicalJsonStringify(obj));
-    }
-    const w2Reserialized = serializeStageToUuidDoc(window2.stage);
-    const w2Diff = computeUuidStageDiff(w2ShadowStrings, w2NextDoc.order, w2Reserialized);
-    expect(Object.keys(w2Diff.upserted)).toEqual([]);
-    expect(w2Diff.removed).toEqual([]);
-    expect(w2Diff.orderChanged).toBe(false);
+    expect(applied).toBe(true);
+    expect(target.text).toBe("Synced From Window A");
+    expect(target.tableFields.col_status).toBe("done");
+    expect(elapsedMs).toBeLessThan(5);
   });
 });

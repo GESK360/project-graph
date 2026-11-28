@@ -52,12 +52,12 @@ import type { ContentSearch } from "@/core/service/dataManageService/contentSear
 import type { CopyEngine } from "@/core/service/dataManageService/copyEngine/copyEngine";
 import type { StageTableService } from "@/core/service/dataManageService/stageTableService/StageTableService";
 import type { Effects } from "@/core/service/feedbackService/effectEngine/effectMachine";
-import { StageStyleManager } from "@/core/service/feedbackService/stageStyle/StageStyleManager";
+import type { StageStyleManager } from "@/core/service/feedbackService/stageStyle/StageStyleManager";
 import { Settings } from "@/core/service/Settings";
 import type { Camera } from "@/core/stage/Camera";
 import type { Canvas } from "@/core/stage/Canvas";
-import { GraphMethods } from "@/core/stage/stageManager/basicMethods/GraphMethods";
-import { SectionMethods } from "@/core/stage/stageManager/basicMethods/SectionMethods";
+import type { GraphMethods } from "@/core/stage/stageManager/basicMethods/GraphMethods";
+import type { SectionMethods } from "@/core/stage/stageManager/basicMethods/SectionMethods";
 import type { LayoutManager } from "@/core/stage/stageManager/concreteMethods/LayoutManager";
 import type { SectionCollisionSolver } from "@/core/stage/stageManager/concreteMethods/SectionCollisionSolver";
 import type { AutoAlign } from "@/core/stage/stageManager/concreteMethods/StageAutoAlignManager";
@@ -74,7 +74,7 @@ import type { SectionInOutManager } from "@/core/stage/stageManager/concreteMeth
 import type { SectionPackManager } from "@/core/stage/stageManager/concreteMethods/StageSectionPackManager";
 import type { StageSyncAssociationManager } from "@/core/stage/stageManager/concreteMethods/StageSyncAssociationManager";
 import type { TagManager } from "@/core/stage/stageManager/concreteMethods/StageTagManager";
-import { HistoryManager } from "@/core/stage/stageManager/StageHistoryManager";
+import type { HistoryManager } from "@/core/stage/stageManager/StageHistoryManager";
 import type { StageManager } from "@/core/stage/stageManager/StageManager";
 import { StageObject } from "@/core/stage/stageObject/abstract/StageObject";
 import { nextProjectIdAtom, store, tabsAtom } from "@/state";
@@ -84,20 +84,46 @@ import { deserialize, serialize } from "@graphif/serializer";
 import { Decoder, Encoder } from "@msgpack/msgpack";
 import { BlobReader, Uint8ArrayReader, Uint8ArrayWriter, ZipWriter } from "@zip.js/zip.js";
 import { File } from "lucide-react";
-import md5 from "md5";
 import mime from "mime";
 import React from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { toast } from "sonner";
 import { URI } from "vscode-uri";
-import { CollaborationService } from "./service/collaboration/CollaborationService";
-import { AutoSaveBackupService } from "./service/dataFileService/AutoSaveBackupService";
-import { LocalDocumentSync } from "./service/dataFileService/LocalDocumentSync";
+import type { CollaborationService } from "./service/collaboration/CollaborationService";
+import type { AutoSaveBackupService } from "./service/dataFileService/AutoSaveBackupService";
 import { generateThumbnail } from "./service/dataGenerateService/generateThumbnail";
 import { ProjectOwnershipLifecycle, ProjectOwnershipLease } from "./ProjectOwnership";
 import { compareProjectVersions, parseProjectFile } from "./ProjectFile";
+import {
+  buildFluxMediaUrl,
+  DocClient,
+  isPackedV3DocumentOpenResult,
+  type V3AnyDocumentOpenResult,
+  type V3AttachmentMeta,
+} from "./sqlite/DocClient";
+import type { DocCommandBus } from "./sqlite/DocCommandBus";
+import { ImageBitmapLruCache } from "./sqlite/ImageBitmapLruCache";
+import { V3AutoPersistController } from "./sqlite/V3AutoPersist";
 import { ProjectUpgrader } from "./stage/ProjectUpgrader";
-import { ReferenceManager } from "./stage/stageManager/concreteMethods/StageReferenceManager";
+import type { ReferenceManager } from "./stage/stageManager/concreteMethods/StageReferenceManager";
 import { Tab } from "./Tab";
+
+type HydrateV3OpenResultFn = typeof import("./sqlite/V3Serializer").hydrateV3OpenResult;
+
+let cachedHydrateV3OpenResult: HydrateV3OpenResultFn | null = null;
+let hydrateV3OpenResultLoader: Promise<HydrateV3OpenResultFn> | null = null;
+
+function loadHydrateV3OpenResult(): Promise<HydrateV3OpenResultFn> {
+  if (!hydrateV3OpenResultLoader) {
+    hydrateV3OpenResultLoader = import("./sqlite/V3Serializer").then((mod) => {
+      cachedHydrateV3OpenResult = mod.hydrateV3OpenResult;
+      return mod.hydrateV3OpenResult;
+    });
+  }
+  return hydrateV3OpenResultLoader;
+}
+
+void loadHydrateV3OpenResult().catch(() => {});
 
 export enum ProjectState {
   /**
@@ -145,6 +171,15 @@ export class Project extends Tab {
    * value: Blob
    */
   public attachments = new Map<string, Blob>();
+  public storageFormat: "v3_sqlite" | "v2_zip" | "draft" = "draft";
+  public v3DocId: string | null = null;
+  public v3Revision = 0;
+  public stageRevision = 0;
+  /** 离屏临时项目标记（如 v2→v3 迁移）：禁止启动 rAF 渲染循环、全局窗口键盘监听与图片位图解码 */
+  public isOffscreen = false;
+  public v3AttachmentMetas = new Map<string, V3AttachmentMeta>();
+  public readonly imageBitmapCache = new ImageBitmapLruCache();
+  private v3AutoPersist: V3AutoPersistController | null = null;
   /**
    * 创建Encoder对象比直接用encode()快
    * @see https://github.com/msgpack/msgpack-javascript#reusing-encoder-and-decoder-instances
@@ -163,6 +198,15 @@ export class Project extends Tab {
   constructor(uri: URI) {
     super({});
     this._uri = uri;
+  }
+
+  override loop(): void {
+    if (this.isOffscreen) return;
+    super.loop();
+  }
+
+  public bumpStageRevision(): void {
+    this.stageRevision++;
   }
 
   attachProjectOwnership(ownership: ProjectOwnershipLease) {
@@ -247,12 +291,49 @@ export class Project extends Tab {
   /**
    * 服务加载完成后再调用
    */
-  async init() {
+  async init(options?: { readOnlyCopy?: boolean }) {
+    if (this.isDraft) {
+      if (!options?.readOnlyCopy && DocClient.isAvailable()) {
+        await this.initTempDraftSqlite();
+      }
+      return;
+    }
     if (!(await this.fs.exists(this.uri))) {
       return;
     }
     try {
-      // 解析项目文件
+      // 桌面端本地 .prg 先探测魔数：v3.0.0 直接走 Rust SQLite 秒开，旧版 v2.x 提示一键备份升级
+      if (this.uri.scheme === "file" && DocClient.isAvailable()) {
+        const format = await DocClient.detectFormat(this.uri.fsPath);
+        if (format === "v3_sqlite") {
+          const openedOk = await this.openV3SqliteDocument(this.uri.fsPath, {
+            attachAutoPersist: !options?.readOnlyCopy,
+          });
+          if (openedOk) {
+            this.projectState = ProjectState.Saved;
+          }
+          return;
+        }
+        if (format === "v2_zip" && !options?.readOnlyCopy) {
+          const confirmed = await this.confirmSingleFileV3Upgrade();
+          if (!confirmed) return;
+          const { migrateSingleLegacyFile } = await import("./sqlite/V2ToV3Migrator");
+          const result = await migrateSingleLegacyFile(this.uri.fsPath, {
+            workspaceRoot: Settings.activeWorkspaceRoot || undefined,
+          });
+          toast.success(`已备份旧文件并无损升级至 v3.0.0（备份：${result.backupPath}）`);
+          const openedOk = await this.openV3SqliteDocument(this.uri.fsPath, {
+            attachAutoPersist: true,
+          });
+          if (openedOk) {
+            this.wasUpgraded = false;
+            this.projectState = ProjectState.Saved;
+          }
+          return;
+        }
+      }
+
+      // 解析旧版 ZIP 项目文件（草稿、只读历史副本或非 Tauri 测试环境）
       const { serializedStageObjects, tags, references, metadata, table, readme } = await parseProjectFile(
         await this.fs.read(this.uri),
         this.decoder,
@@ -262,7 +343,9 @@ export class Project extends Tab {
       // 检查并确认升级
       const currentVersion = metadata?.version || "2.0.0";
       const latestVersion = ProjectUpgrader.NLatestVersion;
-      const confirmed = await this.checkAndConfirmUpgrade(currentVersion, latestVersion);
+      const confirmed = options?.readOnlyCopy
+        ? compareProjectVersions(currentVersion, latestVersion) <= 0
+        : await this.checkAndConfirmUpgrade(currentVersion, latestVersion);
       if (!confirmed) return; // 用户取消升级，不打开文件，跳过 this.projectState = ProjectState.Saved
 
       const fileStat =
@@ -279,6 +362,7 @@ export class Project extends Tab {
       );
 
       // 应用升级后的数据
+      this.storageFormat = this.isDraft ? "draft" : "v2_zip";
       this.stage = deserialize(upgradedStageObjects, this);
       const { convertLatexNodes } = await import("@/core/stage/stageObject/tools/convertLatexNodes");
       convertLatexNodes(this);
@@ -297,7 +381,7 @@ export class Project extends Tab {
         this.stageTable.resetAfterStageRestore();
       }
 
-      this.wasUpgraded = currentVersion !== latestVersion;
+      this.wasUpgraded = !options?.readOnlyCopy && currentVersion !== latestVersion;
     } catch (e) {
       console.warn(e);
       const errorMessage = `打开文件时发生错误，文件内容可能已损坏或与当前软件版本不兼容。\n\n错误信息：${e}`;
@@ -311,6 +395,190 @@ export class Project extends Tab {
       return;
     }
     this.projectState = ProjectState.Saved;
+  }
+
+  private async confirmSingleFileV3Upgrade(): Promise<boolean> {
+    const response = await Dialog.buttons(
+      "检测到旧版 v2.x 项目文件",
+      "该文件为旧版 ZIP 格式，需要升级为 SQLite v3.0.0 格式以启用秒开与实时自动落盘。\n\n升级前将自动完整备份原文件（工作空间内备份至 .flux-graph/backup-v2/，工作空间外在同目录留存 .v2.bak），校验无损后再原子替换。是否立即升级？",
+      [
+        { id: "cancel", label: "取消", variant: "ghost" },
+        { id: "upgrade", label: "一键备份并升级到 v3.0.0" },
+      ],
+    );
+    return response === "upgrade";
+  }
+
+  private async initTempDraftSqlite(): Promise<void> {
+    if (this.v3DocId) return;
+    try {
+      const opened = await DocClient.openTempDraft();
+      this.storageFormat = "v3_sqlite";
+      this.v3DocId = opened.docId;
+      this.v3Revision = opened.revision;
+      this.v3AttachmentMetas = new Map(opened.attachments.map((meta) => [meta.id, meta]));
+      this.docCommandBus?.resetBaseline();
+      this.attachV3AutoPersist();
+    } catch (error) {
+      console.warn("初始化临时草稿 SQLite 失败，回退至内存草稿模式:", error);
+    }
+  }
+
+  private async openV3SqliteDocument(fsPath: string, options: { attachAutoPersist: boolean }): Promise<boolean> {
+    const opened = await DocClient.openDocument(fsPath);
+    return await this.initWithPreloadedV3(opened, options);
+  }
+
+  /**
+   * 使用 Rust 融合 IPC 预先返回的 `V3AnyDocumentOpenResult` 直接水合工程（零额外 IPC 往返）。
+   */
+  public async initWithPreloadedV3(
+    opened: V3AnyDocumentOpenResult,
+    options: { attachAutoPersist: boolean } = { attachAutoPersist: true },
+  ): Promise<boolean> {
+    if (compareProjectVersions(opened.formatVersion, ProjectUpgrader.NLatestVersion) > 0) {
+      await DocClient.closeDocument(opened.docId);
+      await Dialog.buttons(
+        "文件版本过新，无法打开",
+        `该文件由更新版本的软件保存（prg文件版本 ${opened.formatVersion}，当前软件支持的prg最高版本 ${ProjectUpgrader.NLatestVersion}）。\n\n请升级软件后再打开此文件，以避免数据损坏。`,
+        [{ id: "ok", label: "确定" }],
+      );
+      return false;
+    }
+
+    const hydrateV3OpenResult: HydrateV3OpenResultFn = cachedHydrateV3OpenResult ?? (await loadHydrateV3OpenResult());
+    const attachmentMetas: V3AttachmentMeta[] = isPackedV3DocumentOpenResult(opened)
+      ? opened.attachments.map(([id, mime, width, height, sizeBytes, hasThumbInt]) => ({
+          id,
+          mime,
+          width,
+          height,
+          sizeBytes,
+          hasThumb: hasThumbInt !== 0,
+        }))
+      : opened.attachments;
+
+    if (!options.attachAutoPersist) {
+      // 只读快照副本：先将所需附件读入内存后立即释放快照 SQLite 连接，
+      // 防止后续在草稿副本中的任何编辑误写回历史快照文件。
+      const tempDocId = opened.docId;
+      this.attachments.clear();
+      this.v3AttachmentMetas.clear();
+      for (const meta of attachmentMetas) {
+        try {
+          const resp = await fetch(buildFluxMediaUrl(tempDocId, meta.id));
+          if (resp.ok) {
+            this.attachments.set(meta.id, await resp.blob());
+          }
+        } catch {
+          // 单个附件读取失败不阻断画布恢复
+        }
+      }
+      await DocClient.closeDocument(tempDocId);
+      this.storageFormat = "draft";
+      this.v3DocId = null;
+      this.v3Revision = 0;
+
+      const hydrated = hydrateV3OpenResult(this, opened);
+      this.stage = hydrated.stage;
+      this.tags = hydrated.tags;
+      this.references = hydrated.references;
+      this.metadata = hydrated.metadata;
+      this.table = hydrated.table;
+      this.readme = hydrated.readme;
+
+      if (this.getService("stageManager")) {
+        this.stageManager.updateReferences({ skipIndexRebuild: true, skipSectionAdjust: true });
+      }
+      if (this.getService("stageTable")) {
+        this.stageTable.resetAfterStageRestore({
+          deferFormulaSync: true,
+          needsFormulaRecompute: opened.needsFormulaRecompute,
+        });
+      }
+      this.docCommandBus?.resetBaseline();
+      return true;
+    }
+
+    // 必须在 hydrateV3OpenResult 之前登记 docId 与附件元数据，使图片/媒体节点构造时即可拼出 flux-media:// URL
+    this.storageFormat = "v3_sqlite";
+    this.v3DocId = opened.docId;
+    this.v3Revision = opened.revision;
+    this.v3AttachmentMetas = new Map(attachmentMetas.map((meta) => [meta.id, meta]));
+    this.attachments.clear();
+
+    const hydrated = hydrateV3OpenResult(this, opened);
+    this.stage = hydrated.stage;
+    this.tags = hydrated.tags;
+    this.references = hydrated.references;
+    this.metadata = hydrated.metadata;
+    this.table = hydrated.table;
+    this.readme = hydrated.readme;
+
+    if (this.getService("stageManager")) {
+      this.stageManager.updateReferences({ skipIndexRebuild: true, skipSectionAdjust: true });
+    }
+    if (this.getService("stageTable")) {
+      this.stageTable.resetAfterStageRestore({
+        deferFormulaSync: true,
+        needsFormulaRecompute: opened.needsFormulaRecompute,
+      });
+    }
+    this.docCommandBus?.resetBaseline();
+    if (options.attachAutoPersist) {
+      this.attachV3AutoPersist();
+    }
+    this.projectState = ProjectState.Saved;
+    return true;
+  }
+
+  public get isSqliteV3(): boolean {
+    return this.storageFormat === "v3_sqlite" && this.v3DocId !== null;
+  }
+
+  public get totalAttachmentCount(): number {
+    if (this.v3AttachmentMetas.size === 0) return this.attachments.size;
+    const ids = new Set<string>(this.attachments.keys());
+    for (const id of this.v3AttachmentMetas.keys()) {
+      ids.add(id);
+    }
+    return ids.size;
+  }
+
+  public registerV3AttachmentMeta(meta: V3AttachmentMeta): void {
+    this.v3AttachmentMetas.set(meta.id, meta);
+  }
+
+  public hasAttachment(attachmentId: string): boolean {
+    return Boolean(attachmentId) && (this.attachments.has(attachmentId) || this.v3AttachmentMetas.has(attachmentId));
+  }
+
+  public getAttachmentMediaUrl(attachmentId: string, options?: { thumb?: boolean }): string | null {
+    if (!attachmentId || !this.isSqliteV3 || !this.v3DocId) return null;
+    if (this.attachments.has(attachmentId)) return null;
+    if (!this.v3AttachmentMetas.has(attachmentId)) return null;
+    return buildFluxMediaUrl(this.v3DocId, attachmentId, options);
+  }
+
+  public async readAttachmentBlob(attachmentId: string): Promise<Blob | undefined> {
+    if (!attachmentId) return undefined;
+    const local = this.attachments.get(attachmentId);
+    if (local) return local;
+    const url = this.getAttachmentMediaUrl(attachmentId);
+    if (!url) return undefined;
+    const resp = await fetch(url);
+    if (!resp.ok) return undefined;
+    return await resp.blob();
+  }
+
+  public attachV3AutoPersist(): void {
+    if (this.v3AutoPersist || !this.isSqliteV3) return;
+    this.v3AutoPersist = new V3AutoPersistController(this);
+  }
+
+  public async flushV3Persist(): Promise<void> {
+    await this.docCommandBus?.flush();
+    await this.v3AutoPersist?.flush();
   }
 
   get isDraft() {
@@ -353,7 +621,7 @@ export class Project extends Tab {
   async stash() {
     // TODO: stash
   }
-  async save(options: { includeThumbnail?: boolean } = {}) {
+  async save(options: { includeThumbnail?: boolean; createSnapshot?: boolean } = {}) {
     if (this.isDraft || this.isCollab) {
       const path = await saveDialog({
         title: this.isDraft ? "保存草稿" : "保存协作工程",
@@ -365,10 +633,51 @@ export class Project extends Tab {
     }
     try {
       this.isSaving = true;
+      if (this.isSqliteV3 && this.v3DocId && DocClient.isAvailable()) {
+        await this.flushV3Persist();
+        let snapshotPath: string | null = null;
+        if (options.createSnapshot !== false) {
+          const { WorkspaceManager } = await import("./service/workspace/WorkspaceManager");
+          snapshotPath = WorkspaceManager.resolveSnapshotTargetPath(this.uri.fsPath);
+        }
+        const res = await DocClient.checkpointAndSnapshot(this.v3DocId, snapshotPath);
+        if (res.snapshotPath) {
+          const { WorkspaceManager } = await import("./service/workspace/WorkspaceManager");
+          await WorkspaceManager.prunePageSnapshots(this.uri.fsPath);
+        }
+        this.docIdNeedsSave = false;
+        this.projectState = ProjectState.Saved;
+        void import("./service/dataFileService/LocalDocumentSync").then(({ LocalDocumentSync }) =>
+          LocalDocumentSync.notifySaved(this),
+        );
+        return;
+      }
+
+      if (this.uri.scheme === "file" && DocClient.isAvailable()) {
+        const { writeProjectAsV3Atomic } = await import("./sqlite/V2ToV3Migrator");
+        await writeProjectAsV3Atomic(this, this.uri.fsPath);
+        const opened = await DocClient.openDocument(this.uri.fsPath);
+        this.storageFormat = "v3_sqlite";
+        this.v3DocId = opened.docId;
+        this.v3Revision = opened.revision;
+        this.v3AttachmentMetas = new Map(opened.attachments.map((meta) => [meta.id, meta]));
+        this.attachments.clear();
+        this.docCommandBus?.resetBaseline();
+        this.attachV3AutoPersist();
+        this.docIdNeedsSave = false;
+        this.projectState = ProjectState.Saved;
+        void import("./service/dataFileService/LocalDocumentSync").then(({ LocalDocumentSync }) =>
+          LocalDocumentSync.notifySaved(this),
+        );
+        return;
+      }
+
       await this.fs.write(this.uri, await this.getFileContent(options));
       this.docIdNeedsSave = false;
       this.projectState = ProjectState.Saved;
-      void LocalDocumentSync.notifySaved(this);
+      void import("./service/dataFileService/LocalDocumentSync").then(({ LocalDocumentSync }) =>
+        LocalDocumentSync.notifySaved(this),
+      );
     } finally {
       this.isSaving = false;
     }
@@ -381,14 +690,51 @@ export class Project extends Tab {
 
     try {
       this.isSaving = true;
+      if (DocClient.isAvailable()) {
+        await this.flushV3Persist();
+        const prevDocId = this.v3DocId;
+        const { writeProjectAsV3Atomic } = await import("./sqlite/V2ToV3Migrator");
+        await this.projectOwnership.saveAs(targetUri, async () => {
+          await writeProjectAsV3Atomic(this, targetUri.fsPath, {
+            copyAttachmentsFromDocId: prevDocId ?? undefined,
+          });
+        });
+        if (prevDocId) {
+          await this.v3AutoPersist?.dispose();
+          this.v3AutoPersist = null;
+          await DocClient.closeDocument(prevDocId);
+        }
+        const opened = await DocClient.openDocument(targetUri.fsPath);
+        this.storageFormat = "v3_sqlite";
+        this.v3DocId = opened.docId;
+        this.v3Revision = opened.revision;
+        this.v3AttachmentMetas = new Map(opened.attachments.map((meta) => [meta.id, meta]));
+        this.attachments.clear();
+        this.docCommandBus?.resetBaseline();
+        this.attachV3AutoPersist();
+        this.docIdNeedsSave = false;
+        this.projectState = ProjectState.Saved;
+        if (this.canonicalProjectPath) {
+          const { LocalDocumentSync } = await import("./service/dataFileService/LocalDocumentSync");
+          LocalDocumentSync.rebind(this, this.canonicalProjectPath);
+        }
+        void import("./service/dataFileService/LocalDocumentSync").then(({ LocalDocumentSync }) =>
+          LocalDocumentSync.notifySaved(this),
+        );
+        return;
+      }
+
       const content = await this.getFileContent(options);
       await this.projectOwnership.saveAs(targetUri, () => fileSystemProvider.write(targetUri, content));
       this.docIdNeedsSave = false;
       this.projectState = ProjectState.Saved;
       if (this.canonicalProjectPath) {
+        const { LocalDocumentSync } = await import("./service/dataFileService/LocalDocumentSync");
         LocalDocumentSync.rebind(this, this.canonicalProjectPath);
       }
-      void LocalDocumentSync.notifySaved(this);
+      void import("./service/dataFileService/LocalDocumentSync").then(({ LocalDocumentSync }) =>
+        LocalDocumentSync.notifySaved(this),
+      );
     } finally {
       this.isSaving = false;
     }
@@ -420,14 +766,12 @@ export class Project extends Tab {
    */
   public docIdNeedsSave = false;
 
-  // 备份也要用到这个
+  // 旧版 ZIP 兼容写出路径（仅非 Tauri / 非 v3 环境使用）
   async getFileContent(options: { includeThumbnail?: boolean } = {}) {
     const includeThumbnail = options.includeThumbnail !== false;
     // 触发一次 docId，保证老文件在被保存时补上身份并随 metadata 落盘
     void this.docId;
-    if (this.getService("stageTable")) {
-      this.stageTable.flushPendingTimestamps();
-    }
+    await this.docCommandBus?.flush();
     const serializedStage = serialize(this.stage);
     const encodedStage = this.encoder.encode(serializedStage);
     const uwriter = new Uint8ArrayWriter();
@@ -466,17 +810,6 @@ export class Project extends Tab {
   }
 
   /**
-   * 备份用：生成项目内容的哈希值，用于检测内容是否发生变化
-   */
-  get stageHash() {
-    const serializedStage = serialize(this.stage);
-    // 创建临时Encoder来编码数据
-    const tempEncoder = new Encoder();
-    const encodedStage = tempEncoder.encode(serializedStage);
-    return md5(encodedStage);
-  }
-
-  /**
    * 注册一个文件管理器
    * @param scheme 目前有 "file" | "draft"， 以后可能有其他的协议
    */
@@ -484,6 +817,11 @@ export class Project extends Tab {
   addAttachment(data: Blob, id: string = crypto.randomUUID()): string {
     const uuid = id;
     this.attachments.set(uuid, data);
+    if (this.isSqliteV3 && this.v3AutoPersist) {
+      // 等 Rust 落库完成后再由 V3AutoPersistController 登记 v3AttachmentMetas 并释放内存 Blob，
+      // 避免未写完前前端缩略图抢跑请求 flux-media:// 返回 404。
+      void this.v3AutoPersist.enqueueAttachmentPersist(uuid, data);
+    }
     this.emit("attachment-add", { id: uuid, data });
     return uuid;
   }
@@ -580,30 +918,64 @@ export class Project extends Tab {
   }
 
   override async dispose() {
+    const cleanupErrors: unknown[] = [];
+    try {
+      await this.docCommandBus?.dispose();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      await this.v3AutoPersist?.dispose();
+    } catch (error) {
+      cleanupErrors.push(error);
+    } finally {
+      this.v3AutoPersist = null;
+    }
+    const docIdToClose = this.v3DocId;
+    this.v3DocId = null;
+
+    const { LocalDocumentSync } = await import("./service/dataFileService/LocalDocumentSync");
     await LocalDocumentSync.flushAndDetach(this);
-    await this.projectOwnership.dispose(async () => {
-      const cleanupErrors: unknown[] = [];
-      try {
-        await super.dispose();
-      } catch (error) {
-        cleanupErrors.push(error);
+    try {
+      await this.projectOwnership.dispose(async () => {
+        try {
+          await super.dispose();
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
+        const stageCleanupTasks = this.stage.map((stageObject) =>
+          Promise.resolve().then(() => stageObject.dispose?.()),
+        );
+        const stageCleanupResults = await Promise.allSettled(stageCleanupTasks);
+        cleanupErrors.push(
+          ...stageCleanupResults
+            .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+            .map(({ reason }) => reason),
+        );
+        this.imageBitmapCache.dispose();
+        this.stage.length = 0;
+        this.attachments.clear();
+        this.v3AttachmentMetas.clear();
+      });
+    } catch (error) {
+      if (error instanceof AggregateError) cleanupErrors.push(...error.errors);
+      else cleanupErrors.push(error);
+    } finally {
+      if (docIdToClose && DocClient.isAvailable()) {
+        try {
+          await DocClient.closeDocument(docIdToClose);
+        } catch (error) {
+          cleanupErrors.push(error);
+        }
       }
-      const stageCleanupTasks = this.stage.map((stageObject) => Promise.resolve().then(() => stageObject.dispose?.()));
-      const stageCleanupResults = await Promise.allSettled(stageCleanupTasks);
-      cleanupErrors.push(
-        ...stageCleanupResults
-          .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-          .map(({ reason }) => reason),
-      );
-      this.stage.length = 0;
-      this.attachments.clear();
-      if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "Project cleanup failed");
-    });
+    }
+    if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, "Project cleanup failed");
   }
 }
 
 declare module "./Project" {
   interface Project {
+    docCommandBus: DocCommandBus;
     canvas: Canvas;
     inputElement: InputElement;
     controllerUtils: ControllerUtils;
@@ -685,11 +1057,10 @@ declare module "./Project" {
 }
 
 /**
- * 装饰器
+ * 装饰器（使用函数声明以便在 ESM 循环依赖时自动提升，避免 TDZ ReferenceError）
  */
-export const service =
-  (id: string) =>
-  <
+export function service(id: string) {
+  return <
     T extends {
       [x: string | number | symbol]: any;
       id?: string;
@@ -701,3 +1072,4 @@ export const service =
     target.id = id;
     return target as T & { id: string };
   };
+}

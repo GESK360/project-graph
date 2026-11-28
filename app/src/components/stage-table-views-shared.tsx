@@ -8,11 +8,12 @@ import type {
   StageTableRow,
   StageTableRowKind,
 } from "@/core/service/dataManageService/stageTableService/StageTableService";
+import type { TableDataSource } from "@/core/service/dataManageService/stageTableService/TableDataSource";
 import {
-  ALL_SYSTEM_COLUMN_IDS,
+  ALL_WORKSPACE_SYSTEM_COLUMN_IDS,
   parseLocalDateKey,
   toLocalDateKey,
-  type SystemColumnId,
+  type AnySystemColumnId,
   type TableColumnSchema,
   type TableSelectOption,
   type TableSortConfig,
@@ -36,7 +37,9 @@ import {
   Clock,
   Crosshair,
   FileCode2,
+  FileText,
   Film,
+  Folder,
   FolderKanban,
   FunctionSquare,
   Hash,
@@ -102,8 +105,8 @@ export function getViewOptionPillAccentClass(color?: string): string {
   return (color && VIEW_OPTION_PILL_ACCENT_CLASSES[color]) || "border-l-primary/70 bg-muted/50";
 }
 
-export function isSystemColumnId(colId: string): colId is SystemColumnId {
-  return (ALL_SYSTEM_COLUMN_IDS as readonly string[]).includes(colId);
+export function isSystemColumnId(colId: string): colId is AnySystemColumnId {
+  return (ALL_WORKSPACE_SYSTEM_COLUMN_IDS as readonly string[]).includes(colId);
 }
 
 export function formatViewTimestamp(ms: number): string {
@@ -226,6 +229,10 @@ export function StageTableColumnIcon({
       return <Box className={cls} />;
     case "inner":
       return <Boxes className={cls} />;
+    case "sourceFile":
+      return <FileText className={cls} />;
+    case "sourceFolder":
+      return <Folder className={cls} />;
     case "name":
     default:
       return <Type className={cls} />;
@@ -234,20 +241,28 @@ export function StageTableColumnIcon({
 
 export function StageTableAttachmentThumb({
   project,
+  dataSource,
+  docId,
   attachmentId,
   className,
   onClick,
 }: {
-  project: Project;
+  project?: Project | null;
+  dataSource?: TableDataSource;
+  docId?: string | null;
   attachmentId: string;
   className?: string;
   onClick?: (e: React.MouseEvent) => void;
 }) {
-  const blob = project.attachments?.get?.(attachmentId);
+  const mediaUrl =
+    dataSource?.getMediaUrl(docId ?? null, attachmentId, { thumb: true }) ??
+    project?.getAttachmentMediaUrl?.(attachmentId, { thumb: true }) ??
+    null;
+  const blob = mediaUrl ? undefined : project?.attachments?.get?.(attachmentId);
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!blob || typeof URL.createObjectURL !== "function") {
+    if (mediaUrl || !blob || typeof URL.createObjectURL !== "function") {
       setObjectUrl(null);
       return;
     }
@@ -256,9 +271,10 @@ export function StageTableAttachmentThumb({
     return () => {
       URL.revokeObjectURL?.(url);
     };
-  }, [blob]);
+  }, [mediaUrl, blob]);
 
-  if (!objectUrl) {
+  const resolvedUrl = mediaUrl ?? objectUrl;
+  if (!resolvedUrl) {
     return (
       <div
         onClick={onClick}
@@ -274,8 +290,10 @@ export function StageTableAttachmentThumb({
 
   return (
     <img
-      src={objectUrl}
+      src={resolvedUrl}
       alt=""
+      loading="lazy"
+      decoding="async"
       onClick={onClick}
       className={cn("border-border/70 size-7 rounded border object-cover", onClick && "cursor-zoom-in", className)}
     />
@@ -284,24 +302,59 @@ export function StageTableAttachmentThumb({
 
 export function StageTableFieldValueDisplay({
   project,
+  dataSource,
   row,
   columnId,
   customCol,
   onPreviewImage,
+  onJumpToRow,
   compact = false,
   t,
 }: {
-  project: Project;
+  project?: Project | null;
+  dataSource?: TableDataSource;
   row: StageTableRow;
   columnId: string;
   customCol?: TableColumnSchema;
-  onPreviewImage?: (attachmentId: string, rowUuid?: string) => void;
+  onPreviewImage?: (attachmentId: string, rowUuid?: string, docId?: string) => void;
+  onJumpToRow?: (row: StageTableRow) => void;
   compact?: boolean;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }): React.ReactElement | null {
   if (columnId === "name") {
     const title = getRowDisplayTitle(row, t);
     return <span className={cn("truncate", title.isPlaceholder && "text-muted-foreground/60")}>{title.text}</span>;
+  }
+  if (columnId === "sourceFile") {
+    if (!row.sourceFile) return null;
+    return (
+      <button
+        type="button"
+        title={row.sourceRelPath || row.sourceFile}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (onJumpToRow) onJumpToRow(row);
+          else dataSource?.jumpToNode(row.docId ?? null, row.uuid);
+        }}
+        className="bg-muted/80 hover:bg-accent text-foreground/90 inline-flex max-w-full cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-[11px] transition-colors"
+      >
+        <FileText className="text-muted-foreground size-3 shrink-0" />
+        <span className="truncate">{row.sourceFile}</span>
+      </button>
+    );
+  }
+  if (columnId === "sourceFolder") {
+    const folder = row.sourceFolder ?? "";
+    if (!folder && !row.sourceFile) return null;
+    return (
+      <span
+        title={folder || "/"}
+        className="text-muted-foreground inline-flex max-w-full items-center gap-1 truncate text-[11px]"
+      >
+        <Folder className="size-3 shrink-0 opacity-70" />
+        <span className="truncate">{folder || "/"}</span>
+      </span>
+    );
   }
   if (columnId === "images") {
     if (row.images.length === 0) return null;
@@ -312,13 +365,15 @@ export function StageTableFieldValueDisplay({
           <StageTableAttachmentThumb
             key={img.uuid}
             project={project}
+            dataSource={dataSource}
+            docId={row.docId}
             attachmentId={img.attachmentId}
             className={compact ? "size-5" : "size-6"}
             onClick={
               onPreviewImage
                 ? (e) => {
                     e.stopPropagation();
-                    onPreviewImage(img.attachmentId, row.uuid);
+                    onPreviewImage(img.attachmentId, row.uuid, row.docId);
                   }
                 : undefined
             }
@@ -603,6 +658,7 @@ export function StageTableSortToolbarPopover({
 
 export function StageTableRecordDialog({
   project,
+  dataSource,
   row,
   customColumns,
   getColumnLabel,
@@ -611,12 +667,13 @@ export function StageTableRecordDialog({
   onOpenFormulaEditor,
   t,
 }: {
-  project: Project;
+  project?: Project | null;
+  dataSource?: TableDataSource;
   row: StageTableRow | null;
   customColumns: readonly TableColumnSchema[];
   getColumnLabel: (colId: string) => string;
   onClose: () => void;
-  onPreviewImage: (attachmentId: string, rowUuid?: string) => void;
+  onPreviewImage: (attachmentId: string, rowUuid?: string, docId?: string) => void;
   onOpenFormulaEditor?: (colId: string, rowUuid: string) => void;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
@@ -627,7 +684,57 @@ export function StageTableRecordDialog({
   useEffect(() => {
     setTitleDraft(row?.primaryText ?? "");
     setSelectQueryByCol({});
-  }, [row?.uuid, row?.primaryText]);
+  }, [row?.uuid, row?.docId, row?.primaryText]);
+
+  const updatePrimaryText = (rowUuid: string, next: string, docId?: string) => {
+    if (dataSource) {
+      void dataSource.updateRowPrimaryText(rowUuid, next, docId);
+    } else {
+      project?.stageTable.updateRowPrimaryText(rowUuid, next);
+    }
+  };
+
+  const updateCustomField = (
+    rowUuid: string,
+    colId: string,
+    value: string | number | string[] | null,
+    docId?: string,
+  ) => {
+    if (dataSource) {
+      void dataSource.updateRowCustomField(rowUuid, colId, value, docId);
+    } else {
+      project?.stageTable.updateRowCustomField(rowUuid, colId, value);
+    }
+  };
+
+  const createOrGetOption = (colId: string, name: string): TableSelectOption | null => {
+    if (dataSource) return dataSource.createOrGetSelectOption(colId, name);
+    return project?.stageTable.createOrGetSelectOption?.(colId, name) ?? null;
+  };
+
+  const addImages = (rowUuid: string, blobs: Blob[], docId?: string) => {
+    if (dataSource) {
+      void dataSource.addRowImages(rowUuid, blobs, docId);
+    } else {
+      void project?.stageTable.addRowImages?.(rowUuid, blobs);
+    }
+  };
+
+  const removeImage = (rowUuid: string, imgUuid: string, docId?: string) => {
+    if (dataSource) {
+      void dataSource.removeRowImage(rowUuid, imgUuid, docId);
+    } else {
+      project?.stageTable.removeRowImage?.(rowUuid, imgUuid);
+    }
+  };
+
+  const jumpToRow = (targetRow: StageTableRow) => {
+    if (dataSource) {
+      dataSource.jumpToNode(targetRow.docId ?? dataSource.getDocId(), targetRow.uuid);
+    } else {
+      project?.stageTable.focusRowOnCanvas(targetRow.uuid);
+    }
+  };
 
   return (
     <DialogPrimitive.Root
@@ -656,7 +763,7 @@ export function StageTableRecordDialog({
                     onChange={(e) => setTitleDraft(e.target.value)}
                     onBlur={() => {
                       if (titleDraft !== row.primaryText) {
-                        project.stageTable.updateRowPrimaryText(row.uuid, titleDraft);
+                        updatePrimaryText(row.uuid, titleDraft, row.docId);
                       }
                     }}
                     onKeyDown={(e) => {
@@ -664,7 +771,7 @@ export function StageTableRecordDialog({
                       if (e.key === "Enter") {
                         e.preventDefault();
                         if (titleDraft !== row.primaryText) {
-                          project.stageTable.updateRowPrimaryText(row.uuid, titleDraft);
+                          updatePrimaryText(row.uuid, titleDraft, row.docId);
                         }
                         e.currentTarget.blur();
                       }
@@ -679,7 +786,7 @@ export function StageTableRecordDialog({
                   type="button"
                   variant="ghost"
                   size="sm"
-                  onClick={() => project.stageTable.focusRowOnCanvas(row.uuid)}
+                  onClick={() => jumpToRow(row)}
                   className="h-7 gap-1 px-2 text-xs"
                 >
                   <Crosshair className="size-3.5" />
@@ -708,7 +815,7 @@ export function StageTableRecordDialog({
                       const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
                       if (files.length > 0) {
                         e.preventDefault();
-                        void project.stageTable.addRowImages?.(row.uuid, files);
+                        addImages(row.uuid, files, row.docId);
                       }
                     }}
                   >
@@ -721,7 +828,7 @@ export function StageTableRecordDialog({
                       onChange={(e) => {
                         const selected = Array.from(e.target.files ?? []);
                         if (selected.length > 0) {
-                          void project.stageTable.addRowImages?.(row.uuid, selected);
+                          addImages(row.uuid, selected, row.docId);
                         }
                         e.target.value = "";
                       }}
@@ -730,14 +837,16 @@ export function StageTableRecordDialog({
                       <div key={img.uuid} className="group/rthumb relative inline-flex">
                         <StageTableAttachmentThumb
                           project={project}
+                          dataSource={dataSource}
+                          docId={row.docId}
                           attachmentId={img.attachmentId}
                           className="size-12 rounded-md"
-                          onClick={() => onPreviewImage(img.attachmentId, row.uuid)}
+                          onClick={() => onPreviewImage(img.attachmentId, row.uuid, row.docId)}
                         />
                         {row.canEditImages !== false && (
                           <button
                             type="button"
-                            onClick={() => project.stageTable.removeRowImage?.(row.uuid, img.uuid)}
+                            onClick={() => removeImage(row.uuid, img.uuid, row.docId)}
                             className="bg-background/90 text-muted-foreground hover:bg-destructive hover:text-destructive-foreground border-border absolute -top-1 -right-1 flex size-4 cursor-pointer items-center justify-center rounded-full border opacity-0 shadow-xs transition-opacity group-hover/rthumb:opacity-100"
                           >
                             <X className="size-2.5" />
@@ -777,7 +886,7 @@ export function StageTableRecordDialog({
                             onBlur={(e) => {
                               const next = e.target.value;
                               if (next !== (typeof raw === "string" ? raw : "")) {
-                                project.stageTable.updateRowCustomField(row.uuid, col.id, next || null);
+                                updateCustomField(row.uuid, col.id, next || null, row.docId);
                               }
                             }}
                             onKeyDown={(e) => {
@@ -798,12 +907,12 @@ export function StageTableRecordDialog({
                             onBlur={(e) => {
                               const trimmed = e.target.value.trim();
                               if (!trimmed) {
-                                project.stageTable.updateRowCustomField(row.uuid, col.id, null);
+                                updateCustomField(row.uuid, col.id, null, row.docId);
                                 return;
                               }
                               const num = Number(trimmed);
                               if (Number.isFinite(num)) {
-                                project.stageTable.updateRowCustomField(row.uuid, col.id, num);
+                                updateCustomField(row.uuid, col.id, num, row.docId);
                               }
                             }}
                             onKeyDown={(e) => {
@@ -838,11 +947,7 @@ export function StageTableRecordDialog({
                                   mode="single"
                                   selected={typeof raw === "string" ? (parseLocalDateKey(raw) ?? undefined) : undefined}
                                   onSelect={(day) => {
-                                    project.stageTable.updateRowCustomField(
-                                      row.uuid,
-                                      col.id,
-                                      day ? toLocalDateKey(day) : null,
-                                    );
+                                    updateCustomField(row.uuid, col.id, day ? toLocalDateKey(day) : null, row.docId);
                                   }}
                                 />
                               </PopoverContent>
@@ -852,7 +957,7 @@ export function StageTableRecordDialog({
                                 type="button"
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => project.stageTable.updateRowCustomField(row.uuid, col.id, null)}
+                                onClick={() => updateCustomField(row.uuid, col.id, null, row.docId)}
                                 className="h-8 px-2 text-xs"
                               >
                                 {t("dateCell.clear")}
@@ -926,13 +1031,13 @@ export function StageTableRecordDialog({
                                       e.stopPropagation();
                                       if (e.key === "Enter" && query.trim()) {
                                         e.preventDefault();
-                                        const opt = project.stageTable.createOrGetSelectOption?.(col.id, query.trim());
+                                        const opt = createOrGetOption(col.id, query.trim());
                                         if (opt) {
                                           if (col.type === "multi_select") {
                                             const next = Array.from(new Set([...selectedIds, opt.id]));
-                                            project.stageTable.updateRowCustomField(row.uuid, col.id, next);
+                                            updateCustomField(row.uuid, col.id, next, row.docId);
                                           } else {
-                                            project.stageTable.updateRowCustomField(row.uuid, col.id, opt.id);
+                                            updateCustomField(row.uuid, col.id, opt.id, row.docId);
                                           }
                                           setSelectQueryByCol((prev) => ({ ...prev, [col.id]: "" }));
                                         }
@@ -953,17 +1058,14 @@ export function StageTableRecordDialog({
                                               const next = active
                                                 ? selectedIds.filter((id) => id !== opt.id)
                                                 : [...selectedIds, opt.id];
-                                              project.stageTable.updateRowCustomField(
+                                              updateCustomField(
                                                 row.uuid,
                                                 col.id,
                                                 next.length > 0 ? next : null,
+                                                row.docId,
                                               );
                                             } else {
-                                              project.stageTable.updateRowCustomField(
-                                                row.uuid,
-                                                col.id,
-                                                active ? null : opt.id,
-                                              );
+                                              updateCustomField(row.uuid, col.id, active ? null : opt.id, row.docId);
                                             }
                                           }}
                                           className="hover:bg-accent flex w-full cursor-pointer items-center justify-between rounded px-1.5 py-1"
@@ -984,19 +1086,17 @@ export function StageTableRecordDialog({
                                       <button
                                         type="button"
                                         onClick={() => {
-                                          const opt = project.stageTable.createOrGetSelectOption?.(
-                                            col.id,
-                                            query.trim(),
-                                          );
+                                          const opt = createOrGetOption(col.id, query.trim());
                                           if (opt) {
                                             if (col.type === "multi_select") {
-                                              project.stageTable.updateRowCustomField(
+                                              updateCustomField(
                                                 row.uuid,
                                                 col.id,
                                                 Array.from(new Set([...selectedIds, opt.id])),
+                                                row.docId,
                                               );
                                             } else {
-                                              project.stageTable.updateRowCustomField(row.uuid, col.id, opt.id);
+                                              updateCustomField(row.uuid, col.id, opt.id, row.docId);
                                             }
                                             setSelectQueryByCol((prev) => ({ ...prev, [col.id]: "" }));
                                           }
@@ -1019,6 +1119,7 @@ export function StageTableRecordDialog({
                           <div className="bg-muted/40 border-border/60 flex min-h-8 items-center justify-between gap-2 rounded-md border px-2.5 py-1">
                             <StageTableFieldValueDisplay
                               project={project}
+                              dataSource={dataSource}
                               row={row}
                               columnId={col.id}
                               customCol={col}
@@ -1042,8 +1143,33 @@ export function StageTableRecordDialog({
 
                 {/* 拓扑关系与时间只读摘要 */}
                 <div className="border-border/50 space-y-2 border-t pt-2.5">
+                  {row.sourceFile && (
+                    <div className="grid grid-cols-[120px_1fr] items-center gap-2">
+                      <div className="text-muted-foreground flex items-center gap-1.5">
+                        <StageTableColumnIcon columnId="sourceFile" />
+                        <span className="truncate">{getColumnLabel("sourceFile")}</span>
+                      </div>
+                      <div>
+                        <StageTableFieldValueDisplay
+                          project={project}
+                          dataSource={dataSource}
+                          row={row}
+                          columnId="sourceFile"
+                          t={t}
+                        />
+                      </div>
+                    </div>
+                  )}
                   {(["parents", "children", "outer", "inner"] as const).map((relCol) => {
-                    const valueEl = <StageTableFieldValueDisplay project={project} row={row} columnId={relCol} t={t} />;
+                    const valueEl = (
+                      <StageTableFieldValueDisplay
+                        project={project}
+                        dataSource={dataSource}
+                        row={row}
+                        columnId={relCol}
+                        t={t}
+                      />
+                    );
                     const hasVal = relCol === "outer" ? Boolean(row.outer) : row[relCol].length > 0;
                     if (!hasVal) return null;
                     return (

@@ -51,6 +51,8 @@ nodeDetailsWindow:
 findWindow:
   useRegex: Use regular expression
   invalidRegex: Invalid regular expression
+  scopeWorkspace: Search entire workspace
+  workspacePlaceholder: Search nodes & details across workspace...
 
 stageTable:
   expandPanel: Open table panel
@@ -75,6 +77,8 @@ stageTable:
     searchPlaceholder: Find property...
   columns:
     name: Name
+    sourceFile: Source file
+    sourceFolder: Source folder
     images: Images
     createdAt: Created time
     updatedAt: Last edited time
@@ -432,6 +436,38 @@ stageTable:
     resetZoom: Reset zoom
     currentNodeScope: "Current node ({{count}})"
     allImagesScope: "All images ({{count}})"
+  workspaceTab:
+    title: Workspace Table
+  scope:
+    currentDoc: Current canvas
+    currentFolder: Current folder
+    allWorkspace: Entire workspace
+    selectedFolders: "{{count}} folders"
+    selectedDocs: "{{count}} canvases"
+    mode_all: All
+    mode_folders: Folders
+    mode_docs: Canvases
+    allSummary: "Includes all {{count}} canvases in this workspace"
+    noFolders: No subfolders in this workspace
+  workspaceColumns:
+    button: Shared Fields
+    title: Workspace Shared Fields
+    description: Explicit shared fields stay aligned across files even when renamed; auto-aligned fields can be promoted or merged.
+    newColumnPlaceholder: New shared field name...
+    createShared: Create Shared Field
+    empty: No custom fields in this workspace yet
+    badgeProtected: Protected
+    badgeShared: Shared
+    badgeAuto: Auto-aligned
+    docCount: "{{count}} files"
+    promote: Promote
+    mergeSelectedCount: "Merge {{count}} columns into:"
+    mergeTargetPlaceholder: Target shared field name
+    mergeAction: Merge
+    mergeTypeMismatch: Only non-protected fields of the same type can be merged
+    createdToast: 'Created shared field "{{name}}"'
+    promotedToast: 'Promoted "{{name}}" to workspace shared field'
+    mergedToast: 'Merged into shared field "{{name}}"'
 
 projectStatus:
   emptyCanvas: No nodes on the canvas
@@ -3206,6 +3242,22 @@ workspace:
   versionSnapshotFailed: Failed to write the version snapshot
   notAWorkspace: The selected folder is unavailable
   rootMissing: The workspace folder no longer exists
+  v3CheckpointSaved: WAL merged and snapshot saved
+  openGlobalTable: Workspace Multi-View Table
+  openGlobalSpacedRepetition: Global Spaced Repetition
+  upgradeV3:
+    title: Backup & Upgrade to .prg v3.0.0
+    description: Found {{count}} legacy v2.x project files ({{size}} total) in this workspace. Upgrading to SQLite v3.0.0 enables instant loading and real-time auto-persist.
+    backupHint: "All legacy files will be backed up preserving folder structure before upgrading to:"
+    moreFiles: "{{count}} more files not shown"
+    backingUp: Backing up legacy files…
+    migratingFile: "Upgrading ({{completed}}/{{total}}): {{file}}"
+    summary: "Upgrade complete: {{succeeded}} succeeded, {{failed}} failed."
+    backupSavedAt: "Original files backed up at: {{dir}}"
+    later: Later
+    confirmUpgrade: Backup & Upgrade
+    upgrading: Upgrading…
+    done: Done
 
 common:
   editModeHint:

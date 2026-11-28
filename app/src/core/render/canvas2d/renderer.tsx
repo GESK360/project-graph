@@ -8,6 +8,7 @@ import { ArcEdge } from "@/core/stage/stageObject/association/ArcEdge";
 import { CubicCatmullRomSplineEdge } from "@/core/stage/stageObject/association/CubicCatmullRomSplineEdge";
 import { LineEdge } from "@/core/stage/stageObject/association/LineEdge";
 import { MultiTargetUndirectedEdge } from "@/core/stage/stageObject/association/MutiTargetUndirectedEdge";
+import { ImageNode } from "@/core/stage/stageObject/entity/ImageNode";
 import { Section } from "@/core/stage/stageObject/entity/Section";
 import { getTextSize } from "@/utils/font";
 import { isFrame, isMac } from "@/utils/platform";
@@ -95,12 +96,33 @@ export class Renderer {
     }
     this.updateFPS();
     const viewRectangle = this.getCoverWorldRectangle();
+    this.syncViewportImageBitmaps(viewRectangle);
     this.renderBackground();
     this.renderMainStageElements(viewRectangle);
 
     GlobalMaskRenderer.renderMask(this.project, MouseLocation.vector(), Settings.stealthModeReverseMask);
 
     this.renderViewElements(viewRectangle);
+  }
+
+  /**
+   * 视口驱动 ImageBitmap 缓存维护：仅对当前视口 + 1 屏缓冲区内的 ImageNode 触发按需解码与活跃标记，
+   * 超出 256 MB 估算显存上限时自动回收远离视口的最久未用位图。
+   */
+  private syncViewportImageBitmaps(viewRectangle: Rectangle) {
+    const cache = this.project.imageBitmapCache;
+    if (!cache) return;
+    const bufferedRect = new Rectangle(
+      new Vector(viewRectangle.left - viewRectangle.width, viewRectangle.top - viewRectangle.height),
+      new Vector(viewRectangle.width * 3, viewRectangle.height * 3),
+    );
+    const nearby = this.project.stageManager.queryEntitiesInRect(bufferedRect, { preserveOrder: false });
+    for (const entity of nearby) {
+      if (entity instanceof ImageNode && !entity.isHiddenBySectionCollapse) {
+        entity.ensureBitmapLoaded(this.frameIndex);
+      }
+    }
+    cache.evictIfOverBudget(this.frameIndex);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -114,11 +136,11 @@ export class Renderer {
   }
 
   private renderRemoteCursors() {
-    const presences = new Map(
-      this.project.collaboration.currentPresences.map((presence) => [presence.sessionId, presence]),
-    );
+    const collaboration = this.project.collaboration;
+    if (!collaboration) return;
+    const presences = new Map(collaboration.currentPresences.map((presence) => [presence.sessionId, presence]));
     const ctx = this.project.canvas.ctx;
-    for (const cursor of this.project.collaboration.getRemoteCursors()) {
+    for (const cursor of collaboration.getRemoteCursors()) {
       const presence = presences.get(cursor.sessionId);
       if (!presence) continue;
       const location = this.transformWorld2View(new Vector(cursor.x, cursor.y));
@@ -147,7 +169,7 @@ export class Renderer {
       ctx.fillText(label, 19, 28);
       ctx.restore();
     }
-    for (const chat of this.project.collaboration.getRemoteCursorChats()) {
+    for (const chat of collaboration.getRemoteCursorChats()) {
       const presence = presences.get(chat.sessionId);
       if (!presence) continue;
       const location = this.transformWorld2View(new Vector(chat.x, chat.y));
@@ -876,7 +898,7 @@ export class Renderer {
 
   private renderEdges(viewRectangle: Rectangle) {
     this.renderedEdges = 0;
-    for (const association of this.project.stageManager.getAssociations()) {
+    for (const association of this.project.stageManager.queryAssociationsInRect(viewRectangle)) {
       if (this.project.stageManager.isHiddenByBranchCollapse(association)) continue;
       if (this.isOverView(viewRectangle, association)) {
         continue;
@@ -885,20 +907,24 @@ export class Renderer {
         continue;
       }
       const ctx = this.project.canvas.ctx;
-      ctx.save();
-      // 连线在图片上方绘制，但不能覆盖端点文本；逐个裁剪也能处理节点重叠。
-      for (const entity of association.associationList) {
-        if (
-          !("clipConnectionToBoundary" in entity) ||
-          !entity.clipConnectionToBoundary ||
-          ("isHiddenBySectionCollapse" in entity && entity.isHiddenBySectionCollapse)
-        )
-          continue;
-        const rect = this.transformWorld2View(entity.collisionBox.getRectangle());
-        ctx.beginPath();
-        ctx.rect(0, 0, this.w, this.h);
-        ctx.rect(rect.left, rect.top, rect.width, rect.height);
-        ctx.clip("evenodd");
+      // 极低缩放全景视图下节点已缩至极小且 bodyLine 已贴边，跳过逐条 evenodd 蒙版裁剪避免数千条边拖垮首帧
+      const shouldClipEndpoints = this.project.camera.currentScale >= 0.15;
+      if (shouldClipEndpoints) {
+        ctx.save();
+        // 连线在图片上方绘制，但不能覆盖端点文本；逐个裁剪也能处理节点重叠。
+        for (const entity of association.associationList) {
+          if (
+            !("clipConnectionToBoundary" in entity) ||
+            !entity.clipConnectionToBoundary ||
+            ("isHiddenBySectionCollapse" in entity && entity.isHiddenBySectionCollapse)
+          )
+            continue;
+          const rect = this.transformWorld2View(entity.collisionBox.getRectangle());
+          ctx.beginPath();
+          ctx.rect(0, 0, this.w, this.h);
+          ctx.rect(rect.left, rect.top, rect.width, rect.height);
+          ctx.clip("evenodd");
+        }
       }
       try {
         if (association instanceof MultiTargetUndirectedEdge) {
@@ -914,7 +940,9 @@ export class Renderer {
           this.project.edgeRenderer.renderArcEdge(association);
         }
       } finally {
-        ctx.restore();
+        if (shouldClipEndpoints) {
+          ctx.restore();
+        }
       }
       this.renderedEdges++;
     }

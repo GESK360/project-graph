@@ -1,4 +1,5 @@
 import { Project, service } from "@/core/Project";
+import { DocClient } from "@/core/sqlite/DocClient";
 import { RectangleNoteEffect } from "@/core/service/feedbackService/effectEngine/concrete/RectangleNoteEffect";
 import { Entity } from "@/core/stage/stageObject/abstract/StageEntity";
 import { StageObject } from "@/core/stage/stageObject/abstract/StageObject";
@@ -191,6 +192,49 @@ export class ContentSearch {
       return true;
     }
     return false;
+  }
+
+  /**
+   * 毫秒级 SQLite FTS5 文档检索入口：在 v3 SQLite 工程且全图非正则、不区分大小写时
+   * 下沉到 Rust `doc_search_fts`，否则无缝回退至同步内存搜索。
+   */
+  public async startSearchAsync(searchString: string, autoFocus = true): Promise<boolean> {
+    if (
+      searchString !== "" &&
+      !this.isRegex &&
+      !this.isCaseSensitive &&
+      this.searchScope === SearchScope.ALL &&
+      this.project.isSqliteV3 &&
+      this.project.v3DocId &&
+      DocClient.isAvailable()
+    ) {
+      this.searchResultNodes = [];
+      this.currentSearchResultIndex = -1;
+      await this.project.docCommandBus?.flush?.();
+      const hits = await DocClient.searchDocFts({
+        docId: this.project.v3DocId,
+        query: searchString,
+        limit: 1000,
+      });
+      const resolved: StageObject[] = [];
+      for (const hit of hits) {
+        const obj = this.project.stageManager.get(hit.uuid);
+        if (obj) resolved.push(obj);
+      }
+      this.searchResultNodes = resolved;
+      if (this.searchResultNodes.length > 0) {
+        if (autoFocus) {
+          const currentNode = this.searchResultNodes[0];
+          this.project.effects.addEffect(
+            new RectangleNoteEffect(new ProgressNumber(0, 50), currentNode.collisionBox.getRectangle(), Color.Green),
+          );
+          this.project.camera.location = currentNode.collisionBox.getRectangle().center.clone();
+        }
+        return true;
+      }
+      return false;
+    }
+    return this.startSearch(searchString, autoFocus);
   }
 
   /**

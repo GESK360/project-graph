@@ -183,16 +183,24 @@ pub fn read_file_base64(path: String) -> Result<String, String> {
         .encode(&std::fs::read(path).map_err(|e| format!("无法读取文件: {}", e))?))
 }
 
-/// 只读取 .prg（zip）里 metadata.msgpack 的内容，返回 base64。
+/// 只读取 .prg 里的 metadata（兼容旧版 ZIP `metadata.msgpack` 与新版 SQLite v3.0.0 `metadata` 表），返回 base64。
 ///
 /// 深度链接靠 docId 在文件改名后重新找回文档，需要扫描一批 .prg 的 metadata。
-/// 直接用 read_file_base64 会把整个 zip（可能含几十兆图片附件）读进来再解压，
-/// 十几个文件就能卡住主线程几秒。这里只走 zip 的中央目录，定位到
-/// metadata.msgpack 的数据区，按需读出那一段，其余字节不碰。
+/// 先检测文件头魔数：SQLite v3.0.0 直接只读 `metadata` 表并组装兼容 MessagePack；
+/// 旧版 ZIP 走中央目录仅读取 `metadata.msgpack` 数据区，均不触碰附件字节。
 #[tauri::command]
 pub fn read_prg_metadata(path: String) -> Result<String, String> {
-    let data = extract_zip_entry_stored(&path, "metadata.msgpack")?;
-    Ok(general_purpose::STANDARD.encode(&data))
+    let path_ref = std::path::Path::new(&path);
+    match crate::sqlite_engine::schema::detect_prg_format(path_ref)? {
+        crate::sqlite_engine::schema::PrgFormat::V3Sqlite => {
+            let data = crate::sqlite_engine::schema::read_v3_metadata_msgpack(path_ref)?;
+            Ok(general_purpose::STANDARD.encode(&data))
+        }
+        _ => {
+            let data = extract_zip_entry_stored(&path, "metadata.msgpack")?;
+            Ok(general_purpose::STANDARD.encode(&data))
+        }
+    }
 }
 
 /// 从 zip 中取出一个「未压缩存储」条目的原始字节。
@@ -550,6 +558,44 @@ mod tests {
         let error = extract_zip_entry_stored(path.to_str().unwrap(), "metadata.msgpack").unwrap_err();
         assert!(!error.is_empty());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn read_prg_metadata_supports_both_v2_zip_and_v3_sqlite() {
+        use base64::Engine;
+
+        // 1. V2 ZIP
+        let zip = build_stored_zip(&[("metadata.msgpack", b"zip-meta")]);
+        let zip_path = temp_file(&zip, "dual-zip");
+        let b64 = super::read_prg_metadata(zip_path.to_string_lossy().to_string()).unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD.decode(&b64).unwrap();
+        assert_eq!(decoded, b"zip-meta");
+        let _ = std::fs::remove_file(&zip_path);
+
+        // 2. V3 SQLite
+        let sql_path = std::env::temp_dir().join(format!(
+            "flux-graph-dual-v3-{}.prg",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&sql_path);
+        {
+            let conn = rusqlite::Connection::open(&sql_path).unwrap();
+            crate::sqlite_engine::schema::initialize_v3_schema(&conn).unwrap();
+            conn.execute(
+                "INSERT INTO metadata (key, value) VALUES ('format_version', '3.0.0'), ('docId', 'dual-v3-doc')",
+                [],
+            )
+            .unwrap();
+            crate::sqlite_engine::schema::wal_checkpoint_truncate(&conn).unwrap();
+        }
+        let b64_v3 = super::read_prg_metadata(sql_path.to_string_lossy().to_string()).unwrap();
+        let decoded_v3 = base64::engine::general_purpose::STANDARD
+            .decode(&b64_v3)
+            .unwrap();
+        let as_str = String::from_utf8_lossy(&decoded_v3);
+        assert!(as_str.contains("3.0.0"));
+        assert!(as_str.contains("dual-v3-doc"));
+        let _ = std::fs::remove_file(&sql_path);
     }
 }
 

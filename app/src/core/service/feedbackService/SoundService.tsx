@@ -107,7 +107,16 @@ export namespace SoundService {
     }
   }
 
-  const audioContext = new window.AudioContext();
+  let audioContext: AudioContext | null = null;
+
+  function getAudioContext(): AudioContext | null {
+    if (audioContext) return audioContext;
+    if (typeof window === "undefined" || typeof window.AudioContext !== "function") {
+      return null;
+    }
+    audioContext = new window.AudioContext();
+    return audioContext;
+  }
 
   export function playSoundByFilePath(filePath: string) {
     loadAndPlaySound(filePath);
@@ -120,10 +129,14 @@ export namespace SoundService {
     if (filePath.trim() === "") {
       return;
     }
+    const ctx = getAudioContext();
+    if (!ctx) {
+      return;
+    }
 
     // 解码音频数据
-    const audioBuffer = await getAudioBufferByFilePath(filePath); // 消耗0.1秒
-    const source = audioContext.createBufferSource();
+    const audioBuffer = await getAudioBufferByFilePath(filePath, ctx); // 消耗0.1秒
+    const source = ctx.createBufferSource();
     source.buffer = audioBuffer;
 
     // 添加音调随机化 - 根据配置的范围随机调整音调
@@ -131,13 +144,13 @@ export namespace SoundService {
     const randomDetune = (Math.random() - 0.5) * getPitchVariationRange() * 2; // 范围内随机
     source.detune.value = randomDetune;
 
-    source.connect(audioContext.destination); // 小概率消耗0.01秒
+    source.connect(ctx.destination); // 小概率消耗0.01秒
     source.start(0);
   }
 
   const pathAudioBufferMap = new Map<string, AudioBuffer>();
 
-  async function getAudioBufferByFilePath(filePath: string) {
+  async function getAudioBufferByFilePath(filePath: string, ctx: AudioContext) {
     // 先从缓存中获取音频数据
     const result = pathAudioBufferMap.get(filePath);
     if (result) {
@@ -153,7 +166,7 @@ export namespace SoundService {
     const arrayBuffer = uint8Array.buffer as ArrayBuffer;
 
     // 解码音频数据
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
 
     // 加入缓存
     pathAudioBufferMap.set(filePath, audioBuffer);

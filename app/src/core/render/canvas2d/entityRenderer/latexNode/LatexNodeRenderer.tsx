@@ -29,8 +29,13 @@ export class LatexNodeRenderer {
     const scale = this.project.camera.currentScale;
 
     if (node.state === "loading") {
-      // 加载中：渲染灰色占位框 + 文字
-      const placeholderSize = new Vector(200 * scale, 60 * scale);
+      // 进入视口后按需触发首次渲染
+      node.ensureRendered(this.getTargetColorCss(node));
+      // 加载中：优先沿用持久化尺寸，避免布局抖动
+      const placeholderSize =
+        worldRect.size.x > 0 && worldRect.size.y > 0
+          ? worldRect.size.multiply(scale)
+          : new Vector(200 * scale, 60 * scale);
       this.project.shapeRenderer.renderRect(
         new Rectangle(viewLocation, placeholderSize),
         new Color(128, 128, 128, 0.1),
@@ -63,7 +68,7 @@ export class LatexNodeRenderer {
         14 * scale,
         new Color(255, 80, 80),
       );
-    } else if (node.state === "success") {
+    } else if (node.state === "success" && node.image) {
       // 每帧检查颜色是否需要更新（主题切换 / 用户改色）
       const targetColorCss = this.getTargetColorCss(node);
       if (targetColorCss !== node.currentRenderedColorCss) {

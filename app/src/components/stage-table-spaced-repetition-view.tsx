@@ -19,6 +19,7 @@ import type {
   SpacedRepetitionAnswerSnapshot,
   StageTableRow,
 } from "@/core/service/dataManageService/stageTableService/StageTableService";
+import type { TableDataSource } from "@/core/service/dataManageService/stageTableService/TableDataSource";
 import {
   CREATABLE_CUSTOM_COLUMN_TYPES,
   countActiveFilterConditions,
@@ -39,10 +40,15 @@ import {
   type TableSpacedRepetitionViewConfig,
   type TableViewSchema,
 } from "@/types/table";
+import { canUseVirtualMeasureElement, createSafeObserveElementRect } from "@/components/stage-table-scroll-container";
 import { cn } from "@/utils/cn";
+import { useVirtualizer } from "@tanstack/react-virtual";
+
+const OBSERVE_SR_RECT = createSafeObserveElementRect({ width: 960, height: 800 });
 import {
   Check,
   Crosshair,
+  FileText,
   GripVertical,
   Pencil,
   Plus,
@@ -308,6 +314,7 @@ function AddSpacedRepetitionFieldPopover({
  */
 function SpacedRepetitionInlineField({
   project,
+  dataSource,
   row,
   columnId,
   customCol,
@@ -318,12 +325,13 @@ function SpacedRepetitionInlineField({
   onDragHandlePointerDown,
   t,
 }: {
-  project: Project;
+  project?: Project | null;
+  dataSource: TableDataSource;
   row: StageTableRow;
   columnId: string;
   customCol?: TableColumnSchema;
   label: string;
-  onPreviewImage: (attachmentId: string, rowUuid?: string) => void;
+  onPreviewImage: (attachmentId: string, rowUuid?: string, docId?: string) => void;
   onOpenFormulaEditor?: (colId: string, rowUuid: string) => void;
   multiline?: boolean;
   onDragHandlePointerDown?: (e: React.PointerEvent) => void;
@@ -365,18 +373,18 @@ function SpacedRepetitionInlineField({
     if (customCol.type === "text") {
       const prev = typeof raw === "string" ? raw : "";
       if (draft !== prev) {
-        project.stageTable.updateRowCustomField(row.uuid, customCol.id, draft || null);
+        void dataSource.updateRowCustomField(row.uuid, customCol.id, draft || null, row.docId);
       }
     } else if (customCol.type === "number") {
       const trimmed = draft.trim();
       if (!trimmed) {
         if (raw !== undefined && raw !== null) {
-          project.stageTable.updateRowCustomField(row.uuid, customCol.id, null);
+          void dataSource.updateRowCustomField(row.uuid, customCol.id, null, row.docId);
         }
       } else {
         const num = Number(trimmed);
         if (Number.isFinite(num) && num !== raw) {
-          project.stageTable.updateRowCustomField(row.uuid, customCol.id, num);
+          void dataSource.updateRowCustomField(row.uuid, customCol.id, num, row.docId);
         }
       }
     }
@@ -425,6 +433,7 @@ function SpacedRepetitionInlineField({
     }
     const display = StageTableFieldValueDisplay({
       project,
+      dataSource,
       row,
       columnId,
       customCol,
@@ -558,7 +567,12 @@ function SpacedRepetitionInlineField({
                 mode="single"
                 selected={typeof raw === "string" ? (parseLocalDateKey(raw) ?? undefined) : undefined}
                 onSelect={(day) => {
-                  project.stageTable.updateRowCustomField(row.uuid, customCol.id, day ? toLocalDateKey(day) : null);
+                  void dataSource.updateRowCustomField(
+                    row.uuid,
+                    customCol.id,
+                    day ? toLocalDateKey(day) : null,
+                    row.docId,
+                  );
                   setPopoverOpen(false);
                 }}
               />
@@ -569,7 +583,7 @@ function SpacedRepetitionInlineField({
                   size="sm"
                   className="h-7 px-2 text-xs"
                   onClick={() => {
-                    project.stageTable.updateRowCustomField(row.uuid, customCol.id, toLocalDateKey(new Date()));
+                    void dataSource.updateRowCustomField(row.uuid, customCol.id, toLocalDateKey(new Date()), row.docId);
                     setPopoverOpen(false);
                   }}
                 >
@@ -582,7 +596,7 @@ function SpacedRepetitionInlineField({
                     size="sm"
                     className="h-7 px-2 text-xs"
                     onClick={() => {
-                      project.stageTable.updateRowCustomField(row.uuid, customCol.id, null);
+                      void dataSource.updateRowCustomField(row.uuid, customCol.id, null, row.docId);
                       setPopoverOpen(false);
                     }}
                   >
@@ -601,16 +615,17 @@ function SpacedRepetitionInlineField({
                   e.stopPropagation();
                   if (e.key === "Enter" && selectQuery.trim()) {
                     e.preventDefault();
-                    const opt = project.stageTable.createOrGetSelectOption?.(customCol.id, selectQuery.trim());
+                    const opt = dataSource.createOrGetSelectOption(customCol.id, selectQuery.trim());
                     if (opt) {
                       if (customCol.type === "multi_select") {
-                        project.stageTable.updateRowCustomField(
+                        void dataSource.updateRowCustomField(
                           row.uuid,
                           customCol.id,
                           Array.from(new Set([...selectedIds, opt.id])),
+                          row.docId,
                         );
                       } else {
-                        project.stageTable.updateRowCustomField(row.uuid, customCol.id, opt.id);
+                        void dataSource.updateRowCustomField(row.uuid, customCol.id, opt.id, row.docId);
                         setPopoverOpen(false);
                       }
                       setSelectQuery("");
@@ -632,13 +647,19 @@ function SpacedRepetitionInlineField({
                       onClick={() => {
                         if (customCol.type === "multi_select") {
                           const next = active ? selectedIds.filter((id) => id !== opt.id) : [...selectedIds, opt.id];
-                          project.stageTable.updateRowCustomField(
+                          void dataSource.updateRowCustomField(
                             row.uuid,
                             customCol.id,
                             next.length > 0 ? next : null,
+                            row.docId,
                           );
                         } else {
-                          project.stageTable.updateRowCustomField(row.uuid, customCol.id, active ? null : opt.id);
+                          void dataSource.updateRowCustomField(
+                            row.uuid,
+                            customCol.id,
+                            active ? null : opt.id,
+                            row.docId,
+                          );
                           setPopoverOpen(false);
                         }
                       }}
@@ -660,16 +681,17 @@ function SpacedRepetitionInlineField({
                   <button
                     type="button"
                     onClick={() => {
-                      const opt = project.stageTable.createOrGetSelectOption?.(customCol.id, selectQuery.trim());
+                      const opt = dataSource.createOrGetSelectOption(customCol.id, selectQuery.trim());
                       if (opt) {
                         if (customCol.type === "multi_select") {
-                          project.stageTable.updateRowCustomField(
+                          void dataSource.updateRowCustomField(
                             row.uuid,
                             customCol.id,
                             Array.from(new Set([...selectedIds, opt.id])),
+                            row.docId,
                           );
                         } else {
-                          project.stageTable.updateRowCustomField(row.uuid, customCol.id, opt.id);
+                          void dataSource.updateRowCustomField(row.uuid, customCol.id, opt.id, row.docId);
                           setPopoverOpen(false);
                         }
                         setSelectQuery("");
@@ -733,6 +755,8 @@ function SpacedRepetitionInlineField({
 
 export function StageTableSpacedRepetitionView({
   project,
+  dataSource,
+  dataRevision = 0,
   activeView,
   allRows,
   rows,
@@ -752,7 +776,9 @@ export function StageTableSpacedRepetitionView({
   onOpenFormulaEditor,
   t,
 }: {
-  project: Project;
+  project?: Project | null;
+  dataSource: TableDataSource;
+  dataRevision?: number;
   activeView: TableViewSchema;
   allRows: readonly StageTableRow[];
   rows: readonly StageTableRow[];
@@ -767,8 +793,8 @@ export function StageTableSpacedRepetitionView({
   selectedRowIds: ReadonlySet<string>;
   getColumnLabel: (colId: string) => string;
   onSelectRows: (uuids: string[], focusCamera?: boolean) => void;
-  onOpenRecord: (rowUuid: string) => void;
-  onPreviewImage: (attachmentId: string, rowUuid?: string) => void;
+  onOpenRecord: (rowUuid: string, row?: StageTableRow) => void;
+  onPreviewImage: (attachmentId: string, rowUuid?: string, docId?: string) => void;
   onOpenFormulaEditor?: (colId: string, rowUuid: string) => void;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
@@ -777,8 +803,20 @@ export function StageTableSpacedRepetitionView({
   const [editingTitleRowId, setEditingTitleRowId] = useState<string | null>(null);
   const [titleDraft, setTitleDraft] = useState("");
   const [fieldDragState, setFieldDragState] = useState<FieldDragState | null>(null);
+  const cardScrollRef = useRef<HTMLDivElement>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
-  const uploadTargetRowRef = useRef<string | null>(null);
+  const uploadTargetRowRef = useRef<{ rowUuid: string; docId?: string } | null>(null);
+  const [sqliteQueueCounts, setSqliteQueueCounts] = useState<{
+    due: number;
+    all: number;
+    upcoming: number;
+    archived: number;
+  } | null>(null);
+  const isWorkspaceMode = dataSource.scopeKind === "workspace";
+  const [wsDisplayedState, setWsDisplayedState] = useState<{
+    rows: StageTableRow[];
+    unfilteredTotalCount: number;
+  }>({ rows: [], unfilteredTotalCount: 0 });
 
   const config: TableSpacedRepetitionViewConfig = activeView.spacedRepetition ?? {};
   const columns: SpacedRepetitionColumns = config.columns ?? 2;
@@ -789,10 +827,10 @@ export function StageTableSpacedRepetitionView({
   const hasAnyActiveFilter =
     activeFilters.length > 0 || countActiveFilterConditions(activeFilterGroup, customColumns) > 0;
 
-  // 若旧工程里已存在间隔重复视图但缺失受保护列，进入视图时自动补齐（幂等）
+  // 若旧工程或工作空间缺失受保护列，进入视图时自动补齐（幂等）
   useEffect(() => {
-    project.stageTable.ensureSpacedRepetitionColumns?.(true);
-  }, [project, activeView.id]);
+    dataSource.ensureSpacedRepetitionColumns(true);
+  }, [dataSource, activeView.id]);
 
   // 切换视图时重置局部翻转与当次作答保留状态
   useEffect(() => {
@@ -811,7 +849,93 @@ export function StageTableSpacedRepetitionView({
     return map;
   }, [customColumns]);
 
+  useEffect(() => {
+    const dueColId = roleColMap.dueStatus ?? (isWorkspaceMode ? "role:sr:dueStatus" : undefined);
+    if (!dueColId || !dataSource.isSqliteBacked()) {
+      setSqliteQueueCounts(null);
+      return;
+    }
+    let cancelled = false;
+    void dataSource
+      .queryGroupCounts({
+        groupByColumnId: dueColId,
+        filters: activeFilters,
+        filterGroup: activeFilterGroup,
+      })
+      .then((res) => {
+        if (cancelled) return;
+        let due = res.ungroupedCount;
+        let upcoming = 0;
+        let archived = 0;
+        for (const g of res.groups) {
+          if (g.key === "未到期") upcoming += g.count;
+          else if (g.key === "已归档") archived += g.count;
+          else due += g.count;
+        }
+        setSqliteQueueCounts({
+          due,
+          all: res.totalCount,
+          upcoming,
+          archived,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setSqliteQueueCounts(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dataSource, dataRevision, isWorkspaceMode, roleColMap.dueStatus, activeFilters, activeFilterGroup, rows]);
+
+  const pinnedSessionKey = useMemo(() => Array.from(sessionAnswered.keys()).sort().join(","), [sessionAnswered]);
+
+  // 工作空间模式下直接从 index.sqlite 下沉拉取当前复习队列卡片（支持万级跨文件卡片毫秒级过滤）
+  useEffect(() => {
+    if (!isWorkspaceMode) return;
+    let cancelled = false;
+    const dueColId = roleColMap.dueStatus ?? "role:sr:dueStatus";
+    const extraGroupFilter =
+      queueTab === "all"
+        ? null
+        : {
+            columnId: dueColId,
+            groupKey: queueTab === "due" ? "待复习" : queueTab === "upcoming" ? "未到期" : "已归档",
+            ...(queueTab === "due" && sessionAnswered.size > 0
+              ? { pinnedUuids: Array.from(sessionAnswered.keys()) }
+              : {}),
+          };
+    void dataSource
+      .queryPage({
+        offset: 0,
+        limit: 500,
+        filters: activeFilters,
+        filterGroup: activeFilterGroup,
+        sort: activeSort,
+        extraGroupFilter,
+      })
+      .then((res) => {
+        if (!cancelled) {
+          setWsDisplayedState({ rows: res.rows, unfilteredTotalCount: res.unfilteredTotalCount });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isWorkspaceMode,
+    dataSource,
+    dataRevision,
+    queueTab,
+    roleColMap.dueStatus,
+    activeFilters,
+    activeFilterGroup,
+    activeSort,
+    pinnedSessionKey,
+  ]);
+
   const queueCounts = useMemo(() => {
+    if (sqliteQueueCounts) return sqliteQueueCounts;
     let due = 0;
     let upcoming = 0;
     let archived = 0;
@@ -827,9 +951,10 @@ export function StageTableSpacedRepetitionView({
       upcoming,
       archived,
     };
-  }, [rows, roleColMap]);
+  }, [sqliteQueueCounts, rows, roleColMap]);
 
   const displayedRows = useMemo(() => {
+    if (isWorkspaceMode) return wsDisplayedState.rows;
     if (queueTab === "all") return rows;
     return rows.filter((row) => {
       if (queueTab === "due" && sessionAnswered.has(row.uuid)) {
@@ -840,7 +965,37 @@ export function StageTableSpacedRepetitionView({
       if (queueTab === "upcoming") return status === "未到期";
       return status === "已归档";
     });
-  }, [rows, queueTab, roleColMap, sessionAnswered]);
+  }, [isWorkspaceMode, wsDisplayedState.rows, rows, queueTab, roleColMap, sessionAnswered]);
+
+  const effectiveTotalUnfilteredCount = isWorkspaceMode ? wsDisplayedState.unfilteredTotalCount : allRows.length;
+
+  const cardGridRows = useMemo<StageTableRow[][]>(() => {
+    const out: StageTableRow[][] = [];
+    for (let i = 0; i < displayedRows.length; i += columns) {
+      out.push(displayedRows.slice(i, i + columns) as StageTableRow[]);
+    }
+    return out;
+  }, [displayedRows, columns]);
+
+  const srRowVirtualizer = useVirtualizer({
+    count: cardGridRows.length,
+    getScrollElement: () => cardScrollRef.current,
+    estimateSize: () => 340,
+    gap: 16,
+    overscan: 4,
+    initialRect: { width: 960, height: 800 },
+    observeElementRect: OBSERVE_SR_RECT,
+    measureElement: (el, _entry, instance) => {
+      const h = el.getBoundingClientRect().height;
+      return h > 0 ? h : instance.options.estimateSize(Number(el.getAttribute("data-index") ?? 0));
+    },
+  });
+
+  useEffect(() => {
+    srRowVirtualizer.measure();
+  }, [columns, flippedIds, srRowVirtualizer]);
+
+  const srVirtualItems = srRowVirtualizer.getVirtualItems();
 
   // 计算间隔重复视图可用的完整筛选与排序字段列表（包含默认隐藏的 11 个核心列与正/背面新增自定义属性）
   const srFilterableColumnIds = useMemo(() => {
@@ -1026,7 +1181,7 @@ export function StageTableSpacedRepetitionView({
     type: CustomColumnType,
     rowUuid?: string,
   ) => {
-    const created = project.stageTable.addSpacedRepetitionCustomColumn?.({ name, type, side });
+    const created = dataSource.addSpacedRepetitionCustomColumn({ name, type, side });
     if (created && type === "formula" && onOpenFormulaEditor) {
       const targetRow = rowUuid ?? displayedRows[0]?.uuid ?? allRows[0]?.uuid ?? "";
       onOpenFormulaEditor(created.id, targetRow);
@@ -1133,7 +1288,7 @@ export function StageTableSpacedRepetitionView({
       document.body.style.cursor = "";
       setFieldDragState(null);
       if (commit && started && latestTarget && latestTarget.colId !== opts.colId) {
-        project.stageTable.reorderSpacedRepetitionFields?.(
+        dataSource.reorderSpacedRepetitionFields(
           opts.side,
           opts.colId,
           latestTarget.colId,
@@ -1167,60 +1322,71 @@ export function StageTableSpacedRepetitionView({
     const existing = sessionAnswered.get(row.uuid);
     // 再次点击当前已选按钮：撤销本次作答
     if (existing && existing.choice === choice) {
-      const restored = project.stageTable.restoreSpacedRepetitionRow?.(row.uuid, existing.snapshot);
-      if (restored) {
-        setSessionAnswered((prev) => {
-          const next = new Map(prev);
-          next.delete(row.uuid);
-          return next;
-        });
-      }
+      void Promise.resolve(
+        dataSource.restoreSpacedRepetitionRow(row.uuid, existing.snapshot, { docId: row.docId }),
+      ).then((restored) => {
+        if (restored) {
+          setSessionAnswered((prev) => {
+            const next = new Map(prev);
+            next.delete(row.uuid);
+            return next;
+          });
+        }
+      });
       return;
     }
 
     // 首次作答或改选：基于首次作答前快照计算，杜绝重复叠加
-    const snapshot = project.stageTable.answerSpacedRepetitionRow?.(row.uuid, choice, {
-      baseline: existing?.snapshot,
+    void Promise.resolve(
+      dataSource.answerSpacedRepetitionRow(row.uuid, choice, {
+        docId: row.docId,
+        baseline: existing?.snapshot,
+      }),
+    ).then((snapshot) => {
+      if (snapshot) {
+        setSessionAnswered((prev) => {
+          const next = new Map(prev);
+          next.set(row.uuid, { choice, snapshot });
+          return next;
+        });
+      }
     });
-    if (snapshot) {
-      setSessionAnswered((prev) => {
-        const next = new Map(prev);
-        next.set(row.uuid, { choice, snapshot });
-        return next;
-      });
-    }
   };
 
-  const handleUndoAnswer = (rowUuid: string) => {
-    const existing = sessionAnswered.get(rowUuid);
+  const handleUndoAnswer = (row: StageTableRow) => {
+    const existing = sessionAnswered.get(row.uuid);
     if (!existing) return;
-    const restored = project.stageTable.restoreSpacedRepetitionRow?.(rowUuid, existing.snapshot);
-    if (restored) {
-      setSessionAnswered((prev) => {
-        const next = new Map(prev);
-        next.delete(rowUuid);
-        return next;
-      });
-    }
+    void Promise.resolve(dataSource.restoreSpacedRepetitionRow(row.uuid, existing.snapshot, { docId: row.docId })).then(
+      (restored) => {
+        if (restored) {
+          setSessionAnswered((prev) => {
+            const next = new Map(prev);
+            next.delete(row.uuid);
+            return next;
+          });
+        }
+      },
+    );
   };
 
   const handleSwitchQueueTab = (tab: SpacedRepetitionQueueTab) => {
     setSessionAnswered(new Map());
-    project.stageTable.updateActiveViewConfig?.({ spacedRepetition: { queueTab: tab } });
+    dataSource.updateActiveViewConfig({ spacedRepetition: { queueTab: tab } });
   };
 
   const handleAddCard = () => {
-    const created = project.stageTable.createRow?.({ text: "" });
-    if (created) {
-      onSelectRows([created.uuid], false);
-      setEditingTitleRowId(created.uuid);
-      setTitleDraft("");
-    }
+    void Promise.resolve(dataSource.createRow({ text: "" })).then((created) => {
+      if (created) {
+        onSelectRows([created.uuid], false);
+        setEditingTitleRowId(created.uuid);
+        setTitleDraft("");
+      }
+    });
   };
 
   const commitTitleEdit = (row: StageTableRow) => {
     if (titleDraft !== row.primaryText) {
-      project.stageTable.updateRowPrimaryText(row.uuid, titleDraft);
+      void dataSource.updateRowPrimaryText(row.uuid, titleDraft, row.docId);
     }
     setEditingTitleRowId(null);
   };
@@ -1231,7 +1397,7 @@ export function StageTableSpacedRepetitionView({
         ? orderedBackFieldRows
         : [...orderedBackFieldRows, [colId]]
       : orderedBackFieldRows.map((row) => row.filter((id) => id !== colId)).filter((row) => row.length > 0);
-    project.stageTable.updateActiveViewConfig?.({
+    dataSource.updateActiveViewConfig({
       spacedRepetition: {
         backFieldIds: nextRows.flat(),
         backFieldRows: nextRows,
@@ -1245,7 +1411,7 @@ export function StageTableSpacedRepetitionView({
         ? orderedFrontFieldRows
         : [...orderedFrontFieldRows, [colId]]
       : orderedFrontFieldRows.map((row) => row.filter((id) => id !== colId)).filter((row) => row.length > 0);
-    project.stageTable.updateActiveViewConfig?.({
+    dataSource.updateActiveViewConfig({
       spacedRepetition: {
         frontFieldIds: nextRows.flat(),
         frontFieldRows: nextRows,
@@ -1263,9 +1429,9 @@ export function StageTableSpacedRepetitionView({
         className="hidden"
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
-          const rowUuid = uploadTargetRowRef.current;
-          if (rowUuid && files.length > 0) {
-            void project.stageTable.addRowImages?.(rowUuid, files);
+          const target = uploadTargetRowRef.current;
+          if (target && files.length > 0) {
+            void dataSource.addRowImages(target.rowUuid, files, target.docId);
           }
           uploadTargetRowRef.current = null;
           e.target.value = "";
@@ -1318,20 +1484,19 @@ export function StageTableSpacedRepetitionView({
           columnGroups={srFilterColumnGroups}
           customColumns={customColumns}
           customColumnMap={customColumnMap}
-          allRows={allRows}
+          allRows={isWorkspaceMode ? displayedRows : allRows}
+          dataSource={dataSource}
           activeFilters={activeFilters}
           filterGroup={activeFilterGroup}
           getColumnLabel={getColumnLabel}
-          onSetConjunction={(conj) => project.stageTable.setFilterConjunction?.(conj)}
-          onAddCondition={(cid) => project.stageTable.addFilterCondition?.(cid)}
-          onUpdateCondition={(id, patch) => project.stageTable.updateFilterCondition?.(id, patch)}
-          onRemoveCondition={(id) => project.stageTable.removeFilterCondition?.(id)}
-          onToggleConditionCollapse={(id) => project.stageTable.toggleFilterConditionCollapsed?.(id)}
-          onReorderConditions={(dragId, targetId, pos) =>
-            project.stageTable.reorderFilterConditions?.(dragId, targetId, pos)
-          }
-          onSetColumnFilter={(cid, flt) => project.stageTable.setColumnFilter?.(cid, flt)}
-          onClearAllFilters={() => project.stageTable.clearAllFilters?.()}
+          onSetConjunction={(conj) => dataSource.setFilterConjunction(conj)}
+          onAddCondition={(cid) => dataSource.addFilterCondition(cid)}
+          onUpdateCondition={(id, patch) => dataSource.updateFilterCondition(id, patch)}
+          onRemoveCondition={(id) => dataSource.removeFilterCondition(id)}
+          onToggleConditionCollapse={(id) => dataSource.toggleFilterConditionCollapsed(id)}
+          onReorderConditions={(dragId, targetId, pos) => dataSource.reorderFilterConditions(dragId, targetId, pos)}
+          onSetColumnFilter={(cid, flt) => dataSource.setColumnFilter(cid, flt)}
+          onClearAllFilters={() => dataSource.clearAllFilters()}
           t={t}
         />
 
@@ -1340,7 +1505,7 @@ export function StageTableSpacedRepetitionView({
           customColumnMap={customColumnMap}
           activeSort={activeSort}
           getColumnLabel={getColumnLabel}
-          onSetSort={(sort) => project.stageTable.setSort?.(sort)}
+          onSetSort={(sort) => dataSource.setSort(sort)}
           t={t}
         />
 
@@ -1362,7 +1527,7 @@ export function StageTableSpacedRepetitionView({
                     data-sr-cols={colCount}
                     aria-pressed={active}
                     onClick={() =>
-                      project.stageTable.updateActiveViewConfig?.({
+                      dataSource.updateActiveViewConfig({
                         spacedRepetition: { columns: colCount },
                       })
                     }
@@ -1423,9 +1588,7 @@ export function StageTableSpacedRepetitionView({
                     <button
                       key={fit}
                       type="button"
-                      onClick={() =>
-                        project.stageTable.updateActiveViewConfig?.({ spacedRepetition: { imageFit: fit } })
-                      }
+                      onClick={() => dataSource.updateActiveViewConfig({ spacedRepetition: { imageFit: fit } })}
                       className={cn(
                         "cursor-pointer rounded px-2 py-0.5 text-[11px] transition-colors",
                         imageFit === fit
@@ -1520,7 +1683,7 @@ export function StageTableSpacedRepetitionView({
                           aria-label={t("headerMenu.delete")}
                           onClick={(e) => {
                             e.stopPropagation();
-                            project.stageTable.deleteCustomColumn?.(col.id);
+                            dataSource.deleteCustomColumn(col.id);
                           }}
                           className="text-muted-foreground hover:bg-destructive/15 hover:text-destructive flex size-5 shrink-0 cursor-pointer items-center justify-center rounded opacity-60 transition-opacity hover:opacity-100"
                         >
@@ -1543,7 +1706,7 @@ export function StageTableSpacedRepetitionView({
                     <button
                       type="button"
                       onClick={() =>
-                        project.stageTable.updateActiveViewConfig?.({
+                        dataSource.updateActiveViewConfig({
                           spacedRepetition: { backFieldIds: undefined, backFieldRows: undefined },
                         })
                       }
@@ -1629,7 +1792,7 @@ export function StageTableSpacedRepetitionView({
                           aria-label={t("headerMenu.delete")}
                           onClick={(e) => {
                             e.stopPropagation();
-                            project.stageTable.deleteCustomColumn?.(cid);
+                            dataSource.deleteCustomColumn(cid);
                           }}
                           className="text-muted-foreground hover:bg-destructive/15 hover:text-destructive flex size-5 shrink-0 cursor-pointer items-center justify-center rounded opacity-60 transition-opacity hover:opacity-100"
                         >
@@ -1662,12 +1825,12 @@ export function StageTableSpacedRepetitionView({
         )}
       </div>
 
-      {/* 类网页从上到下滑动的卡片流 */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+      {/* 虚拟化类网页卡片流（支持 1/2/3/4 列及翻转动态测高） */}
+      <div ref={cardScrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {displayedRows.length === 0 ? (
           <div className="text-muted-foreground flex h-full flex-col items-center justify-center gap-2.5 text-xs">
             <span>
-              {allRows.length === 0
+              {effectiveTotalUnfilteredCount === 0
                 ? t("emptyCanvas")
                 : hasAnyActiveFilter
                   ? t("sortFilter.noFilterMatch")
@@ -1676,7 +1839,7 @@ export function StageTableSpacedRepetitionView({
                     : t("spacedRepetition.emptyQueue")}
             </span>
             <div className="flex items-center gap-2">
-              {queueTab !== "all" && rows.length > 0 && (
+              {queueTab !== "all" && queueCounts.all > 0 && (
                 <Button
                   type="button"
                   variant="outline"
@@ -1687,12 +1850,12 @@ export function StageTableSpacedRepetitionView({
                   {t("spacedRepetition.viewAllCards")}
                 </Button>
               )}
-              {allRows.length > 0 && hasAnyActiveFilter && (
+              {effectiveTotalUnfilteredCount > 0 && hasAnyActiveFilter && (
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => project.stageTable.clearAllFilters?.()}
+                  onClick={() => dataSource.clearAllFilters()}
                   className="h-7 px-3 text-xs"
                 >
                   {t("sortFilter.clearAllFilters")}
@@ -1704,684 +1867,742 @@ export function StageTableSpacedRepetitionView({
           <div
             data-sr-card-grid
             data-sr-column-count={columns}
-            style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
-            className={cn("grid items-start gap-4", columns === 1 && "mx-auto max-w-3xl")}
+            style={{
+              height: `${srRowVirtualizer.getTotalSize()}px`,
+              position: "relative",
+              gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+            }}
+            className={cn(columns === 1 && "mx-auto max-w-3xl")}
           >
-            {displayedRows.map((row) => {
-              const titleInfo = getRowDisplayTitle(row, t);
-              const isSelected = selectedRowIds.has(row.uuid);
-              const isFlipped = flippedIds.has(row.uuid);
-              const answered = sessionAnswered.get(row.uuid);
-              const isEditingTitle = editingTitleRowId === row.uuid;
-              const dueStatus = getDueStatusText(row, roleColMap);
-              const nextDueText = roleColMap.nextDueDate
-                ? row.formulaValues?.[roleColMap.nextDueDate]?.displayText?.trim()
-                : "";
-
-              const cardHighlightClass = answered
-                ? answered.choice === "wrong"
-                  ? "border-rose-500/65 ring-1 ring-rose-500/25"
-                  : "border-emerald-500/65 ring-1 ring-emerald-500/25"
-                : isSelected
-                  ? "border-primary ring-primary/30 ring-2"
-                  : "border-border/75 hover:border-border";
-
+            {srVirtualItems.map((vRow) => {
+              const rowChunk = cardGridRows[vRow.index];
+              if (!rowChunk) return null;
               return (
-                <article
-                  key={row.uuid}
-                  data-sr-card={row.uuid}
-                  data-sr-card-side={isFlipped ? "back" : "front"}
-                  data-sr-answered={answered?.choice ?? ""}
-                  onClick={(e) => {
-                    if (e.ctrlKey || e.metaKey) {
-                      const next = new Set(selectedRowIds);
-                      if (next.has(row.uuid)) next.delete(row.uuid);
-                      else next.add(row.uuid);
-                      onSelectRows(Array.from(next), false);
-                    } else {
-                      onSelectRows([row.uuid], false);
-                    }
+                <div
+                  key={vRow.key}
+                  data-index={vRow.index}
+                  ref={canUseVirtualMeasureElement() ? srRowVirtualizer.measureElement : undefined}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    transform: `translateY(${vRow.start}px)`,
+                    gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
                   }}
-                  onPaste={(e) => {
-                    if (isEditingTitle || row.canEditImages === false) return;
-                    const files = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
-                    if (files.length > 0) {
-                      e.preventDefault();
-                      void project.stageTable.addRowImages?.(row.uuid, files);
-                    }
-                  }}
-                  className={cn(
-                    "group/srcard bg-card relative flex min-w-0 flex-col overflow-hidden rounded-xl border shadow-xs transition-all",
-                    cardHighlightClass,
-                  )}
+                  className="grid items-start gap-4"
                 >
-                  {/* 卡片顶部栏：当次状态提示 + 右上角操作（含翻转按钮） */}
-                  <div className="flex items-center justify-between gap-2 px-3.5 pt-2.5 pb-1">
-                    <div className="flex min-w-0 items-center gap-1.5">
-                      {answered ? (
-                        <span
-                          className={cn(
-                            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium",
-                            answered.choice === "wrong"
-                              ? "border-rose-500/35 bg-rose-500/12 text-rose-700 dark:text-rose-300"
-                              : "border-emerald-500/35 bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
-                          )}
-                        >
-                          <span>{t(`spacedRepetition.answeredBadge_${answered.choice}`)}</span>
-                          {nextDueText && <span className="opacity-75">· {nextDueText}</span>}
-                        </span>
-                      ) : isFlipped ? (
-                        <span
-                          className={cn(
-                            "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium",
-                            dueStatus === "待复习"
-                              ? "border-amber-500/35 bg-amber-500/12 text-amber-700 dark:text-amber-300"
-                              : dueStatus === "已归档"
-                                ? "border-zinc-500/30 bg-zinc-500/12 text-zinc-600 dark:text-zinc-300"
-                                : "border-emerald-500/35 bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
-                          )}
-                        >
-                          {dueStatus}
-                        </span>
-                      ) : null}
-                    </div>
+                  {rowChunk.map((row) => {
+                    const titleInfo = getRowDisplayTitle(row, t);
+                    const isSelected = selectedRowIds.has(row.uuid);
+                    const isFlipped = flippedIds.has(row.uuid);
+                    const answered = sessionAnswered.get(row.uuid);
+                    const isEditingTitle = editingTitleRowId === row.uuid;
+                    const dueStatus = getDueStatusText(row, roleColMap);
+                    const nextDueText = roleColMap.nextDueDate
+                      ? row.formulaValues?.[roleColMap.nextDueDate]?.displayText?.trim()
+                      : "";
 
-                    <div className="flex shrink-0 items-center gap-0.5">
-                      {answered && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              type="button"
-                              data-sr-undo-btn={row.uuid}
-                              aria-label={t("spacedRepetition.undoAnswer")}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleUndoAnswer(row.uuid);
-                              }}
-                              className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md transition-colors"
-                            >
-                              <Undo2 className="size-3.5" />
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent side="top">{t("spacedRepetition.undoAnswer")}</TooltipContent>
-                        </Tooltip>
-                      )}
+                    const cardHighlightClass = answered
+                      ? answered.choice === "wrong"
+                        ? "border-rose-500/65 ring-1 ring-rose-500/25"
+                        : "border-emerald-500/65 ring-1 ring-emerald-500/25"
+                      : isSelected
+                        ? "border-primary ring-primary/30 ring-2"
+                        : "border-border/75 hover:border-border";
 
-                      {!isFlipped && (
-                        <AddSpacedRepetitionFieldPopover
-                          side="front"
-                          onCreate={(name, type) => handleCreateCustomSideField("front", name, type, row.uuid)}
-                          t={t}
-                          trigger={
-                            <button
-                              type="button"
-                              data-sr-card-add-front-field={row.uuid}
-                              title={t("spacedRepetition.addFrontFieldTitle")}
-                              aria-label={t("spacedRepetition.addFrontFieldTitle")}
-                              onClick={(e) => e.stopPropagation()}
-                              className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md opacity-0 transition-all group-hover/srcard:opacity-100"
-                            >
-                              <Plus className="size-3.5" />
-                            </button>
+                    return (
+                      <article
+                        key={row.docId ? `${row.docId}:${row.uuid}` : row.uuid}
+                        data-sr-card={row.uuid}
+                        data-sr-card-side={isFlipped ? "back" : "front"}
+                        data-sr-answered={answered?.choice ?? ""}
+                        onClick={(e) => {
+                          if (e.ctrlKey || e.metaKey) {
+                            const next = new Set(selectedRowIds);
+                            if (next.has(row.uuid)) next.delete(row.uuid);
+                            else next.add(row.uuid);
+                            onSelectRows(Array.from(next), false);
+                          } else {
+                            onSelectRows([row.uuid], false);
                           }
-                        />
-                      )}
-
-                      {row.canEditImages !== false && !isFlipped && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              type="button"
-                              aria-label={t("imagesCell.add")}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                uploadTargetRowRef.current = row.uuid;
-                                uploadInputRef.current?.click();
-                              }}
-                              className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md opacity-0 transition-all group-hover/srcard:opacity-100"
-                            >
-                              <Upload className="size-3.5" />
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent side="top">{t("imagesCell.add")}</TooltipContent>
-                        </Tooltip>
-                      )}
-
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            type="button"
-                            aria-label={t("jumpToNode")}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              project.stageTable.focusRowOnCanvas(row.uuid);
-                            }}
-                            className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md opacity-0 transition-all group-hover/srcard:opacity-100"
-                          >
-                            <Crosshair className="size-3.5" />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent side="top">{t("jumpToNode")}</TooltipContent>
-                      </Tooltip>
-
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            type="button"
-                            aria-label={t("views.editRecord")}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onOpenRecord(row.uuid);
-                            }}
-                            className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md opacity-0 transition-all group-hover/srcard:opacity-100"
-                          >
-                            <Pencil className="size-3.5" />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent side="top">{t("views.editRecord")}</TooltipContent>
-                      </Tooltip>
-
-                      {/* 右上角翻转卡片按钮（始终可见） */}
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            type="button"
-                            data-sr-flip-btn={row.uuid}
-                            aria-label={
-                              isFlipped ? t("spacedRepetition.flipToFront") : t("spacedRepetition.flipToBack")
-                            }
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleFlip(row.uuid);
-                            }}
-                            className={cn(
-                              "flex size-7 cursor-pointer items-center justify-center rounded-md border transition-colors",
-                              isFlipped
-                                ? "border-primary/40 bg-primary/12 text-primary"
-                                : "border-border/60 text-muted-foreground hover:bg-accent hover:text-foreground",
-                            )}
-                          >
-                            <RotateCw className={cn("size-3.5 transition-transform", isFlipped && "rotate-180")} />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent side="top">
-                          {isFlipped ? t("spacedRepetition.flipToFront") : t("spacedRepetition.flipToBack")}
-                        </TooltipContent>
-                      </Tooltip>
-                    </div>
-                  </div>
-
-                  {!isFlipped ? (
-                    /* ======================== 正面 ======================== */
-                    <div data-sr-front className="flex flex-1 flex-col gap-3 px-4 pt-1 pb-3.5">
-                      {/* 文字在上（双击可直接编辑） */}
-                      <div
-                        data-sr-front-text={row.uuid}
-                        title={row.editableText ? t("spacedRepetition.doubleClickToEdit") : undefined}
-                        onDoubleClick={(e) => {
-                          if (!row.editableText) return;
-                          e.stopPropagation();
-                          setTitleDraft(row.primaryText);
-                          setEditingTitleRowId(row.uuid);
+                        }}
+                        onPaste={(e) => {
+                          if (isEditingTitle || row.canEditImages === false) return;
+                          const files = Array.from(e.clipboardData?.files ?? []).filter((f) =>
+                            f.type.startsWith("image/"),
+                          );
+                          if (files.length > 0) {
+                            e.preventDefault();
+                            void dataSource.addRowImages(row.uuid, files, row.docId);
+                          }
                         }}
                         className={cn(
-                          "-mx-1.5 rounded-md px-1.5 py-1 transition-colors",
-                          row.editableText && !isEditingTitle && "hover:bg-accent/45 cursor-text",
+                          "group/srcard bg-card relative flex min-w-0 flex-col overflow-hidden rounded-xl border shadow-xs transition-all",
+                          cardHighlightClass,
                         )}
                       >
-                        {isEditingTitle ? (
-                          <div className="space-y-1" onClick={(e) => e.stopPropagation()}>
-                            <textarea
-                              autoFocus
-                              data-sr-title-input={row.uuid}
-                              value={titleDraft}
-                              rows={Math.max(2, Math.min(8, titleDraft.split("\n").length + 1))}
-                              onChange={(e) => setTitleDraft(e.target.value)}
-                              onBlur={() => commitTitleEdit(row)}
-                              onKeyDown={(e) => {
-                                e.stopPropagation();
-                                if (e.key === "Escape") {
-                                  e.preventDefault();
-                                  setEditingTitleRowId(null);
-                                } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-                                  e.preventDefault();
-                                  commitTitleEdit(row);
-                                }
-                              }}
-                              placeholder={t("views.unnamedRecord")}
-                              className="border-primary/70 bg-background text-foreground focus:ring-primary/30 w-full resize-y rounded-md border px-2.5 py-1.5 text-[15px] leading-relaxed outline-none focus:ring-2"
-                            />
-                            <div className="text-muted-foreground text-[10px]">
-                              {t("spacedRepetition.inlineTextHint")}
-                            </div>
-                          </div>
-                        ) : (
-                          <div
-                            className={cn(
-                              "text-[15px] leading-relaxed font-medium break-words whitespace-pre-wrap",
-                              titleInfo.isPlaceholder && "text-muted-foreground/55 font-normal",
-                            )}
-                          >
-                            {titleInfo.text}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* 图片在下 */}
-                      {row.images.length > 0 && (
-                        <div
-                          data-sr-front-images={row.uuid}
-                          className={cn("grid gap-2", row.images.length > 1 ? "grid-cols-2" : "grid-cols-1")}
-                        >
-                          {row.images.map((img) => (
-                            <div
-                              key={img.uuid}
-                              className="group/srimg bg-muted/25 border-border/50 relative overflow-hidden rounded-lg border"
-                            >
-                              <StageTableAttachmentThumb
-                                project={project}
-                                attachmentId={img.attachmentId}
-                                className={cn(
-                                  "w-full rounded-none border-0",
-                                  row.images.length === 1
-                                    ? columns === 1
-                                      ? "h-auto max-h-96 min-h-32"
-                                      : "h-auto max-h-64 min-h-28"
-                                    : "h-40",
-                                  imageFit === "contain" ? "object-contain p-1" : "object-cover",
-                                )}
+                        {/* 卡片顶部栏：当次状态提示 + 来源文件徽章 + 右上角操作（含翻转按钮） */}
+                        <div className="flex items-center justify-between gap-2 px-3.5 pt-2.5 pb-1">
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            {row.sourceFile && (
+                              <button
+                                type="button"
+                                title={row.sourceRelPath || row.sourceFile}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  onPreviewImage(img.attachmentId, row.uuid);
+                                  dataSource.jumpToNode(row.docId ?? dataSource.getDocId(), row.uuid);
                                 }}
+                                className="bg-muted/80 hover:bg-accent text-muted-foreground hover:text-foreground inline-flex max-w-36 cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-[10px] transition-colors"
+                              >
+                                <FileText className="size-2.5 shrink-0" />
+                                <span className="truncate">{row.sourceFile}</span>
+                              </button>
+                            )}
+                            {answered ? (
+                              <span
+                                className={cn(
+                                  "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium",
+                                  answered.choice === "wrong"
+                                    ? "border-rose-500/35 bg-rose-500/12 text-rose-700 dark:text-rose-300"
+                                    : "border-emerald-500/35 bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
+                                )}
+                              >
+                                <span>{t(`spacedRepetition.answeredBadge_${answered.choice}`)}</span>
+                                {nextDueText && <span className="opacity-75">· {nextDueText}</span>}
+                              </span>
+                            ) : isFlipped ? (
+                              <span
+                                className={cn(
+                                  "inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium",
+                                  dueStatus === "待复习"
+                                    ? "border-amber-500/35 bg-amber-500/12 text-amber-700 dark:text-amber-300"
+                                    : dueStatus === "已归档"
+                                      ? "border-zinc-500/30 bg-zinc-500/12 text-zinc-600 dark:text-zinc-300"
+                                      : "border-emerald-500/35 bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
+                                )}
+                              >
+                                {dueStatus}
+                              </span>
+                            ) : null}
+                          </div>
+
+                          <div className="flex shrink-0 items-center gap-0.5">
+                            {answered && (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    type="button"
+                                    data-sr-undo-btn={row.uuid}
+                                    aria-label={t("spacedRepetition.undoAnswer")}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleUndoAnswer(row);
+                                    }}
+                                    className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md transition-colors"
+                                  >
+                                    <Undo2 className="size-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent side="top">{t("spacedRepetition.undoAnswer")}</TooltipContent>
+                              </Tooltip>
+                            )}
+
+                            {!isFlipped && (
+                              <AddSpacedRepetitionFieldPopover
+                                side="front"
+                                onCreate={(name, type) => handleCreateCustomSideField("front", name, type, row.uuid)}
+                                t={t}
+                                trigger={
+                                  <button
+                                    type="button"
+                                    data-sr-card-add-front-field={row.uuid}
+                                    title={t("spacedRepetition.addFrontFieldTitle")}
+                                    aria-label={t("spacedRepetition.addFrontFieldTitle")}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md opacity-0 transition-all group-hover/srcard:opacity-100"
+                                  >
+                                    <Plus className="size-3.5" />
+                                  </button>
+                                }
                               />
-                              {row.canEditImages !== false && (
+                            )}
+
+                            {row.canEditImages !== false && !isFlipped && (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    type="button"
+                                    aria-label={t("imagesCell.add")}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      uploadTargetRowRef.current = { rowUuid: row.uuid, docId: row.docId };
+                                      uploadInputRef.current?.click();
+                                    }}
+                                    className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md opacity-0 transition-all group-hover/srcard:opacity-100"
+                                  >
+                                    <Upload className="size-3.5" />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent side="top">{t("imagesCell.add")}</TooltipContent>
+                              </Tooltip>
+                            )}
+
+                            <Tooltip>
+                              <TooltipTrigger asChild>
                                 <button
                                   type="button"
-                                  title={t("imagesCell.remove")}
+                                  aria-label={t("jumpToNode")}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    project.stageTable.removeRowImage?.(row.uuid, img.uuid);
+                                    dataSource.jumpToNode(row.docId ?? dataSource.getDocId(), row.uuid);
                                   }}
-                                  className="bg-background/90 text-muted-foreground hover:bg-destructive hover:text-destructive-foreground border-border absolute top-1.5 right-1.5 flex size-5 cursor-pointer items-center justify-center rounded-full border opacity-0 shadow-xs transition-opacity group-hover/srimg:opacity-100"
+                                  className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md opacity-0 transition-all group-hover/srcard:opacity-100"
                                 >
-                                  <X className="size-3" />
+                                  <Crosshair className="size-3.5" />
                                 </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">{t("jumpToNode")}</TooltipContent>
+                            </Tooltip>
+
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  aria-label={t("views.editRecord")}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOpenRecord(row.uuid, row);
+                                  }}
+                                  className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-7 cursor-pointer items-center justify-center rounded-md opacity-0 transition-all group-hover/srcard:opacity-100"
+                                >
+                                  <Pencil className="size-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">{t("views.editRecord")}</TooltipContent>
+                            </Tooltip>
+
+                            {/* 右上角翻转卡片按钮（始终可见） */}
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <button
+                                  type="button"
+                                  data-sr-flip-btn={row.uuid}
+                                  aria-label={
+                                    isFlipped ? t("spacedRepetition.flipToFront") : t("spacedRepetition.flipToBack")
+                                  }
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toggleFlip(row.uuid);
+                                  }}
+                                  className={cn(
+                                    "flex size-7 cursor-pointer items-center justify-center rounded-md border transition-colors",
+                                    isFlipped
+                                      ? "border-primary/40 bg-primary/12 text-primary"
+                                      : "border-border/60 text-muted-foreground hover:bg-accent hover:text-foreground",
+                                  )}
+                                >
+                                  <RotateCw
+                                    className={cn("size-3.5 transition-transform", isFlipped && "rotate-180")}
+                                  />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">
+                                {isFlipped ? t("spacedRepetition.flipToFront") : t("spacedRepetition.flipToBack")}
+                              </TooltipContent>
+                            </Tooltip>
+                          </div>
+                        </div>
+
+                        {!isFlipped ? (
+                          /* ======================== 正面 ======================== */
+                          <div data-sr-front className="flex flex-1 flex-col gap-3 px-4 pt-1 pb-3.5">
+                            {/* 文字在上（双击可直接编辑） */}
+                            <div
+                              data-sr-front-text={row.uuid}
+                              title={row.editableText ? t("spacedRepetition.doubleClickToEdit") : undefined}
+                              onDoubleClick={(e) => {
+                                if (!row.editableText) return;
+                                e.stopPropagation();
+                                setTitleDraft(row.primaryText);
+                                setEditingTitleRowId(row.uuid);
+                              }}
+                              className={cn(
+                                "-mx-1.5 rounded-md px-1.5 py-1 transition-colors",
+                                row.editableText && !isEditingTitle && "hover:bg-accent/45 cursor-text",
+                              )}
+                            >
+                              {isEditingTitle ? (
+                                <div className="space-y-1" onClick={(e) => e.stopPropagation()}>
+                                  <textarea
+                                    autoFocus
+                                    data-sr-title-input={row.uuid}
+                                    value={titleDraft}
+                                    rows={Math.max(2, Math.min(8, titleDraft.split("\n").length + 1))}
+                                    onChange={(e) => setTitleDraft(e.target.value)}
+                                    onBlur={() => commitTitleEdit(row)}
+                                    onKeyDown={(e) => {
+                                      e.stopPropagation();
+                                      if (e.key === "Escape") {
+                                        e.preventDefault();
+                                        setEditingTitleRowId(null);
+                                      } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                                        e.preventDefault();
+                                        commitTitleEdit(row);
+                                      }
+                                    }}
+                                    placeholder={t("views.unnamedRecord")}
+                                    className="border-primary/70 bg-background text-foreground focus:ring-primary/30 w-full resize-y rounded-md border px-2.5 py-1.5 text-[15px] leading-relaxed outline-none focus:ring-2"
+                                  />
+                                  <div className="text-muted-foreground text-[10px]">
+                                    {t("spacedRepetition.inlineTextHint")}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div
+                                  className={cn(
+                                    "text-[15px] leading-relaxed font-medium break-words whitespace-pre-wrap",
+                                    titleInfo.isPlaceholder && "text-muted-foreground/55 font-normal",
+                                  )}
+                                >
+                                  {titleInfo.text}
+                                </div>
                               )}
                             </div>
-                          ))}
-                        </div>
-                      )}
 
-                      {/* 正面附加属性（支持上下/左右拖动排序，同行自动等分填满宽度，双击原地编辑） */}
-                      {orderedFrontFieldRows.length > 0 && (
-                        <div
-                          data-sr-sortable-container={`${row.uuid}:front`}
-                          data-sr-front-fields={row.uuid}
-                          className="border-border/50 space-y-2 border-t pt-2"
-                        >
-                          {orderedFrontFieldRows.map((rowFieldIds, rowIdx) => {
-                            const containerKey = `${row.uuid}:front`;
-                            const rowHasTopDrop =
-                              fieldDragState?.containerKey === containerKey &&
-                              fieldDragState.position === "top" &&
-                              Boolean(fieldDragState.targetColId && rowFieldIds.includes(fieldDragState.targetColId));
-                            const rowHasBottomDrop =
-                              fieldDragState?.containerKey === containerKey &&
-                              fieldDragState.position === "bottom" &&
-                              Boolean(fieldDragState.targetColId && rowFieldIds.includes(fieldDragState.targetColId));
-                            return (
+                            {/* 图片在下 */}
+                            {row.images.length > 0 && (
                               <div
-                                key={`${rowIdx}:${rowFieldIds.join(",")}`}
-                                data-sr-field-layout-row={rowFieldIds.join(",")}
-                                style={{ gridTemplateColumns: `repeat(${rowFieldIds.length}, minmax(0, 1fr))` }}
-                                className="relative grid gap-2"
+                                data-sr-front-images={row.uuid}
+                                className={cn("grid gap-2", row.images.length > 1 ? "grid-cols-2" : "grid-cols-1")}
                               >
-                                {rowHasTopDrop && (
-                                  <div className="bg-primary pointer-events-none absolute -top-1 right-0 left-0 z-20 h-0.5 rounded-full" />
-                                )}
-                                {rowHasBottomDrop && (
-                                  <div className="bg-primary pointer-events-none absolute right-0 -bottom-1 left-0 z-20 h-0.5 rounded-full" />
-                                )}
-                                {rowFieldIds.map((cid) => {
-                                  const customCol = customColumnMap.get(cid);
-                                  if (!customCol) return null;
-                                  const isDraggingThis =
+                                {row.images.map((img) => (
+                                  <div
+                                    key={img.uuid}
+                                    className="group/srimg bg-muted/25 border-border/50 relative overflow-hidden rounded-lg border"
+                                  >
+                                    <StageTableAttachmentThumb
+                                      project={project}
+                                      dataSource={dataSource}
+                                      docId={row.docId}
+                                      attachmentId={img.attachmentId}
+                                      className={cn(
+                                        "w-full rounded-none border-0",
+                                        row.images.length === 1
+                                          ? columns === 1
+                                            ? "h-auto max-h-96 min-h-32"
+                                            : "h-auto max-h-64 min-h-28"
+                                          : "h-40",
+                                        imageFit === "contain" ? "object-contain p-1" : "object-cover",
+                                      )}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onPreviewImage(img.attachmentId, row.uuid, row.docId);
+                                      }}
+                                    />
+                                    {row.canEditImages !== false && (
+                                      <button
+                                        type="button"
+                                        title={t("imagesCell.remove")}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          void dataSource.removeRowImage(row.uuid, img.uuid, row.docId);
+                                        }}
+                                        className="bg-background/90 text-muted-foreground hover:bg-destructive hover:text-destructive-foreground border-border absolute top-1.5 right-1.5 flex size-5 cursor-pointer items-center justify-center rounded-full border opacity-0 shadow-xs transition-opacity group-hover/srimg:opacity-100"
+                                      >
+                                        <X className="size-3" />
+                                      </button>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* 正面附加属性（支持上下/左右拖动排序，同行自动等分填满宽度，双击原地编辑） */}
+                            {orderedFrontFieldRows.length > 0 && (
+                              <div
+                                data-sr-sortable-container={`${row.uuid}:front`}
+                                data-sr-front-fields={row.uuid}
+                                className="border-border/50 space-y-2 border-t pt-2"
+                              >
+                                {orderedFrontFieldRows.map((rowFieldIds, rowIdx) => {
+                                  const containerKey = `${row.uuid}:front`;
+                                  const rowHasTopDrop =
                                     fieldDragState?.containerKey === containerKey &&
-                                    fieldDragState.draggedColId === cid;
-                                  const showDropLeft =
+                                    fieldDragState.position === "top" &&
+                                    Boolean(
+                                      fieldDragState.targetColId && rowFieldIds.includes(fieldDragState.targetColId),
+                                    );
+                                  const rowHasBottomDrop =
                                     fieldDragState?.containerKey === containerKey &&
-                                    fieldDragState.targetColId === cid &&
-                                    fieldDragState.position === "left";
-                                  const showDropRight =
-                                    fieldDragState?.containerKey === containerKey &&
-                                    fieldDragState.targetColId === cid &&
-                                    fieldDragState.position === "right";
+                                    fieldDragState.position === "bottom" &&
+                                    Boolean(
+                                      fieldDragState.targetColId && rowFieldIds.includes(fieldDragState.targetColId),
+                                    );
                                   return (
                                     <div
-                                      key={cid}
-                                      data-sr-sortable-item={cid}
-                                      className={cn(
-                                        "group/srfielditem bg-muted/15 border-border/45 relative min-w-0 rounded-lg border px-2.5 py-0.5 transition-all",
-                                        isDraggingThis && "border-primary/50 bg-primary/5 opacity-45",
-                                      )}
+                                      key={`${rowIdx}:${rowFieldIds.join(",")}`}
+                                      data-sr-field-layout-row={rowFieldIds.join(",")}
+                                      style={{ gridTemplateColumns: `repeat(${rowFieldIds.length}, minmax(0, 1fr))` }}
+                                      className="relative grid gap-2"
                                     >
-                                      {showDropLeft && (
-                                        <div className="bg-primary pointer-events-none absolute top-0.5 bottom-0.5 -left-1.5 z-20 w-1 rounded-full" />
+                                      {rowHasTopDrop && (
+                                        <div className="bg-primary pointer-events-none absolute -top-1 right-0 left-0 z-20 h-0.5 rounded-full" />
                                       )}
-                                      {showDropRight && (
-                                        <div className="bg-primary pointer-events-none absolute top-0.5 -right-1.5 bottom-0.5 z-20 w-1 rounded-full" />
+                                      {rowHasBottomDrop && (
+                                        <div className="bg-primary pointer-events-none absolute right-0 -bottom-1 left-0 z-20 h-0.5 rounded-full" />
                                       )}
-                                      <SpacedRepetitionInlineField
+                                      {rowFieldIds.map((cid) => {
+                                        const customCol = customColumnMap.get(cid);
+                                        if (!customCol) return null;
+                                        const isDraggingThis =
+                                          fieldDragState?.containerKey === containerKey &&
+                                          fieldDragState.draggedColId === cid;
+                                        const showDropLeft =
+                                          fieldDragState?.containerKey === containerKey &&
+                                          fieldDragState.targetColId === cid &&
+                                          fieldDragState.position === "left";
+                                        const showDropRight =
+                                          fieldDragState?.containerKey === containerKey &&
+                                          fieldDragState.targetColId === cid &&
+                                          fieldDragState.position === "right";
+                                        return (
+                                          <div
+                                            key={cid}
+                                            data-sr-sortable-item={cid}
+                                            className={cn(
+                                              "group/srfielditem bg-muted/15 border-border/45 relative min-w-0 rounded-lg border px-2.5 py-0.5 transition-all",
+                                              isDraggingThis && "border-primary/50 bg-primary/5 opacity-45",
+                                            )}
+                                          >
+                                            {showDropLeft && (
+                                              <div className="bg-primary pointer-events-none absolute top-0.5 bottom-0.5 -left-1.5 z-20 w-1 rounded-full" />
+                                            )}
+                                            {showDropRight && (
+                                              <div className="bg-primary pointer-events-none absolute top-0.5 -right-1.5 bottom-0.5 z-20 w-1 rounded-full" />
+                                            )}
+                                            <SpacedRepetitionInlineField
+                                              project={project}
+                                              dataSource={dataSource}
+                                              row={row}
+                                              columnId={cid}
+                                              customCol={customCol}
+                                              label={getColumnLabel(cid)}
+                                              onPreviewImage={onPreviewImage}
+                                              onOpenFormulaEditor={onOpenFormulaEditor}
+                                              multiline={customCol.protectedRole === "notes"}
+                                              onDragHandlePointerDown={
+                                                orderedFrontFieldIds.length > 1
+                                                  ? (e) =>
+                                                      startFieldDrag(e, {
+                                                        containerKey,
+                                                        side: "front",
+                                                        colId: cid,
+                                                        layout: "rows2d",
+                                                      })
+                                                  : undefined
+                                              }
+                                              t={t}
+                                            />
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            {/* 底部三个等大图标作答按钮：从左到右 对-闭卷（绿）| 对-开卷（绿）| 错（红） */}
+                            <div
+                              data-sr-answer-actions={row.uuid}
+                              className="border-border/55 mt-auto grid grid-cols-3 gap-2 border-t pt-3"
+                            >
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    type="button"
+                                    data-sr-answer-btn="correct_closed"
+                                    aria-label={t("spacedRepetition.answerCorrectClosed")}
+                                    aria-pressed={answered?.choice === "correct_closed"}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleAnswer(row, "correct_closed");
+                                    }}
+                                    className={cn(
+                                      "flex h-11 w-full cursor-pointer items-center justify-center rounded-lg border transition-all",
+                                      answered?.choice === "correct_closed"
+                                        ? "border-emerald-600 bg-emerald-600 text-white shadow-sm ring-2 ring-emerald-500/35"
+                                        : "border-emerald-500/35 bg-emerald-500/10 text-emerald-600 hover:border-emerald-500/60 hover:bg-emerald-500/20 dark:text-emerald-400",
+                                    )}
+                                  >
+                                    <AnswerClosedBookCorrectIcon />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent side="bottom">
+                                  {t("spacedRepetition.answerCorrectClosedTooltip")}
+                                </TooltipContent>
+                              </Tooltip>
+
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    type="button"
+                                    data-sr-answer-btn="correct_open"
+                                    aria-label={t("spacedRepetition.answerCorrectOpen")}
+                                    aria-pressed={answered?.choice === "correct_open"}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleAnswer(row, "correct_open");
+                                    }}
+                                    className={cn(
+                                      "flex h-11 w-full cursor-pointer items-center justify-center rounded-lg border transition-all",
+                                      answered?.choice === "correct_open"
+                                        ? "border-emerald-600 bg-emerald-600 text-white shadow-sm ring-2 ring-emerald-500/35"
+                                        : "border-emerald-500/35 bg-emerald-500/10 text-emerald-600 hover:border-emerald-500/60 hover:bg-emerald-500/20 dark:text-emerald-400",
+                                    )}
+                                  >
+                                    <AnswerOpenBookCorrectIcon />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent side="bottom">
+                                  {t("spacedRepetition.answerCorrectOpenTooltip")}
+                                </TooltipContent>
+                              </Tooltip>
+
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <button
+                                    type="button"
+                                    data-sr-answer-btn="wrong"
+                                    aria-label={t("spacedRepetition.answerWrong")}
+                                    aria-pressed={answered?.choice === "wrong"}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleAnswer(row, "wrong");
+                                    }}
+                                    className={cn(
+                                      "flex h-11 w-full cursor-pointer items-center justify-center rounded-lg border transition-all",
+                                      answered?.choice === "wrong"
+                                        ? "border-rose-600 bg-rose-600 text-white shadow-sm ring-2 ring-rose-500/35"
+                                        : "border-rose-500/35 bg-rose-500/10 text-rose-600 hover:border-rose-500/60 hover:bg-rose-500/20 dark:text-rose-400",
+                                    )}
+                                  >
+                                    <AnswerWrongIcon />
+                                  </button>
+                                </TooltipTrigger>
+                                <TooltipContent side="bottom">
+                                  {t("spacedRepetition.answerWrongTooltip")}
+                                </TooltipContent>
+                              </Tooltip>
+                            </div>
+                          </div>
+                        ) : (
+                          /* ======================== 背面：结构化信息 + 全部字段支持双击调整 ======================== */
+                          <div data-sr-back className="flex flex-1 flex-col gap-3 px-4 pt-1 pb-3.5 text-xs">
+                            {/* 背面顶部节点标题（双击可编辑） */}
+                            <div
+                              title={row.editableText ? t("spacedRepetition.doubleClickToEdit") : undefined}
+                              onDoubleClick={(e) => {
+                                if (!row.editableText) return;
+                                e.stopPropagation();
+                                setTitleDraft(row.primaryText);
+                                setEditingTitleRowId(row.uuid);
+                              }}
+                              className="border-border/60 border-b pb-2"
+                            >
+                              {isEditingTitle ? (
+                                <Input
+                                  autoFocus
+                                  data-sr-title-input={row.uuid}
+                                  value={titleDraft}
+                                  onChange={(e) => setTitleDraft(e.target.value)}
+                                  onBlur={() => commitTitleEdit(row)}
+                                  onKeyDown={(e) => {
+                                    e.stopPropagation();
+                                    if (e.key === "Escape") {
+                                      e.preventDefault();
+                                      setEditingTitleRowId(null);
+                                    } else if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      commitTitleEdit(row);
+                                    }
+                                  }}
+                                  className="border-primary/70 h-7 text-xs font-semibold"
+                                />
+                              ) : (
+                                <div
+                                  className={cn(
+                                    "line-clamp-2 text-sm font-semibold break-words",
+                                    titleInfo.isPlaceholder && "text-muted-foreground/60 font-normal",
+                                  )}
+                                >
+                                  {titleInfo.text}
+                                </div>
+                              )}
+                            </div>
+
+                            {/* 背面弹性多行属性排布：支持上下独立成行或左右并排，每行自动等分填满宽度 */}
+                            {orderedBackFieldRows.length > 0 && (
+                              <div
+                                data-sr-sortable-container={`${row.uuid}:back`}
+                                data-sr-back-fields={row.uuid}
+                                className="space-y-2"
+                              >
+                                {orderedBackFieldRows.map((rowFieldIds, rowIdx) => {
+                                  const containerKey = `${row.uuid}:back`;
+                                  const rowHasTopDrop =
+                                    fieldDragState?.containerKey === containerKey &&
+                                    fieldDragState.position === "top" &&
+                                    Boolean(
+                                      fieldDragState.targetColId && rowFieldIds.includes(fieldDragState.targetColId),
+                                    );
+                                  const rowHasBottomDrop =
+                                    fieldDragState?.containerKey === containerKey &&
+                                    fieldDragState.position === "bottom" &&
+                                    Boolean(
+                                      fieldDragState.targetColId && rowFieldIds.includes(fieldDragState.targetColId),
+                                    );
+                                  return (
+                                    <div
+                                      key={`${rowIdx}:${rowFieldIds.join(",")}`}
+                                      data-sr-field-layout-row={rowFieldIds.join(",")}
+                                      style={{ gridTemplateColumns: `repeat(${rowFieldIds.length}, minmax(0, 1fr))` }}
+                                      className="relative grid gap-2"
+                                    >
+                                      {rowHasTopDrop && (
+                                        <div className="bg-primary pointer-events-none absolute -top-1 right-0 left-0 z-20 h-0.5 rounded-full" />
+                                      )}
+                                      {rowHasBottomDrop && (
+                                        <div className="bg-primary pointer-events-none absolute right-0 -bottom-1 left-0 z-20 h-0.5 rounded-full" />
+                                      )}
+                                      {rowFieldIds.map((cid) => {
+                                        const customCol = customColumnMap.get(cid);
+                                        const isSystemTime = cid === "createdAt" || cid === "updatedAt";
+                                        if (!customCol && !isSystemTime) return null;
+                                        const isDraggingThis =
+                                          fieldDragState?.containerKey === containerKey &&
+                                          fieldDragState.draggedColId === cid;
+                                        const showDropLeft =
+                                          fieldDragState?.containerKey === containerKey &&
+                                          fieldDragState.targetColId === cid &&
+                                          fieldDragState.position === "left";
+                                        const showDropRight =
+                                          fieldDragState?.containerKey === containerKey &&
+                                          fieldDragState.targetColId === cid &&
+                                          fieldDragState.position === "right";
+                                        return (
+                                          <div
+                                            key={cid}
+                                            data-sr-sortable-item={cid}
+                                            data-sr-back-updated-at={cid === "updatedAt" ? row.uuid : undefined}
+                                            className={cn(
+                                              "group/srfielditem bg-muted/20 border-border/45 relative min-w-0 rounded-lg border px-2.5 py-0.5 transition-all",
+                                              isDraggingThis && "border-primary/50 bg-primary/5 opacity-45",
+                                            )}
+                                          >
+                                            {showDropLeft && (
+                                              <div className="bg-primary pointer-events-none absolute top-0.5 bottom-0.5 -left-1.5 z-20 w-1 rounded-full" />
+                                            )}
+                                            {showDropRight && (
+                                              <div className="bg-primary pointer-events-none absolute top-0.5 -right-1.5 bottom-0.5 z-20 w-1 rounded-full" />
+                                            )}
+                                            <SpacedRepetitionInlineField
+                                              project={project}
+                                              dataSource={dataSource}
+                                              row={row}
+                                              columnId={cid}
+                                              customCol={customCol}
+                                              label={getColumnLabel(cid)}
+                                              onPreviewImage={onPreviewImage}
+                                              onOpenFormulaEditor={onOpenFormulaEditor}
+                                              multiline={customCol?.protectedRole === "notes"}
+                                              onDragHandlePointerDown={
+                                                orderedBackFieldIds.length > 1
+                                                  ? (e) =>
+                                                      startFieldDrag(e, {
+                                                        containerKey,
+                                                        side: "back",
+                                                        colId: cid,
+                                                        layout: "rows2d",
+                                                      })
+                                                  : undefined
+                                              }
+                                              t={t}
+                                            />
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            {/* 拓扑关系只读摘要（若节点存在关联） */}
+                            {(["parents", "children", "outer", "inner"] as const).some((relCol) =>
+                              relCol === "outer" ? Boolean(row.outer) : row[relCol].length > 0,
+                            ) && (
+                              <div className="border-border/50 space-y-1.5 border-t pt-2">
+                                {(["parents", "children", "outer", "inner"] as const).map((relCol) => {
+                                  const hasVal = relCol === "outer" ? Boolean(row.outer) : row[relCol].length > 0;
+                                  if (!hasVal) return null;
+                                  return (
+                                    <div key={relCol} className="space-y-0.5">
+                                      <div className="text-muted-foreground flex items-center gap-1 text-[11px]">
+                                        <StageTableColumnIcon columnId={relCol} className="size-3" />
+                                        <span>{getColumnLabel(relCol)}</span>
+                                      </div>
+                                      <StageTableFieldValueDisplay
                                         project={project}
+                                        dataSource={dataSource}
                                         row={row}
-                                        columnId={cid}
-                                        customCol={customCol}
-                                        label={getColumnLabel(cid)}
-                                        onPreviewImage={onPreviewImage}
-                                        onOpenFormulaEditor={onOpenFormulaEditor}
-                                        multiline={customCol.protectedRole === "notes"}
-                                        onDragHandlePointerDown={
-                                          orderedFrontFieldIds.length > 1
-                                            ? (e) =>
-                                                startFieldDrag(e, {
-                                                  containerKey,
-                                                  side: "front",
-                                                  colId: cid,
-                                                  layout: "rows2d",
-                                                })
-                                            : undefined
-                                        }
+                                        columnId={relCol}
+                                        compact
                                         t={t}
                                       />
                                     </div>
                                   );
                                 })}
                               </div>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      {/* 底部三个等大图标作答按钮：从左到右 对-闭卷（绿）| 对-开卷（绿）| 错（红） */}
-                      <div
-                        data-sr-answer-actions={row.uuid}
-                        className="border-border/55 mt-auto grid grid-cols-3 gap-2 border-t pt-3"
-                      >
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              type="button"
-                              data-sr-answer-btn="correct_closed"
-                              aria-label={t("spacedRepetition.answerCorrectClosed")}
-                              aria-pressed={answered?.choice === "correct_closed"}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleAnswer(row, "correct_closed");
-                              }}
-                              className={cn(
-                                "flex h-11 w-full cursor-pointer items-center justify-center rounded-lg border transition-all",
-                                answered?.choice === "correct_closed"
-                                  ? "border-emerald-600 bg-emerald-600 text-white shadow-sm ring-2 ring-emerald-500/35"
-                                  : "border-emerald-500/35 bg-emerald-500/10 text-emerald-600 hover:border-emerald-500/60 hover:bg-emerald-500/20 dark:text-emerald-400",
-                              )}
-                            >
-                              <AnswerClosedBookCorrectIcon />
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent side="bottom">
-                            {t("spacedRepetition.answerCorrectClosedTooltip")}
-                          </TooltipContent>
-                        </Tooltip>
-
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              type="button"
-                              data-sr-answer-btn="correct_open"
-                              aria-label={t("spacedRepetition.answerCorrectOpen")}
-                              aria-pressed={answered?.choice === "correct_open"}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleAnswer(row, "correct_open");
-                              }}
-                              className={cn(
-                                "flex h-11 w-full cursor-pointer items-center justify-center rounded-lg border transition-all",
-                                answered?.choice === "correct_open"
-                                  ? "border-emerald-600 bg-emerald-600 text-white shadow-sm ring-2 ring-emerald-500/35"
-                                  : "border-emerald-500/35 bg-emerald-500/10 text-emerald-600 hover:border-emerald-500/60 hover:bg-emerald-500/20 dark:text-emerald-400",
-                              )}
-                            >
-                              <AnswerOpenBookCorrectIcon />
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent side="bottom">
-                            {t("spacedRepetition.answerCorrectOpenTooltip")}
-                          </TooltipContent>
-                        </Tooltip>
-
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              type="button"
-                              data-sr-answer-btn="wrong"
-                              aria-label={t("spacedRepetition.answerWrong")}
-                              aria-pressed={answered?.choice === "wrong"}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleAnswer(row, "wrong");
-                              }}
-                              className={cn(
-                                "flex h-11 w-full cursor-pointer items-center justify-center rounded-lg border transition-all",
-                                answered?.choice === "wrong"
-                                  ? "border-rose-600 bg-rose-600 text-white shadow-sm ring-2 ring-rose-500/35"
-                                  : "border-rose-500/35 bg-rose-500/10 text-rose-600 hover:border-rose-500/60 hover:bg-rose-500/20 dark:text-rose-400",
-                              )}
-                            >
-                              <AnswerWrongIcon />
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent side="bottom">{t("spacedRepetition.answerWrongTooltip")}</TooltipContent>
-                        </Tooltip>
-                      </div>
-                    </div>
-                  ) : (
-                    /* ======================== 背面：结构化信息 + 全部字段支持双击调整 ======================== */
-                    <div data-sr-back className="flex flex-1 flex-col gap-3 px-4 pt-1 pb-3.5 text-xs">
-                      {/* 背面顶部节点标题（双击可编辑） */}
-                      <div
-                        title={row.editableText ? t("spacedRepetition.doubleClickToEdit") : undefined}
-                        onDoubleClick={(e) => {
-                          if (!row.editableText) return;
-                          e.stopPropagation();
-                          setTitleDraft(row.primaryText);
-                          setEditingTitleRowId(row.uuid);
-                        }}
-                        className="border-border/60 border-b pb-2"
-                      >
-                        {isEditingTitle ? (
-                          <Input
-                            autoFocus
-                            data-sr-title-input={row.uuid}
-                            value={titleDraft}
-                            onChange={(e) => setTitleDraft(e.target.value)}
-                            onBlur={() => commitTitleEdit(row)}
-                            onKeyDown={(e) => {
-                              e.stopPropagation();
-                              if (e.key === "Escape") {
-                                e.preventDefault();
-                                setEditingTitleRowId(null);
-                              } else if (e.key === "Enter") {
-                                e.preventDefault();
-                                commitTitleEdit(row);
-                              }
-                            }}
-                            className="border-primary/70 h-7 text-xs font-semibold"
-                          />
-                        ) : (
-                          <div
-                            className={cn(
-                              "line-clamp-2 text-sm font-semibold break-words",
-                              titleInfo.isPlaceholder && "text-muted-foreground/60 font-normal",
                             )}
-                          >
-                            {titleInfo.text}
+
+                            {/* 背面底部提示与快速添加背面属性 */}
+                            <div className="text-muted-foreground/75 border-border/45 mt-auto flex items-center justify-between gap-2 border-t pt-2 text-[11px]">
+                              <AddSpacedRepetitionFieldPopover
+                                side="back"
+                                onCreate={(name, type) => handleCreateCustomSideField("back", name, type, row.uuid)}
+                                t={t}
+                                trigger={
+                                  <button
+                                    type="button"
+                                    data-sr-card-add-back-field={row.uuid}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="text-primary hover:bg-accent inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors"
+                                  >
+                                    <Plus className="size-3" />
+                                    <span>{t("spacedRepetition.addBackFieldBtn")}</span>
+                                  </button>
+                                }
+                              />
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleFlip(row.uuid);
+                                }}
+                                className="text-primary inline-flex cursor-pointer items-center gap-1 hover:underline"
+                              >
+                                <RotateCw className="size-3" />
+                                <span>{t("spacedRepetition.flipToFront")}</span>
+                              </button>
+                            </div>
                           </div>
                         )}
-                      </div>
-
-                      {/* 背面弹性多行属性排布：支持上下独立成行或左右并排，每行自动等分填满宽度 */}
-                      {orderedBackFieldRows.length > 0 && (
-                        <div
-                          data-sr-sortable-container={`${row.uuid}:back`}
-                          data-sr-back-fields={row.uuid}
-                          className="space-y-2"
-                        >
-                          {orderedBackFieldRows.map((rowFieldIds, rowIdx) => {
-                            const containerKey = `${row.uuid}:back`;
-                            const rowHasTopDrop =
-                              fieldDragState?.containerKey === containerKey &&
-                              fieldDragState.position === "top" &&
-                              Boolean(fieldDragState.targetColId && rowFieldIds.includes(fieldDragState.targetColId));
-                            const rowHasBottomDrop =
-                              fieldDragState?.containerKey === containerKey &&
-                              fieldDragState.position === "bottom" &&
-                              Boolean(fieldDragState.targetColId && rowFieldIds.includes(fieldDragState.targetColId));
-                            return (
-                              <div
-                                key={`${rowIdx}:${rowFieldIds.join(",")}`}
-                                data-sr-field-layout-row={rowFieldIds.join(",")}
-                                style={{ gridTemplateColumns: `repeat(${rowFieldIds.length}, minmax(0, 1fr))` }}
-                                className="relative grid gap-2"
-                              >
-                                {rowHasTopDrop && (
-                                  <div className="bg-primary pointer-events-none absolute -top-1 right-0 left-0 z-20 h-0.5 rounded-full" />
-                                )}
-                                {rowHasBottomDrop && (
-                                  <div className="bg-primary pointer-events-none absolute right-0 -bottom-1 left-0 z-20 h-0.5 rounded-full" />
-                                )}
-                                {rowFieldIds.map((cid) => {
-                                  const customCol = customColumnMap.get(cid);
-                                  const isSystemTime = cid === "createdAt" || cid === "updatedAt";
-                                  if (!customCol && !isSystemTime) return null;
-                                  const isDraggingThis =
-                                    fieldDragState?.containerKey === containerKey &&
-                                    fieldDragState.draggedColId === cid;
-                                  const showDropLeft =
-                                    fieldDragState?.containerKey === containerKey &&
-                                    fieldDragState.targetColId === cid &&
-                                    fieldDragState.position === "left";
-                                  const showDropRight =
-                                    fieldDragState?.containerKey === containerKey &&
-                                    fieldDragState.targetColId === cid &&
-                                    fieldDragState.position === "right";
-                                  return (
-                                    <div
-                                      key={cid}
-                                      data-sr-sortable-item={cid}
-                                      data-sr-back-updated-at={cid === "updatedAt" ? row.uuid : undefined}
-                                      className={cn(
-                                        "group/srfielditem bg-muted/20 border-border/45 relative min-w-0 rounded-lg border px-2.5 py-0.5 transition-all",
-                                        isDraggingThis && "border-primary/50 bg-primary/5 opacity-45",
-                                      )}
-                                    >
-                                      {showDropLeft && (
-                                        <div className="bg-primary pointer-events-none absolute top-0.5 bottom-0.5 -left-1.5 z-20 w-1 rounded-full" />
-                                      )}
-                                      {showDropRight && (
-                                        <div className="bg-primary pointer-events-none absolute top-0.5 -right-1.5 bottom-0.5 z-20 w-1 rounded-full" />
-                                      )}
-                                      <SpacedRepetitionInlineField
-                                        project={project}
-                                        row={row}
-                                        columnId={cid}
-                                        customCol={customCol}
-                                        label={getColumnLabel(cid)}
-                                        onPreviewImage={onPreviewImage}
-                                        onOpenFormulaEditor={onOpenFormulaEditor}
-                                        multiline={customCol?.protectedRole === "notes"}
-                                        onDragHandlePointerDown={
-                                          orderedBackFieldIds.length > 1
-                                            ? (e) =>
-                                                startFieldDrag(e, {
-                                                  containerKey,
-                                                  side: "back",
-                                                  colId: cid,
-                                                  layout: "rows2d",
-                                                })
-                                            : undefined
-                                        }
-                                        t={t}
-                                      />
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      {/* 拓扑关系只读摘要（若节点存在关联） */}
-                      {(["parents", "children", "outer", "inner"] as const).some((relCol) =>
-                        relCol === "outer" ? Boolean(row.outer) : row[relCol].length > 0,
-                      ) && (
-                        <div className="border-border/50 space-y-1.5 border-t pt-2">
-                          {(["parents", "children", "outer", "inner"] as const).map((relCol) => {
-                            const hasVal = relCol === "outer" ? Boolean(row.outer) : row[relCol].length > 0;
-                            if (!hasVal) return null;
-                            return (
-                              <div key={relCol} className="space-y-0.5">
-                                <div className="text-muted-foreground flex items-center gap-1 text-[11px]">
-                                  <StageTableColumnIcon columnId={relCol} className="size-3" />
-                                  <span>{getColumnLabel(relCol)}</span>
-                                </div>
-                                <StageTableFieldValueDisplay
-                                  project={project}
-                                  row={row}
-                                  columnId={relCol}
-                                  compact
-                                  t={t}
-                                />
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      {/* 背面底部提示与快速添加背面属性 */}
-                      <div className="text-muted-foreground/75 border-border/45 mt-auto flex items-center justify-between gap-2 border-t pt-2 text-[11px]">
-                        <AddSpacedRepetitionFieldPopover
-                          side="back"
-                          onCreate={(name, type) => handleCreateCustomSideField("back", name, type, row.uuid)}
-                          t={t}
-                          trigger={
-                            <button
-                              type="button"
-                              data-sr-card-add-back-field={row.uuid}
-                              onClick={(e) => e.stopPropagation()}
-                              className="text-primary hover:bg-accent inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium transition-colors"
-                            >
-                              <Plus className="size-3" />
-                              <span>{t("spacedRepetition.addBackFieldBtn")}</span>
-                            </button>
-                          }
-                        />
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleFlip(row.uuid);
-                          }}
-                          className="text-primary inline-flex cursor-pointer items-center gap-1 hover:underline"
-                        >
-                          <RotateCw className="size-3" />
-                          <span>{t("spacedRepetition.flipToFront")}</span>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </article>
+                      </article>
+                    );
+                  })}
+                </div>
               );
             })}
           </div>

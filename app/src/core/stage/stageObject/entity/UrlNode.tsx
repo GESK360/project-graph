@@ -121,6 +121,9 @@ export class UrlNode extends ConnectableEntity {
   }
 
   rename(title: string): void {
+    if (this.title !== title) {
+      this.project?.docCommandBus?.markSemanticDirty(this);
+    }
     this.title = title;
     this.adjustSizeByText();
   }
@@ -130,5 +133,6 @@ export class UrlNode extends ConnectableEntity {
     newSize.x = Math.max(newSize.x, UrlNode.width);
     newSize.y = Math.max(newSize.y, UrlNode.height);
     this.collisionBox.shapes[0] = new Rectangle(this.rectangle.location.clone(), newSize);
+    this.project?.stageManager?.updateSpatialIndex?.(this);
   }
 }

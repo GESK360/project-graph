@@ -85,6 +85,8 @@ function createConversionEditor() {
 
 let conversionEditor: ReturnType<typeof createConversionEditor> | undefined;
 
+const sharedDetailsCacheMap = new WeakMap<Value, { markdown: string; stageText: string }>();
+
 /**
  * 详细信息管理器
  */
@@ -118,15 +120,13 @@ export class DetailsManager {
     }
   }
 
-  private cacheMap = new WeakMap<Value, { markdown: string; stageText: string }>();
-
   private getCachedDetails() {
     const details = this.entity.details;
-    let cached = this.cacheMap.get(details);
+    let cached = sharedDetailsCacheMap.get(details);
     if (!cached) {
       const markdown = DetailsManager.detailsToMarkdown(details);
       cached = { markdown, stageText: markdown.replace("\n\n", "\n") };
-      this.cacheMap.set(details, cached);
+      sharedDetailsCacheMap.set(details, cached);
     }
     return cached;
   }

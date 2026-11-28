@@ -2,6 +2,7 @@ import { FileSystemProviderCollab } from "@/core/fileSystemProvider/FileSystemPr
 import { FileSystemProviderDraft } from "@/core/fileSystemProvider/FileSystemProviderDraft";
 import { FileSystemProviderFile } from "@/core/fileSystemProvider/FileSystemProviderFile";
 import { Project } from "@/core/Project";
+import { DocCommandBus } from "@/core/sqlite/DocCommandBus";
 import { CollaborationService } from "@/core/service/collaboration/CollaborationService";
 import { CurveRenderer } from "@/core/render/canvas2d/basicRenderer/curveRenderer";
 import { ImageRenderer } from "@/core/render/canvas2d/basicRenderer/ImageRenderer";
@@ -85,6 +86,7 @@ import { ReferenceManager } from "./stage/stageManager/concreteMethods/StageRefe
  * @param project
  */
 export function loadAllServicesBeforeInit(project: Project): void {
+  project.loadService(DocCommandBus);
   project.registerFileSystemProvider("file", FileSystemProviderFile);
   project.registerFileSystemProvider("draft", FileSystemProviderDraft);
   project.registerFileSystemProvider("collab", FileSystemProviderCollab);

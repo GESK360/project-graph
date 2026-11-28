@@ -10,6 +10,7 @@ import { id, passExtraAtArg1, passObject, serializable } from "@graphif/serializ
 import { Rectangle } from "@graphif/shapes";
 import type { Value } from "platejs";
 import type { TableFields } from "@/types/table";
+import type { ImageBitmapConsumer } from "@/core/sqlite/ImageBitmapLruCache";
 
 type ImageNodeOptions = {
   uuid?: string;
@@ -21,6 +22,8 @@ type ImageNodeOptions = {
   createdAt?: number;
   updatedAt?: number;
   tableFields?: TableFields;
+  /** 为 true 时延迟到进入视口（含 1 屏缓冲）再按需解码 ImageBitmap */
+  deferBitmapLoad?: boolean;
 };
 
 /**
@@ -39,7 +42,7 @@ type ImageNodeOptions = {
  */
 @passExtraAtArg1
 @passObject
-export class ImageNode extends ConnectableEntity implements ResizeAble {
+export class ImageNode extends ConnectableEntity implements ResizeAble, ImageBitmapConsumer {
   isHiddenBySectionCollapse: boolean = false;
   @id
   @serializable
@@ -72,6 +75,8 @@ export class ImageNode extends ConnectableEntity implements ResizeAble {
   }
 
   bitmap: ImageBitmap | undefined;
+  private bitmapManagedByCache = false;
+  private loadingFromCache = false;
   private disposed = false;
   private readonly pendingBitmapTasks = new Set<Promise<void>>();
   state: "loading" | "success" | "notFound" = "loading";
@@ -88,6 +93,7 @@ export class ImageNode extends ConnectableEntity implements ResizeAble {
       createdAt,
       updatedAt,
       tableFields,
+      deferBitmapLoad = false,
     }: ImageNodeOptions,
     public unknown = false,
     public onReady?: () => void,
@@ -101,15 +107,130 @@ export class ImageNode extends ConnectableEntity implements ResizeAble {
     this.scale = scale;
     this.isBackground = isBackground;
 
-    const blob = project.attachments.get(attachmentId);
-    if (!blob) {
+    const blob = project.attachments?.get?.(attachmentId);
+    const mediaUrl = !blob ? project.getAttachmentMediaUrl?.(attachmentId) : null;
+    if (!blob && !mediaUrl) {
+      this.state = "notFound";
+      return;
+    }
+
+    // 若缓存中已存在解码好的位图，立即零拷贝复用
+    const cached = project.imageBitmapCache?.registerConsumer(attachmentId, this);
+    if (cached) {
+      this.bitmap = cached;
+      this.bitmapManagedByCache = true;
+      this.state = "success";
+      const rect = this.collisionBox.getRectangle();
+      if (rect.size.x <= 0 || rect.size.y <= 0) {
+        this.scaleUpdate(0);
+      }
+      this.onReady?.();
+      return;
+    }
+
+    if (project.isOffscreen || (deferBitmapLoad && project.imageBitmapCache)) {
+      this.state = "loading";
+      return;
+    }
+
+    this.ensureBitmapLoaded();
+  }
+
+  public onBitmapEvicted(attachmentId: string): void {
+    if (this.attachmentId !== attachmentId || !this.bitmapManagedByCache) {
+      return;
+    }
+    this.bitmap = undefined;
+    this.bitmapManagedByCache = false;
+    this.loadingFromCache = false;
+    if (!this.disposed) {
+      this.state = "loading";
+    }
+  }
+
+  /**
+   * 视口驱动按需解码：进入视口 + 1 屏缓冲时触发；命中 LRU 缓存时 O(1) 返回。
+   */
+  public ensureBitmapLoaded(frameId = 0): void {
+    if (this.disposed || !this.attachmentId || this.project.isOffscreen) return;
+    if (this.bitmap && this.state === "success") {
+      if (this.bitmapManagedByCache) {
+        this.project.imageBitmapCache?.markVisible(this.attachmentId, frameId);
+      }
+      return;
+    }
+    if (this.loadingFromCache) {
+      this.project.imageBitmapCache?.markVisible(this.attachmentId, frameId);
+      return;
+    }
+
+    const blob = this.project.attachments?.get?.(this.attachmentId);
+    const mediaUrl = !blob ? this.project.getAttachmentMediaUrl?.(this.attachmentId) : null;
+    if (!blob && !mediaUrl) {
       this.state = "notFound";
       return;
     }
     if (typeof createImageBitmap === "undefined") return;
-    this.loadBitmap(createImageBitmap(blob), () => {
+
+    const decode = () =>
+      blob
+        ? createImageBitmap(blob)
+        : fetch(mediaUrl!)
+            .then((response) => {
+              if (!response.ok) {
+                throw new Error(`flux-media 加载图片失败 (${response.status})`);
+              }
+              return response.blob();
+            })
+            .then((fetchedBlob) => createImageBitmap(fetchedBlob));
+
+    const cache = this.project.imageBitmapCache;
+    if (cache) {
+      const hit = cache.registerConsumer(this.attachmentId, this, frameId);
+      if (hit) {
+        this.bitmap = hit;
+        this.bitmapManagedByCache = true;
+        this.state = "success";
+        return;
+      }
+      this.loadingFromCache = true;
+      const attId = this.attachmentId;
+      const task = cache
+        .acquire(attId, decode, this, frameId)
+        .then((bitmap) => {
+          this.loadingFromCache = false;
+          if (this.disposed || this.attachmentId !== attId) {
+            return;
+          }
+          if (!this.bitmapManagedByCache) {
+            this.bitmap?.close();
+          }
+          this.bitmap = bitmap;
+          this.bitmapManagedByCache = true;
+          this.state = "success";
+          const rect = this.collisionBox.getRectangle();
+          if (rect.size.x <= 0 || rect.size.y <= 0) {
+            this.scaleUpdate(0);
+          }
+          this.onReady?.();
+          if (!this.project.isOffscreen && (!this.project.canvas?.element || this.project.canvas.element.isConnected)) {
+            this.project.loop?.();
+          }
+        })
+        .catch((error) => {
+          this.loadingFromCache = false;
+          throw error;
+        });
+      this.pendingBitmapTasks.add(task);
+      void task.then(
+        () => this.pendingBitmapTasks.delete(task),
+        (error) => window.dispatchEvent(new ErrorEvent("error", { error })),
+      );
+      return;
+    }
+
+    this.loadBitmap(decode(), () => {
       this.state = "success";
-      // 设置碰撞箱
       this.scaleUpdate(0);
       this.onReady?.();
     });
@@ -121,8 +242,11 @@ export class ImageNode extends ConnectableEntity implements ResizeAble {
         bitmap.close();
         return;
       }
-      this.bitmap?.close();
+      if (!this.bitmapManagedByCache) {
+        this.bitmap?.close();
+      }
       this.bitmap = bitmap;
+      this.bitmapManagedByCache = false;
       onLoaded();
     });
     this.pendingBitmapTasks.add(task);
@@ -135,7 +259,12 @@ export class ImageNode extends ConnectableEntity implements ResizeAble {
   async dispose(): Promise<void> {
     this.disposed = true;
     const results = await Promise.allSettled(this.pendingBitmapTasks);
-    this.bitmap?.close();
+    if (this.bitmapManagedByCache) {
+      this.project.imageBitmapCache?.unregisterConsumer(this.attachmentId, this);
+      this.bitmapManagedByCache = false;
+    } else {
+      this.bitmap?.close();
+    }
     this.bitmap = undefined;
     const errors = results
       .filter((result): result is PromiseRejectedResult => result.status === "rejected")
@@ -155,6 +284,8 @@ export class ImageNode extends ConnectableEntity implements ResizeAble {
     this.collisionBox = new CollisionBox([
       new Rectangle(this.rectangle.location, new Vector(this.bitmap.width, this.bitmap.height).multiply(this.scale)),
     ]);
+    this.project?.stageManager?.updateSpatialIndex?.(this);
+    this.project?.docCommandBus?.markStyleDirty(this);
     this.updateFatherSectionByMove();
   }
 
@@ -283,8 +414,10 @@ export class ImageNode extends ConnectableEntity implements ResizeAble {
     });
   }
 
-  compressImage() {
-    const blob = this.project.attachments.get(this.attachmentId);
+  async compressImage() {
+    const blob =
+      this.project.attachments?.get?.(this.attachmentId) ??
+      (await this.project.readAttachmentBlob?.(this.attachmentId));
     if (!blob) {
       toast.error("无法获取图片数据");
       return;

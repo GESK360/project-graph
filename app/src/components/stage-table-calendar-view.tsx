@@ -12,6 +12,7 @@ import {
 } from "@/components/stage-table-views-shared";
 import type { Project } from "@/core/Project";
 import type { StageTableRow } from "@/core/service/dataManageService/stageTableService/StageTableService";
+import type { TableDataSource } from "@/core/service/dataManageService/stageTableService/TableDataSource";
 import {
   addDaysToDateKey,
   diffCalendarDays,
@@ -31,6 +32,8 @@ import {
   type TableViewSchema,
 } from "@/types/table";
 import { cn } from "@/utils/cn";
+import { createSafeObserveElementRect } from "@/components/stage-table-scroll-container";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   CalendarDays,
   Check,
@@ -42,7 +45,9 @@ import {
   UnfoldVertical,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+const OBSERVE_CALENDAR_UNDATED_RECT = createSafeObserveElementRect({ width: 224, height: 480 });
 
 const CELL_MIN_HEIGHT_CLASS: Record<CalendarCellHeight, string> = {
   compact: "min-h-22",
@@ -59,6 +64,8 @@ function getStartOfWeek(date: Date, weekStartsOn: 0 | 1): Date {
 
 export function StageTableCalendarView({
   project,
+  dataSource,
+  dataRevision = 0,
   activeView,
   allRows,
   rows,
@@ -78,7 +85,9 @@ export function StageTableCalendarView({
   onPreviewImage,
   t,
 }: {
-  project: Project;
+  project?: Project | null;
+  dataSource: TableDataSource;
+  dataRevision?: number;
   activeView: TableViewSchema;
   allRows: readonly StageTableRow[];
   rows: readonly StageTableRow[];
@@ -94,8 +103,8 @@ export function StageTableCalendarView({
   selectedRowIds: ReadonlySet<string>;
   getColumnLabel: (colId: string) => string;
   onSelectRows: (uuids: string[], focusCamera?: boolean) => void;
-  onOpenRecord: (rowUuid: string) => void;
-  onPreviewImage: (attachmentId: string, rowUuid?: string) => void;
+  onOpenRecord: (rowUuid: string, row?: StageTableRow) => void;
+  onPreviewImage: (attachmentId: string, rowUuid?: string, docId?: string) => void;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }) {
   const todayKey = useMemo(() => toLocalDateKey(new Date()), []);
@@ -103,6 +112,12 @@ export function StageTableCalendarView({
   const [undatedOpen, setUndatedOpen] = useState(false);
   const [draggingRowId, setDraggingRowId] = useState<string | null>(null);
   const [dragOverDateKey, setDragOverDateKey] = useState<string | null>(null);
+  const undatedListRef = useRef<HTMLDivElement>(null);
+  const [sqliteDateRangeState, setSqliteDateRangeState] = useState<{
+    rows: StageTableRow[];
+    undatedCount: number;
+    undatedRows: StageTableRow[];
+  } | null>(null);
 
   const config: TableCalendarViewConfig = activeView.calendar ?? {};
   const displayMode: CalendarDisplayMode = config.displayMode ?? "month";
@@ -135,21 +150,6 @@ export function StageTableCalendarView({
   const endDateColEditable = Boolean(endDateColumnId && customColumnMap.get(endDateColumnId)?.type === "date");
 
   const cursorDate = parseLocalDateKey(cursorDateKey) ?? new Date();
-
-  // 将所有过滤后的行按日期范围索引，并分离出无日期记录
-  const { datedRecords, undatedRows } = useMemo(() => {
-    const dated: Array<{ row: StageTableRow; startKey: string; endKey: string; durationDays: number }> = [];
-    const undated: StageTableRow[] = [];
-    for (const row of rows) {
-      const range = resolveRowDateRange(row, dateColumnId, endDateColumnId, customColumnMap);
-      if (range) {
-        dated.push({ row, ...range });
-      } else {
-        undated.push(row);
-      }
-    }
-    return { datedRecords: dated, undatedRows: undated };
-  }, [rows, dateColumnId, endDateColumnId, customColumnMap]);
 
   const weekdayOrder = useMemo<number[]>(
     () => (weekStartsOn === 1 ? [1, 2, 3, 4, 5, 6, 0] : [0, 1, 2, 3, 4, 5, 6]),
@@ -205,6 +205,104 @@ export function StageTableCalendarView({
       };
     });
   }, [cursorDate, weekStartsOn, todayKey]);
+
+  const visibleDateBounds = useMemo(() => {
+    if (displayMode === "month" && monthGridDays.length > 0) {
+      return { minDate: monthGridDays[0].key, maxDate: monthGridDays[monthGridDays.length - 1].key };
+    }
+    if (displayMode === "week" && weekDays.length > 0) {
+      return { minDate: weekDays[0].key, maxDate: weekDays[weekDays.length - 1].key };
+    }
+    return { minDate: cursorDateKey, maxDate: cursorDateKey };
+  }, [displayMode, monthGridDays, weekDays, cursorDateKey]);
+
+  // SQLite 模式下仅拉取当前日历可见日期区间内的记录与无日期计数
+  useEffect(() => {
+    if (!dataSource?.isSqliteBacked()) {
+      setSqliteDateRangeState(null);
+      return;
+    }
+    let cancelled = false;
+    void dataSource
+      .queryDateRange({
+        startColumnId: dateColumnId,
+        endColumnId: endDateColumnId,
+        minDate: visibleDateBounds.minDate,
+        maxDate: visibleDateBounds.maxDate,
+        filters: activeFilters,
+        filterGroup: activeFilterGroup,
+        sort: activeSort,
+        includeUndated: undatedOpen,
+        undatedLimit: 200,
+      })
+      .then((res) => {
+        if (!cancelled) {
+          setSqliteDateRangeState({
+            rows: res.rows,
+            undatedCount: res.undatedCount,
+            undatedRows: res.undatedRows,
+          });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSqliteDateRangeState(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    dataSource,
+    dataRevision,
+    dateColumnId,
+    endDateColumnId,
+    visibleDateBounds.minDate,
+    visibleDateBounds.maxDate,
+    activeFilters,
+    activeFilterGroup,
+    activeSort,
+    undatedOpen,
+    rows,
+  ]);
+
+  // 将过滤后的行按日期范围索引，并分离出无日期记录
+  const { datedRecords, undatedRows, undatedTotalCount } = useMemo(() => {
+    if (sqliteDateRangeState) {
+      const dated: Array<{ row: StageTableRow; startKey: string; endKey: string; durationDays: number }> = [];
+      for (const row of sqliteDateRangeState.rows) {
+        const range = resolveRowDateRange(row, dateColumnId, endDateColumnId, customColumnMap);
+        if (range) {
+          dated.push({ row, ...range });
+        }
+      }
+      return {
+        datedRecords: dated,
+        undatedRows: sqliteDateRangeState.undatedRows,
+        undatedTotalCount: sqliteDateRangeState.undatedCount,
+      };
+    }
+    const dated: Array<{ row: StageTableRow; startKey: string; endKey: string; durationDays: number }> = [];
+    const undated: StageTableRow[] = [];
+    for (const row of rows) {
+      const range = resolveRowDateRange(row, dateColumnId, endDateColumnId, customColumnMap);
+      if (range) {
+        dated.push({ row, ...range });
+      } else {
+        undated.push(row);
+      }
+    }
+    return { datedRecords: dated, undatedRows: undated, undatedTotalCount: undated.length };
+  }, [sqliteDateRangeState, rows, dateColumnId, endDateColumnId, customColumnMap]);
+
+  const undatedVirtualizer = useVirtualizer({
+    count: undatedOpen ? undatedRows.length : 0,
+    getScrollElement: () => undatedListRef.current,
+    estimateSize: () => 38,
+    gap: 6,
+    overscan: 8,
+    initialRect: { width: 224, height: 480 },
+    observeElementRect: OBSERVE_CALENDAR_UNDATED_RECT,
+  });
+  const virtualUndatedItems = undatedOpen ? undatedVirtualizer.getVirtualItems() : [];
 
   // 为当前可见日期构建映射，避免每格重复 O(N) 扫描
   const recordsByDateKey = useMemo(() => {
@@ -277,14 +375,17 @@ export function StageTableCalendarView({
 
   const handleMoveRecordToDate = (rowUuid: string, targetDateKey: string) => {
     if (!dateColEditable) return;
-    const row = rows.find((r) => r.uuid === rowUuid);
+    const row =
+      rows.find((r) => r.uuid === rowUuid) ??
+      sqliteDateRangeState?.rows.find((r) => r.uuid === rowUuid) ??
+      sqliteDateRangeState?.undatedRows.find((r) => r.uuid === rowUuid);
     if (!row) return;
     const prevRange = resolveRowDateRange(row, dateColumnId, endDateColumnId, customColumnMap);
     const patch: Record<string, string> = { [dateColumnId]: targetDateKey };
     if (endDateColEditable && endDateColumnId && prevRange && prevRange.durationDays > 1) {
       patch[endDateColumnId] = addDaysToDateKey(targetDateKey, prevRange.durationDays - 1);
     }
-    project.stageTable.updateRowCustomFields?.(rowUuid, patch);
+    void dataSource.updateRowCustomFields(rowUuid, patch, row.docId);
   };
 
   const handleCreateRecordOnDate = (dateKey: string) => {
@@ -292,23 +393,26 @@ export function StageTableCalendarView({
     if (dateColEditable) {
       fields[dateColumnId] = dateKey;
     }
-    const created = project.stageTable.createRow?.({
-      text: "",
-      tableFields: fields,
+    void Promise.resolve(
+      dataSource.createRow({
+        text: "",
+        tableFields: fields,
+      }),
+    ).then((created) => {
+      if (created) {
+        onSelectRows([created.uuid], false);
+        onOpenRecord(created.uuid);
+      }
     });
-    if (created) {
-      onSelectRows([created.uuid], false);
-      onOpenRecord(created.uuid);
-    }
   };
 
   const handleQuickCreateDateColumn = () => {
-    const dateCol = project.stageTable.addCustomColumn?.({
+    const dateCol = dataSource.addCustomColumn({
       name: t("columnTypes.date"),
       type: "date",
     });
     if (dateCol) {
-      project.stageTable.updateActiveViewConfig?.({
+      dataSource.updateActiveViewConfig({
         calendar: { dateColumnId: dateCol.id },
       });
     }
@@ -343,7 +447,7 @@ export function StageTableCalendarView({
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() => project.stageTable.updateActiveViewConfig?.({ calendar: { dateColumnId: item.id } })}
+                    onClick={() => dataSource.updateActiveViewConfig({ calendar: { dateColumnId: item.id } })}
                     className="hover:bg-accent flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1 text-left"
                   >
                     <StageTableColumnIcon columnId={item.id} customColumn={item.customCol} />
@@ -359,7 +463,7 @@ export function StageTableCalendarView({
               <div className="max-h-28 space-y-0.5 overflow-y-auto rounded-md border p-1">
                 <button
                   type="button"
-                  onClick={() => project.stageTable.updateActiveViewConfig?.({ calendar: { endDateColumnId: null } })}
+                  onClick={() => dataSource.updateActiveViewConfig({ calendar: { endDateColumnId: null } })}
                   className="hover:bg-accent flex w-full cursor-pointer items-center justify-between rounded px-2 py-1 text-left"
                 >
                   <span className="text-muted-foreground">{t("gantt.singleDayMode")}</span>
@@ -369,9 +473,7 @@ export function StageTableCalendarView({
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() =>
-                      project.stageTable.updateActiveViewConfig?.({ calendar: { endDateColumnId: item.id } })
-                    }
+                    onClick={() => dataSource.updateActiveViewConfig({ calendar: { endDateColumnId: item.id } })}
                     className="hover:bg-accent flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1 text-left"
                   >
                     <StageTableColumnIcon columnId={item.id} customColumn={item.customCol} />
@@ -401,7 +503,7 @@ export function StageTableCalendarView({
                 <div className="max-h-24 space-y-0.5 overflow-y-auto rounded-md border p-1">
                   <button
                     type="button"
-                    onClick={() => project.stageTable.updateActiveViewConfig?.({ calendar: { colorColumnId: null } })}
+                    onClick={() => dataSource.updateActiveViewConfig({ calendar: { colorColumnId: null } })}
                     className="hover:bg-accent flex w-full cursor-pointer items-center justify-between rounded px-2 py-1 text-left"
                   >
                     <span className="text-muted-foreground">{t("views.defaultColor")}</span>
@@ -411,9 +513,7 @@ export function StageTableCalendarView({
                     <button
                       key={col.id}
                       type="button"
-                      onClick={() =>
-                        project.stageTable.updateActiveViewConfig?.({ calendar: { colorColumnId: col.id } })
-                      }
+                      onClick={() => dataSource.updateActiveViewConfig({ calendar: { colorColumnId: col.id } })}
                       className="hover:bg-accent flex w-full cursor-pointer items-center gap-2 rounded px-2 py-1 text-left"
                     >
                       <StageTableColumnIcon columnId={col.id} customColumn={col} />
@@ -432,7 +532,7 @@ export function StageTableCalendarView({
                   <button
                     key={ws}
                     type="button"
-                    onClick={() => project.stageTable.updateActiveViewConfig?.({ calendar: { weekStartsOn: ws } })}
+                    onClick={() => dataSource.updateActiveViewConfig({ calendar: { weekStartsOn: ws } })}
                     className={cn(
                       "cursor-pointer rounded px-2 py-0.5 text-[11px] transition-colors",
                       weekStartsOn === ws
@@ -449,9 +549,7 @@ export function StageTableCalendarView({
             <label className="hover:bg-accent flex cursor-pointer items-center gap-2 rounded px-1 py-1">
               <Checkbox
                 checked={showFieldNames}
-                onCheckedChange={(v) =>
-                  project.stageTable.updateActiveViewConfig?.({ calendar: { showFieldNames: Boolean(v) } })
-                }
+                onCheckedChange={(v) => dataSource.updateActiveViewConfig({ calendar: { showFieldNames: Boolean(v) } })}
               />
               <span>{t("views.showFieldNames")}</span>
             </label>
@@ -462,8 +560,8 @@ export function StageTableCalendarView({
                 allColumnIds={allColumnIds}
                 customColumnMap={customColumnMap}
                 getColumnLabel={getColumnLabel}
-                isColumnVisible={(cid) => project.stageTable.isColumnVisible(cid)}
-                onToggleColumn={(cid, visible) => project.stageTable.setColumnVisible(cid, visible)}
+                isColumnVisible={(cid) => dataSource.isColumnVisible(cid)}
+                onToggleColumn={(cid, visible) => dataSource.setColumnVisible(cid, visible)}
                 t={t}
               />
             </div>
@@ -477,20 +575,19 @@ export function StageTableCalendarView({
           columnGroups={filterColumnGroups}
           customColumns={customColumns}
           customColumnMap={customColumnMap}
-          allRows={allRows}
+          allRows={dataSource.scopeKind === "workspace" ? (sqliteDateRangeState?.rows ?? []) : allRows}
+          dataSource={dataSource}
           activeFilters={activeFilters}
           filterGroup={activeFilterGroup}
           getColumnLabel={getColumnLabel}
-          onSetConjunction={(conj) => project.stageTable.setFilterConjunction?.(conj)}
-          onAddCondition={(cid) => project.stageTable.addFilterCondition?.(cid)}
-          onUpdateCondition={(id, patch) => project.stageTable.updateFilterCondition?.(id, patch)}
-          onRemoveCondition={(id) => project.stageTable.removeFilterCondition?.(id)}
-          onToggleConditionCollapse={(id) => project.stageTable.toggleFilterConditionCollapsed?.(id)}
-          onReorderConditions={(dragId, targetId, pos) =>
-            project.stageTable.reorderFilterConditions?.(dragId, targetId, pos)
-          }
-          onSetColumnFilter={(cid, flt) => project.stageTable.setColumnFilter?.(cid, flt)}
-          onClearAllFilters={() => project.stageTable.clearAllFilters?.()}
+          onSetConjunction={(conj) => dataSource.setFilterConjunction(conj)}
+          onAddCondition={(cid) => dataSource.addFilterCondition(cid)}
+          onUpdateCondition={(id, patch) => dataSource.updateFilterCondition(id, patch)}
+          onRemoveCondition={(id) => dataSource.removeFilterCondition(id)}
+          onToggleConditionCollapse={(id) => dataSource.toggleFilterConditionCollapsed(id)}
+          onReorderConditions={(dragId, targetId, pos) => dataSource.reorderFilterConditions(dragId, targetId, pos)}
+          onSetColumnFilter={(cid, flt) => dataSource.setColumnFilter(cid, flt)}
+          onClearAllFilters={() => dataSource.clearAllFilters()}
           t={t}
         />
 
@@ -499,7 +596,7 @@ export function StageTableCalendarView({
           customColumnMap={customColumnMap}
           activeSort={activeSort}
           getColumnLabel={getColumnLabel}
-          onSetSort={(sort) => project.stageTable.setSort?.(sort)}
+          onSetSort={(sort) => dataSource.setSort(sort)}
           t={t}
         />
 
@@ -527,7 +624,7 @@ export function StageTableCalendarView({
               <button
                 key={h}
                 type="button"
-                onClick={() => project.stageTable.updateActiveViewConfig?.({ calendar: { cellHeight: h } })}
+                onClick={() => dataSource.updateActiveViewConfig({ calendar: { cellHeight: h } })}
                 className="hover:bg-accent flex w-full cursor-pointer items-center justify-between rounded px-2 py-1.5"
               >
                 <span>{t(`calendar.height_${h}`)}</span>
@@ -578,7 +675,7 @@ export function StageTableCalendarView({
                 key={mode}
                 type="button"
                 data-calendar-mode={mode}
-                onClick={() => project.stageTable.updateActiveViewConfig?.({ calendar: { displayMode: mode } })}
+                onClick={() => dataSource.updateActiveViewConfig({ calendar: { displayMode: mode } })}
                 className={cn(
                   "cursor-pointer rounded px-2 py-0.5 text-[11px] font-medium transition-colors",
                   displayMode === mode
@@ -600,7 +697,7 @@ export function StageTableCalendarView({
               undatedOpen ? "bg-primary/15 border-primary/50 text-primary font-medium" : "text-muted-foreground",
             )}
           >
-            <span>{t("calendar.undatedCount", { count: undatedRows.length })}</span>
+            <span>{t("calendar.undatedCount", { count: undatedTotalCount })}</span>
           </button>
         </div>
       </div>
@@ -687,7 +784,7 @@ export function StageTableCalendarView({
                             const pillColor = getRowSelectOptionColor(row, colorColumnId, customColumnMap);
                             return (
                               <div
-                                key={`${cell.key}-${row.uuid}`}
+                                key={`${cell.key}-${row.docId ?? ""}:${row.uuid}`}
                                 data-calendar-event={row.uuid}
                                 draggable={dateColEditable}
                                 onDragStart={(e) => {
@@ -705,7 +802,7 @@ export function StageTableCalendarView({
                                 }}
                                 onDoubleClick={(e) => {
                                   e.stopPropagation();
-                                  onOpenRecord(row.uuid);
+                                  onOpenRecord(row.uuid, row);
                                 }}
                                 title={titleInfo.text}
                                 className={cn(
@@ -801,7 +898,7 @@ export function StageTableCalendarView({
                         const pillColor = getRowSelectOptionColor(row, colorColumnId, customColumnMap);
                         return (
                           <div
-                            key={`${day.key}-${row.uuid}`}
+                            key={`${day.key}-${row.docId ?? ""}:${row.uuid}`}
                             data-calendar-event={row.uuid}
                             draggable={dateColEditable}
                             onDragStart={(e) => {
@@ -814,7 +911,7 @@ export function StageTableCalendarView({
                               setDragOverDateKey(null);
                             }}
                             onClick={() => onSelectRows([row.uuid])}
-                            onDoubleClick={() => onOpenRecord(row.uuid)}
+                            onDoubleClick={() => onOpenRecord(row.uuid, row)}
                             className={cn(
                               "border-border/70 hover:border-primary/60 cursor-pointer space-y-1 rounded-md border border-l-2 p-2 text-xs transition-colors select-none",
                               getViewOptionPillAccentClass(pillColor),
@@ -833,6 +930,7 @@ export function StageTableCalendarView({
                               <StageTableFieldValueDisplay
                                 key={cid}
                                 project={project}
+                                dataSource={dataSource}
                                 row={row}
                                 columnId={cid}
                                 customCol={customColumnMap.get(cid)}
@@ -880,10 +978,10 @@ export function StageTableCalendarView({
                     const pillColor = getRowSelectOptionColor(row, colorColumnId, customColumnMap);
                     return (
                       <div
-                        key={row.uuid}
+                        key={row.docId ? `${row.docId}:${row.uuid}` : row.uuid}
                         data-calendar-event={row.uuid}
                         onClick={() => onSelectRows([row.uuid])}
-                        onDoubleClick={() => onOpenRecord(row.uuid)}
+                        onDoubleClick={() => onOpenRecord(row.uuid, row)}
                         className={cn(
                           "group/dcard border-border/70 hover:border-primary/60 flex cursor-pointer items-start justify-between gap-3 rounded-lg border border-l-4 p-3 transition-colors select-none",
                           getViewOptionPillAccentClass(pillColor),
@@ -908,6 +1006,7 @@ export function StageTableCalendarView({
                               )}
                               <StageTableFieldValueDisplay
                                 project={project}
+                                dataSource={dataSource}
                                 row={row}
                                 columnId={cid}
                                 customCol={customColumnMap.get(cid)}
@@ -924,7 +1023,7 @@ export function StageTableCalendarView({
                             title={t("jumpToNode")}
                             onClick={(e) => {
                               e.stopPropagation();
-                              project.stageTable.focusRowOnCanvas(row.uuid);
+                              dataSource.jumpToNode(row.docId ?? dataSource.getDocId(), row.uuid);
                             }}
                             className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-6 cursor-pointer items-center justify-center rounded"
                           >
@@ -935,7 +1034,7 @@ export function StageTableCalendarView({
                             title={t("views.editRecord")}
                             onClick={(e) => {
                               e.stopPropagation();
-                              onOpenRecord(row.uuid);
+                              onOpenRecord(row.uuid, row);
                             }}
                             className="text-muted-foreground hover:bg-accent hover:text-foreground flex size-6 cursor-pointer items-center justify-center rounded"
                           >
@@ -958,7 +1057,7 @@ export function StageTableCalendarView({
             className="border-border/60 bg-muted/15 flex w-60 shrink-0 flex-col border-l"
           >
             <div className="border-border/60 flex h-9 shrink-0 items-center justify-between border-b px-3 text-xs font-medium">
-              <span>{t("calendar.undatedCount", { count: undatedRows.length })}</span>
+              <span>{t("calendar.undatedCount", { count: undatedTotalCount })}</span>
               <button
                 type="button"
                 onClick={() => setUndatedOpen(false)}
@@ -967,49 +1066,66 @@ export function StageTableCalendarView({
                 <X className="size-3.5" />
               </button>
             </div>
-            <div className="flex-1 space-y-1.5 overflow-y-auto p-2 text-xs">
+            <div ref={undatedListRef} className="flex-1 overflow-y-auto p-2 text-xs">
               {undatedRows.length === 0 ? (
                 <div className="text-muted-foreground py-8 text-center text-[11px]">{t("calendar.noUndated")}</div>
               ) : (
-                undatedRows.map((row) => {
-                  const titleInfo = getRowDisplayTitle(row, t);
-                  return (
-                    <div
-                      key={row.uuid}
-                      draggable={dateColEditable}
-                      onDragStart={(e) => {
-                        setDraggingRowId(row.uuid);
-                        e.dataTransfer.setData("text/plain", row.uuid);
-                        e.dataTransfer.effectAllowed = "move";
-                      }}
-                      onDragEnd={() => {
-                        setDraggingRowId(null);
-                        setDragOverDateKey(null);
-                      }}
-                      onClick={() => onSelectRows([row.uuid])}
-                      onDoubleClick={() => onOpenRecord(row.uuid)}
-                      className="bg-card border-border/70 hover:border-primary/50 flex shrink-0 cursor-pointer items-center justify-between gap-1.5 rounded-md border px-2.5 py-2 transition-colors select-none"
-                    >
-                      <span
-                        className={cn("min-w-0 flex-1 truncate", titleInfo.isPlaceholder && "text-muted-foreground")}
+                <div style={{ height: `${undatedVirtualizer.getTotalSize()}px`, position: "relative" }}>
+                  {virtualUndatedItems.map((vItem) => {
+                    const row = undatedRows[vItem.index];
+                    if (!row) return null;
+                    const titleInfo = getRowDisplayTitle(row, t);
+                    return (
+                      <div
+                        key={row.uuid}
+                        style={{
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
+                          width: "100%",
+                          transform: `translateY(${vItem.start}px)`,
+                        }}
                       >
-                        {titleInfo.text}
-                      </span>
-                      {dateColEditable && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleMoveRecordToDate(row.uuid, todayKey);
+                        <div
+                          draggable={dateColEditable}
+                          onDragStart={(e) => {
+                            setDraggingRowId(row.uuid);
+                            e.dataTransfer.setData("text/plain", row.uuid);
+                            e.dataTransfer.effectAllowed = "move";
                           }}
-                          className="text-primary hover:bg-primary/10 shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-[10px]"
+                          onDragEnd={() => {
+                            setDraggingRowId(null);
+                            setDragOverDateKey(null);
+                          }}
+                          onClick={() => onSelectRows([row.uuid])}
+                          onDoubleClick={() => onOpenRecord(row.uuid, row)}
+                          className="bg-card border-border/70 hover:border-primary/50 flex shrink-0 cursor-pointer items-center justify-between gap-1.5 rounded-md border px-2.5 py-2 transition-colors select-none"
                         >
-                          {t("calendar.setToday")}
-                        </button>
-                      )}
-                    </div>
-                  );
-                })
+                          <span
+                            className={cn(
+                              "min-w-0 flex-1 truncate",
+                              titleInfo.isPlaceholder && "text-muted-foreground",
+                            )}
+                          >
+                            {titleInfo.text}
+                          </span>
+                          {dateColEditable && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMoveRecordToDate(row.uuid, todayKey);
+                              }}
+                              className="text-primary hover:bg-primary/10 shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-[10px]"
+                            >
+                              {t("calendar.setToday")}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
           </div>

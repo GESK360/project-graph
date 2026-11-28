@@ -9,7 +9,7 @@ import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Dialog } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Project, ProjectState } from "@/core/Project";
-import { isResourceTab, Tab } from "@/core/Tab";
+import { isResourceTab, setOsWindowMoving, Tab } from "@/core/Tab";
 import { TabWorkspace } from "@/core/TabWorkspace";
 import { GlobalMenu, onNewDraft, onNewWindow } from "@/core/service/GlobalMenu";
 import { flushSettingsLoadErrors, Settings } from "@/core/service/Settings";
@@ -48,7 +48,7 @@ import { checkAndFixShortcutStorage } from "./core/service/controlService/shortc
 import { cn } from "./utils/cn";
 import { isLinux, isMac, isWindows } from "./utils/platform";
 
-export default function App() {
+export default function App({ initialStandby = false }: { initialStandby?: boolean } = {}) {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [_, _setMaximized] = useAtom(isWindowMaxsizedAtom);
 
@@ -58,6 +58,7 @@ export default function App() {
   // const [isWide, setIsWide] = useState(false);
   const [telemetryEventSent, setTelemetryEventSent] = useState(false);
   const [isClassroomMode, setIsClassroomMode] = useAtom(isClassroomModeAtom);
+  const [isStandby, setIsStandby] = useState(initialStandby);
   const [uiScalePercent, setUiScalePercent] = useState(Settings.uiScalePercent);
   const [tabLimitEnabled] = Settings.use("tabLimitEnabled");
   const [tabLimit] = Settings.use("tabLimit");
@@ -74,6 +75,13 @@ export default function App() {
       return;
     }
 
+    if (isWindows && isTauri()) {
+      void invoke("start_window_drag").catch(() => {
+        void getCurrentWindow().startDragging();
+      });
+      return;
+    }
+
     void getCurrentWindow().startDragging();
   };
 
@@ -81,12 +89,10 @@ export default function App() {
 
   useEffect(() => {
     // 设置兼容性提示依赖 Dialog UI，必须在应用挂载后再触发。
-    void flushSettingsLoadErrors();
+    if (!initialStandby) {
+      void flushSettingsLoadErrors();
+    }
 
-    // 先修复老用户的快捷键缓存问题（F11快捷键）
-    (async () => {
-      await checkAndFixShortcutStorage();
-    })();
     // 注册UI级别快捷键
     KeyBindsUI.registerAllUIKeyBinds();
     KeyBindsUI.uiStartListen();
@@ -155,31 +161,64 @@ export default function App() {
       // setIsWide(window.innerWidth / window.innerHeight > 1.8);
     });
 
-    if (!telemetryEventSent) {
-      setTelemetryEventSent(true);
-      (async () => {
-        const cpu = await cpuInfo();
-        await Telemetry.event("启动应用", {
-          version: await getVersion(),
-          os: platform(),
-          arch: arch(),
-          osVersion: isLinux ? `${await invoke("get_distribution")} ${version()}` : version(),
-          cpu: cpu.cpus[0].brand,
-          cpuCount: cpu.cpu_count,
-        });
-      })();
-    }
+    const unlistenMoving =
+      isWindows && isTauri()
+        ? getCurrentWindow().listen<boolean>("pg-window-moving", ({ payload }) => {
+            setOsWindowMoving(Boolean(payload));
+          })
+        : undefined;
 
-    // 加载完成了，显示窗口
-    if (!window.ipc_bridge) {
-      getCurrentWindow().show();
-    }
+    let deferredStartupTimer: ReturnType<typeof setTimeout> | undefined;
+    const onStandbyActivated = () => {
+      setIsStandby(false);
+      void flushSettingsLoadErrors();
+      void globalShortcutManager.init();
+    };
 
-    // 初始化全局快捷键管理
-    globalShortcutManager.init();
+    if (initialStandby) {
+      if ((window as unknown as { __PG_STANDBY__?: boolean }).__PG_STANDBY__ === false) {
+        onStandbyActivated();
+      } else {
+        window.addEventListener("pg-standby-activated", onStandbyActivated, { once: true });
+      }
+    } else {
+      // 加载完成了，立即显示窗口
+      if (!window.ipc_bridge) {
+        getCurrentWindow().show();
+      }
+      // 初始化全局快捷键管理
+      globalShortcutManager.init();
+
+      // 非关键启动任务延后至空闲阶段，避免抢占首帧与窗口打开耗时
+      deferredStartupTimer = setTimeout(() => {
+        void checkAndFixShortcutStorage();
+        if (!telemetryEventSent) {
+          setTelemetryEventSent(true);
+          void (async () => {
+            try {
+              const cpu = await cpuInfo();
+              await Telemetry.event("启动应用", {
+                version: await getVersion(),
+                os: platform(),
+                arch: arch(),
+                osVersion: isLinux ? `${await invoke("get_distribution")} ${version()}` : version(),
+                cpu: cpu.cpus[0].brand,
+                cpuCount: cpu.cpu_count,
+              });
+            } catch {
+              // 遥测失败不影响主流程
+            }
+          })();
+        }
+      }, 1500);
+    }
 
     return () => {
+      if (deferredStartupTimer !== undefined) clearTimeout(deferredStartupTimer);
+      window.removeEventListener("pg-standby-activated", onStandbyActivated);
       unlisten1?.then((f) => f());
+      unlistenMoving?.then((f) => f());
+      setOsWindowMoving(false);
       KeyBindsUI.uiStopListen();
       // 清理全局快捷键资源
       unwatchUiScale();
@@ -206,6 +245,10 @@ export default function App() {
 
   useEffect(() => {
     const updateTabRenderLoops = () => {
+      if (isStandby) {
+        tabs.forEach((tab) => tab.pause());
+        return;
+      }
       if (!activeResourceTab) return;
       if (Settings.pauseRenderWhenTabUnfocused) {
         activeResourceTab.loop();
@@ -215,7 +258,7 @@ export default function App() {
       }
     };
     return Settings.watch("pauseRenderWhenTabUnfocused", updateTabRenderLoops);
-  }, [activeResourceTab, tabs]);
+  }, [activeResourceTab, tabs, isStandby]);
 
   useEffect(() => {
     TabWorkspace.synchronizeGroups();
@@ -223,7 +266,9 @@ export default function App() {
       TabWorkspace.enforceTabLimit(
         tabLimit,
         tabLimitIncludesPinned,
-        (tab) => !(tab instanceof Project) || (!tab.isSaving && tab.projectState !== ProjectState.Unsaved),
+        (tab) =>
+          !(tab instanceof Project) ||
+          (!tab.isSaving && ((tab.isSqliteV3 && !tab.isDraft) || tab.projectState !== ProjectState.Unsaved)),
       );
     }
   }, [tabs, tabLimitEnabled, tabLimit, tabLimitIncludesPinned]);
@@ -251,10 +296,11 @@ export default function App() {
       .onCloseRequested(async (e) => {
         e.preventDefault();
 
-        // 检查是否有仅由本窗口独占持有的未保存项目（若其他窗口也开着同一文件，由最后一个关闭的窗口负责保存提示）
+        // 检查是否有仅由本窗口独占持有的未保存项目（v3 SQLite 文件已实时自动落盘，不再阻塞关闭；草稿与协作保留提示）
         const unsavedCandidates = tabs.filter(
           (tab): tab is Project =>
             tab instanceof Project &&
+            !(tab.isSqliteV3 && !tab.isDraft) &&
             (tab.projectState === ProjectState.Unsaved || tab.projectState === ProjectState.Stashed),
         );
         const unsavedTabs: Project[] = [];
@@ -334,6 +380,11 @@ export default function App() {
 
   const closeTab = async (tab: Tab) => {
     if (tab instanceof Project) {
+      if (tab.isSqliteV3 && !tab.isDraft) {
+        await tab.flushV3Persist();
+        await TabWorkspace.close(tab.id);
+        return true;
+      }
       const holderCount = await tab.getOwnershipHolderCount();
       if (holderCount <= 1) {
         if (tab.projectState === ProjectState.Stashed) {

@@ -1,5 +1,6 @@
 import { loadAllServicesAfterInit, loadAllServicesBeforeInit } from "@/core/loadAllServices";
 import { Project, ProjectState } from "@/core/Project";
+import { DocClient } from "@/core/sqlite/DocClient";
 import { onOpenFile, waitForOpeningFiles } from "@/core/service/GlobalMenu";
 import { TabWorkspace } from "@/core/TabWorkspace";
 import { activeResourceTabAtom, activeTabAtom, store, tabsAtom } from "@/state";
@@ -48,7 +49,7 @@ export async function installWorkspaceCrossWindowListeners(): Promise<void> {
           pendingPeerReopens.set(source, nested);
           reopeningProjects += 1;
         }
-        await Promise.all(reopening.map(saveIfNeeded));
+        await Promise.all(reopening.map((project) => saveIfNeeded(project)));
         await Promise.all(opened.map((project) => TabWorkspace.close(project.id, { animate: false })));
       } else if (payload.action === "prepare-delete") {
         const reopening = opened.filter((project) => !project.closing);
@@ -123,8 +124,15 @@ function findOpenProject(path: string): Project | undefined {
     );
 }
 
-async function saveIfNeeded(project: Project | undefined): Promise<void> {
+async function saveIfNeeded(project: Project | undefined, options?: { checkpointWal?: boolean }): Promise<void> {
   if (!project) return;
+  if (project.isSqliteV3 && !project.isDraft) {
+    await project.flushV3Persist();
+    if (options?.checkpointWal && project.v3DocId && DocClient.isAvailable()) {
+      await DocClient.checkpointAndSnapshot(project.v3DocId, null);
+    }
+    return;
+  }
   if (project.projectState === ProjectState.Saved) return;
   await project.save({ includeThumbnail: false });
 }
@@ -157,7 +165,7 @@ export async function moveWorkspacePage(path: string, targetDir: string): Promis
 }
 
 export async function copyWorkspacePage(path: string, targetDir: string): Promise<string> {
-  await saveIfNeeded(findOpenProject(path));
+  await saveIfNeeded(findOpenProject(path), { checkpointWal: true });
   return await WorkspaceManager.copyPage(path, targetDir);
 }
 
@@ -203,9 +211,10 @@ async function withPathChange(path: string, change: (source: string) => Promise<
       });
     }
     if (opened.length) {
-      await Promise.all(reopening.map(saveIfNeeded));
+      await Promise.all(reopening.map((project) => saveIfNeeded(project)));
       await Promise.all(opened.map((project) => TabWorkspace.close(project.id, { animate: false })));
     }
+    await DocClient.releaseUnderPrefix(source);
     const newPath = await change(source);
     for (const part of nested) {
       await openWorkspacePage(part ? WorkspacePaths.join(newPath, part) : newPath);
@@ -261,6 +270,7 @@ async function deleteWorkspaceEntry(path: string, remove: (target: string) => Pr
       }
       await waitForOpeningFiles((uri) => uri.scheme === "file" && WorkspacePaths.isInside(uri.fsPath, target));
       await Promise.all(findOpenProjectsUnder(target, true).map((project) => TabWorkspace.close(project.id)));
+      await DocClient.releaseUnderPrefix(target);
       await remove(target);
       removed = true;
       if (peerCoordinationStarted) {
@@ -303,7 +313,7 @@ export async function copyWorkspaceNodes(paths: string[], targetDir: string): Pr
 }
 
 export async function copyWorkspaceNode(path: string, targetDir: string): Promise<string> {
-  await saveIfNeeded(findOpenProject(path));
+  await Promise.all(findOpenProjectsUnder(path).map((project) => saveIfNeeded(project, { checkpointWal: true })));
   return await WorkspaceManager.copyNode(path, targetDir);
 }
 
@@ -330,7 +340,7 @@ export async function openVersionAsCopy(versionFilePath: string): Promise<void> 
   const draftUri = project.uri;
   loadAllServicesBeforeInit(project);
   project.uri = URI.file(WorkspacePaths.normalize(versionFilePath));
-  await project.init();
+  await project.init({ readOnlyCopy: true });
   loadAllServicesAfterInit(project);
   // 读完快照内容后回到草稿身份，这样保存时会另存为新文件而不是覆盖快照
   project.uri = draftUri;

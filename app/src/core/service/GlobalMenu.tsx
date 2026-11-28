@@ -2,10 +2,18 @@ import { Dialog } from "@/components/ui/dialog";
 
 import { Extension } from "@/core/extension/Extension";
 import { loadAllServicesAfterInit, loadAllServicesBeforeInit } from "@/core/loadAllServices";
+import { ensureOpenProjectRuntimeBridgeListener } from "@/core/OpenProjectRuntimeHost";
 import { Project, ProjectState } from "@/core/Project";
-import { loadWithProjectOwnership, ProjectOwnershipError, type ProjectOwnershipLease } from "@/core/ProjectOwnership";
+import {
+  loadWithProjectOwnership,
+  ProjectOwnershipError,
+  ProjectOwnershipLease,
+  toProjectOwnershipError,
+} from "@/core/ProjectOwnership";
+import { DocClient, type DocOpenWithOwnershipResponse } from "@/core/sqlite/DocClient";
 import { isResourceTab } from "@/core/Tab";
 import { TabFactory } from "@/core/TabFactory";
+import { TabWorkspace } from "@/core/TabWorkspace";
 import { activeResourceTabAtom, activeTabAtom, store, tabsAtom } from "@/state";
 import { PathString } from "@/utils/pathString";
 import { isMac } from "@/utils/platform";
@@ -27,7 +35,7 @@ import { ProjectUpgrader } from "../stage/ProjectUpgrader";
 import { CollisionBox } from "../stage/stageObject/collisionBox/collisionBox";
 import { TextNode } from "../stage/stageObject/entity/TextNode";
 import { RecentFileManager } from "./dataFileService/RecentFileManager";
-import { hydrateProjectFromSnapshot, LocalDocumentSync } from "./dataFileService/LocalDocumentSync";
+import { LocalDocumentSync } from "./dataFileService/LocalDocumentSync";
 import { FeatureFlags } from "./FeatureFlags";
 import { Settings } from "./Settings";
 import { Telemetry } from "./Telemetry";
@@ -254,7 +262,7 @@ async function openFile(uri: URI, source: string): Promise<Project | undefined> 
     return textuallyMatchingTab as any;
   }
 
-  let initializationStartedAt = performance.now();
+  const initializationStartedAt = performance.now();
   let loadServiceTime = 0;
   let openingOwnershipId: string | undefined;
   let openingProject: OpeningProject | undefined;
@@ -265,33 +273,6 @@ async function openFile(uri: URI, source: string): Promise<Project | undefined> 
     }
     openingProject = undefined;
   };
-  const createTab = async (ownership?: ProjectOwnershipLease) => {
-    if (ownership) {
-      openingOwnershipId = ownership.ownershipId;
-      openingProject = getOpeningProject(ownership.ownershipId);
-    }
-    const dummyProject = new Project(uri);
-    try {
-      loadAllServicesBeforeInit(dummyProject);
-      const createdTab = await TabFactory.create(uri, dummyProject.fs);
-      initializationStartedAt = performance.now();
-      if (createdTab instanceof Project) {
-        if (ownership) createdTab.attachProjectOwnership(ownership);
-        loadAllServicesBeforeInit(createdTab);
-      } else {
-        await ownership?.dispose();
-        finishOpeningProject(undefined);
-        createdTab.registerFileSystemProvider("file", FileSystemProviderFile);
-        createdTab.registerFileSystemProvider("draft", FileSystemProviderDraft);
-      }
-      loadServiceTime = performance.now() - initializationStartedAt;
-      return createdTab;
-    } catch (error) {
-      finishOpeningProject(undefined);
-      throw error;
-    }
-  };
-
   const findOwnedProject = (ownershipId: string, canonicalPath: string) =>
     store
       .get(tabsAtom)
@@ -301,31 +282,144 @@ async function openFile(uri: URI, source: string): Promise<Project | undefined> 
           candidate.projectOwnerIdentity === ownershipId &&
           candidate.canonicalProjectPath === canonicalPath,
       );
-  let tab: Project | Extension;
-  try {
-    const result =
-      uri.scheme === "file" && uri.fsPath.toLowerCase().endsWith(".prg")
-        ? await loadWithProjectOwnership(
-            uri.fsPath,
-            createTab,
-            (ownershipId, canonicalPath) =>
-              openingProjects.has(ownershipId) || findOwnedProject(ownershipId, canonicalPath) !== undefined,
-          )
-        : { status: "opened" as const, value: await createTab() };
-    if (result.status === "already_open") {
-      const registered = findOwnedProject(result.ownershipId, result.canonicalPath);
-      const existing = registered ?? (await openingProjects.get(result.ownershipId)?.promise);
-      if (!existing) throw new ProjectOwnershipError("PROJECT_BUSY");
-      if (existing.closing) {
-        const { TabWorkspace } = await import("@/core/TabWorkspace");
-        await TabWorkspace.close(existing.id);
-        return await openFile(uri, source);
-      }
-      focusExistingTab(existing);
-      return existing;
+
+  const createLightweightFs = () =>
+    uri.scheme === "draft" ? new FileSystemProviderDraft() : new FileSystemProviderFile();
+
+  const createTab = async (ownership?: ProjectOwnershipLease) => {
+    if (ownership) {
+      openingOwnershipId = ownership.ownershipId;
+      openingProject = getOpeningProject(ownership.ownershipId);
     }
-    tab = result.value;
+    try {
+      const createdTab = await TabFactory.create(uri, createLightweightFs());
+      const serviceStart = performance.now();
+      if (createdTab instanceof Project) {
+        if (ownership) createdTab.attachProjectOwnership(ownership);
+        loadAllServicesBeforeInit(createdTab);
+      } else {
+        await ownership?.dispose();
+        finishOpeningProject(undefined);
+        createdTab.registerFileSystemProvider("file", FileSystemProviderFile);
+        createdTab.registerFileSystemProvider("draft", FileSystemProviderDraft);
+      }
+      loadServiceTime = performance.now() - serviceStart;
+      return createdTab;
+    } catch (error) {
+      finishOpeningProject(undefined);
+      throw error;
+    }
+  };
+
+  // 延迟 120ms 才展示“正在打开文件...”加载提示，避免 <20ms 秒开文件时多触发一次 Toast DOM 重排
+  let openToast: string | number | undefined;
+  let loadingToastTimer: ReturnType<typeof setTimeout> | undefined;
+  if (Settings.showFileOpenSuccessToast) {
+    loadingToastTimer = setTimeout(() => {
+      openToast = toast.loading("正在打开文件...");
+    }, 120);
+  }
+  const clearLoadingToastTimer = () => {
+    if (loadingToastTimer !== undefined) {
+      clearTimeout(loadingToastTimer);
+      loadingToastTimer = undefined;
+    }
+  };
+
+  let tab: Project | Extension;
+  let preloadedV3Doc: import("@/core/sqlite/DocClient").V3AnyDocumentOpenResult | undefined;
+  const isDesktopLocalPrg =
+    uri.scheme === "file" && uri.fsPath.toLowerCase().endsWith(".prg") && DocClient.isAvailable();
+
+  try {
+    if (isDesktopLocalPrg) {
+      // 融合 1-IPC 快路径：在 Rust 单次调用内完成 ownership 获取 + 魔数探测 + SQLite 读取
+      await ensureOpenProjectRuntimeBridgeListener();
+      let fused: DocOpenWithOwnershipResponse;
+      try {
+        fused = await DocClient.openDocumentWithOwnership(uri.fsPath);
+      } catch (error) {
+        clearLoadingToastTimer();
+        if (openToast !== undefined) toast.dismiss(openToast);
+        if (typeof error === "object" && error !== null && "code" in error) {
+          const ownershipErr = toProjectOwnershipError(error);
+          await Dialog.buttons(i18next.t("projectOwnership.openFailedTitle"), ownershipErr.message, [
+            { id: "ok", label: i18next.t("projectOwnership.ok") },
+          ]);
+          return undefined;
+        }
+        throw error;
+      }
+
+      if (
+        fused.status === "already_owned" ||
+        openingProjects.has(fused.ownershipId) ||
+        findOwnedProject(fused.ownershipId, fused.canonicalPath) !== undefined
+      ) {
+        clearLoadingToastTimer();
+        if (openToast !== undefined) toast.dismiss(openToast);
+        if (fused.status === "opened_v3") {
+          void DocClient.closeDocument(fused.doc.docId).catch(() => {});
+        }
+        const registered = findOwnedProject(fused.ownershipId, fused.canonicalPath);
+        const existing = registered ?? (await openingProjects.get(fused.ownershipId)?.promise);
+        if (!existing) throw new ProjectOwnershipError("PROJECT_BUSY");
+        if (existing.closing) {
+          await TabWorkspace.close(existing.id);
+          return await openFile(uri, source);
+        }
+        focusExistingTab(existing);
+        return existing;
+      }
+
+      const ownership = new ProjectOwnershipLease(fused.ownershipId, fused.canonicalPath, fused.peerWindowLabel);
+      openingOwnershipId = ownership.ownershipId;
+      openingProject = getOpeningProject(ownership.ownershipId);
+
+      if (fused.status === "opened_v3") {
+        const serviceStart = performance.now();
+        const projectTab = new Project(uri);
+        projectTab.attachProjectOwnership(ownership);
+        loadAllServicesBeforeInit(projectTab);
+        loadServiceTime = performance.now() - serviceStart;
+        tab = projectTab;
+        preloadedV3Doc = fused.doc;
+      } else {
+        try {
+          tab = await createTab(ownership);
+        } catch (error) {
+          await ownership.dispose().catch(() => {});
+          throw error;
+        }
+      }
+    } else {
+      const result =
+        uri.scheme === "file" && uri.fsPath.toLowerCase().endsWith(".prg")
+          ? await loadWithProjectOwnership(
+              uri.fsPath,
+              createTab,
+              (ownershipId, canonicalPath) =>
+                openingProjects.has(ownershipId) || findOwnedProject(ownershipId, canonicalPath) !== undefined,
+            )
+          : { status: "opened" as const, value: await createTab() };
+      if (result.status === "already_open") {
+        clearLoadingToastTimer();
+        if (openToast !== undefined) toast.dismiss(openToast);
+        const registered = findOwnedProject(result.ownershipId, result.canonicalPath);
+        const existing = registered ?? (await openingProjects.get(result.ownershipId)?.promise);
+        if (!existing) throw new ProjectOwnershipError("PROJECT_BUSY");
+        if (existing.closing) {
+          await TabWorkspace.close(existing.id);
+          return await openFile(uri, source);
+        }
+        focusExistingTab(existing);
+        return existing;
+      }
+      tab = result.value;
+    }
   } catch (e) {
+    clearLoadingToastTimer();
+    if (openToast !== undefined) toast.dismiss(openToast);
     if (e instanceof ProjectOwnershipError) {
       await Dialog.buttons(i18next.t("projectOwnership.openFailedTitle"), e.message, [
         { id: "ok", label: i18next.t("projectOwnership.ok") },
@@ -335,47 +429,31 @@ async function openFile(uri: URI, source: string): Promise<Project | undefined> 
     throw e;
   }
 
-  const openToast = Settings.showFileOpenSuccessToast ? toast.loading("正在打开文件...") : undefined;
   try {
-    let hydratedFromPeer = false;
-    if (tab instanceof Project && tab.projectOwnershipPeerWindow && tab.canonicalProjectPath) {
-      const liveSnapshot = await LocalDocumentSync.requestPeerSnapshot(
-        tab.canonicalProjectPath,
-        tab.projectOwnershipPeerWindow,
-      );
-      if (liveSnapshot) {
-        hydrateProjectFromSnapshot(tab, liveSnapshot);
-        hydratedFromPeer = true;
-      }
-    }
-
-    if (!hydratedFromPeer) {
-      await tab.init();
-      if (tab instanceof Project && tab.projectState !== ProjectState.Saved) {
+    if (preloadedV3Doc && tab instanceof Project) {
+      const openedOk = await tab.initWithPreloadedV3(preloadedV3Doc, { attachAutoPersist: true });
+      if (!openedOk) {
         throw new Error("USER_CANCELLED");
       }
+    } else {
+      await tab.init();
+    }
+    if (tab instanceof Project && tab.projectState !== ProjectState.Saved) {
+      throw new Error("USER_CANCELLED");
     }
 
     if (tab instanceof Project) {
       loadAllServicesAfterInit(tab);
-      if (hydratedFromPeer) {
-        tab.stageManager.updateReferences();
-        if (tab.getService("tagManager")) {
-          tab.tagManager.reset(tab.tags);
-        }
-        if (tab.getService("stageTable")) {
-          tab.stageTable.resetAfterStageRestore();
-        }
-      }
       tab.activateOpenRuntimeHost();
       if (tab.canonicalProjectPath) {
-        LocalDocumentSync.attach(tab, tab.canonicalProjectPath, tab.projectOwnershipPeerWindow ? 1 : 0);
+        LocalDocumentSync.attach(tab, tab.canonicalProjectPath);
       }
-      if (!hydratedFromPeer && tab.wasUpgraded) {
+      if (tab.wasUpgraded && !tab.isSqliteV3) {
         tab.projectState = ProjectState.Unsaved;
       }
     }
   } catch (e) {
+    clearLoadingToastTimer();
     finishOpeningProject(undefined);
     await tab.dispose();
     if (e instanceof Error && e.message === "USER_CANCELLED") {
@@ -387,20 +465,27 @@ async function openFile(uri: URI, source: string): Promise<Project | undefined> 
     throw e;
   }
 
+  clearLoadingToastTimer();
   const readFileTime = performance.now() - initializationStartedAt;
   store.set(tabsAtom, [...store.get(tabsAtom), tab]);
+  if (typeof TabWorkspace.synchronizeGroups === "function") {
+    TabWorkspace.synchronizeGroups();
+  }
   finishOpeningProject(tab instanceof Project ? tab : undefined);
   store.set(activeTabAtom, tab);
+  if (isResourceTab(tab)) {
+    store.set(activeResourceTabAtom, tab);
+  }
   const project = tab instanceof Project ? tab : undefined;
   if (Settings.showFileOpenSuccessToast) {
     toast.success(
-      `耗时 ${readFileTime.toFixed(1)}ms${project ? `，共 ${project.stage.length} 个舞台对象，${project.attachments.size} 个附件` : ""}`,
+      `耗时 ${readFileTime.toFixed(1)}ms${project ? `，共 ${project.stage.length} 个舞台对象，${project.totalAttachmentCount} 个附件` : ""}`,
       { id: openToast },
     );
   } else if (openToast !== undefined) {
     toast.dismiss(openToast);
   }
-  await RecentFileManager.addRecentFileByUri(uri);
+  void Promise.resolve(RecentFileManager.addRecentFileByUri(uri)).catch(() => {});
   if (
     isMac &&
     Settings.showRecentFilesThumbnails &&

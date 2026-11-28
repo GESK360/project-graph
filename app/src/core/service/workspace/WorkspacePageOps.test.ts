@@ -54,6 +54,15 @@ vi.mock("@/core/service/FeatureFlags", () => ({ FeatureFlags: {} }));
 vi.mock("@/core/service/dataFileService/RecentFileManager", () => ({
   RecentFileManager: { addRecentFileByUri: vi.fn() },
 }));
+vi.mock("@/core/service/dataFileService/LocalDocumentSync", () => ({
+  LocalDocumentSync: {
+    register: vi.fn(),
+    unregister: vi.fn(),
+    notifySaved: vi.fn(),
+    attach: vi.fn(),
+    detach: vi.fn(),
+  },
+}));
 vi.mock("@/core/stage/ProjectUpgrader", () => ({ ProjectUpgrader: {} }));
 vi.mock("@/core/stage/stageObject/entity/TextNode", () => ({ TextNode: class {} }));
 vi.mock("@/utils/platform", () => ({ isMac: false }));
@@ -115,7 +124,10 @@ it.each(["single", "batch"])("opens the auto-renamed destination once during a %
   const acquired = Promise.withResolvers<{ status: "acquired"; ownershipId: string; canonicalPath: string }>();
   const init = Promise.withResolvers<void>();
   const ownership = { ownershipId: "moved-page-owner", canonicalPath: target };
-  const files = new Map([[sourcePath, "moved contents"], [originalPath, "existing contents"]]);
+  const files = new Map([
+    [sourcePath, "moved contents"],
+    [originalPath, "existing contents"],
+  ]);
   const runtimeHosts = new Set<string>();
 
   store.set(tabsAtom, [original, source]);

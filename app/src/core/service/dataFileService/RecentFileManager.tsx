@@ -20,7 +20,6 @@ export namespace RecentFileManager {
 
   export async function init() {
     store = await createStore("recent-files2.json");
-    await store.save();
   }
 
   /**

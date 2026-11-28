@@ -4,6 +4,7 @@ import { Tab } from "@/core/Tab";
 import { FIXED_SIDE_GROUP_IDS, TabGroupNode } from "@/core/TabGroup";
 import { TabWorkspace } from "@/core/TabWorkspace";
 import {
+  activeDockedTabAtom,
   activeGroupIdAtom,
   activeResourceTabAtom,
   activeTabAtom,
@@ -227,6 +228,7 @@ export default function DockedArea({
   const tabs = useAtomValue(tabsAtom);
   const activeGroupId = useAtomValue(activeGroupIdAtom);
   const activeResourceTab = useAtomValue(activeResourceTabAtom);
+  const activeDockedTab = useAtomValue(activeDockedTabAtom);
   const [stageTableOpen, setStageTableOpen] = useAtom(stageTableOpenAtom);
   const containerRef = useRef<HTMLDivElement>(null);
   const stageTableDragRef = useRef<{ id: number; startX: number; width: number; hostWidth: number } | null>(null);
@@ -240,7 +242,8 @@ export default function DockedArea({
   });
 
   const activeProject = activeResourceTab instanceof Project ? activeResourceTab : undefined;
-  const showStageTable = Boolean(activeProject && stageTableOpen && !isClassroomMode);
+  const isWorkspaceTableFocused = Boolean(activeDockedTab && "isWorkspaceTableTab" in activeDockedTab);
+  const showStageTable = Boolean(activeProject && stageTableOpen && !isClassroomMode && !isWorkspaceTableFocused);
 
   useEffect(() => {
     localStorage.setItem(WORKSPACE_WIDTH_KEY, String(workspaceWidth));
@@ -369,7 +372,7 @@ export default function DockedArea({
     <div ref={containerRef} className="absolute inset-0 flex min-h-0 min-w-0 flex-row overflow-hidden">
       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         {root && renderNode(root)}
-        {activeProject && !isClassroomMode && (
+        {activeProject && !isClassroomMode && !isWorkspaceTableFocused && (
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -377,7 +380,7 @@ export default function DockedArea({
                 data-stage-table-toggle
                 aria-label={stageTableOpen ? tTable("collapsePanel") : tTable("expandPanel")}
                 onClick={() => setStageTableOpen((prev) => !prev)}
-                className="bg-popover/95 hover:bg-accent text-foreground border-border/70 absolute top-1/2 right-0 z-30 flex h-14 w-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded-l-xl border border-r-0 shadow-md backdrop-blur-md transition-colors"
+                className="bg-popover/95 hover:bg-accent text-foreground border-border/70 absolute top-1/2 right-0 z-30 flex h-14 w-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded-l-xl border border-r-0 shadow-md transition-colors"
               >
                 {stageTableOpen ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
               </button>

@@ -408,6 +408,11 @@ export namespace ProjectUpgrader {
       [data, metadata] = convertN8toN9(data, metadata, options);
     }
 
+    // 如果版本小于 3.0.0，升级版本号至 3.0.0（供 SQLite v3.0.0 存储迁移使用）
+    if (compareProjectVersions(currentVersion, "3.0.0") < 0) {
+      [data, metadata] = convertN9toN10(data, metadata);
+    }
+
     return [data, metadata];
   }
 
@@ -584,6 +589,20 @@ export namespace ProjectUpgrader {
 
     visit(data);
     return [data, { ...metadata, version: "2.8.0" }];
+  }
+
+  /**
+   * 将 2.8.0 版本升级到 3.0.0 版本（SQLite v3.0.0 格式收口，补齐 docId）
+   */
+  function convertN9toN10(data: any[], metadata: any): [any[], PrgMetadata] {
+    return [
+      data,
+      {
+        ...metadata,
+        version: "3.0.0",
+        docId: metadata?.docId || uuidv4(),
+      },
+    ];
   }
 
   /**

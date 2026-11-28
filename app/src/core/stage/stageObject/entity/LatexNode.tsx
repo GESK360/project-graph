@@ -45,8 +45,8 @@ export class LatexNode extends ConnectableEntity {
   isHiddenBySectionCollapse: boolean = false;
 
   // ── 运行时状态（不序列化）──────────────────────────────────
-  /** 渲染结果图片 */
-  image: HTMLImageElement = new Image();
+  /** 渲染结果图片（按需懒创建，避免数百个离屏公式节点在开页时批量建 DOM/Image） */
+  image: HTMLImageElement | null = null;
   /** 渲染后 SVG 的原始像素尺寸 */
   svgOriginalSize: Vector = Vector.getZero();
   /** 渲染状态 */
@@ -57,6 +57,7 @@ export class LatexNode extends ConnectableEntity {
    */
   currentRenderedColorCss: string = "";
   private renderVersion = 0;
+  private hasStartedRender = false;
 
   /** 节点是否被选中 */
   _isSelected: boolean = false;
@@ -89,6 +90,8 @@ export class LatexNode extends ConnectableEntity {
       createdAt,
       updatedAt,
       tableFields,
+      tableFieldsOwned = false,
+      deferRender = false,
     }: {
       uuid?: string;
       details?: any;
@@ -99,20 +102,34 @@ export class LatexNode extends ConnectableEntity {
       createdAt?: number;
       updatedAt?: number;
       tableFields?: Record<string, unknown>;
+      tableFieldsOwned?: boolean;
+      deferRender?: boolean;
     },
   ) {
     super();
     this.uuid = uuid;
     this.latexSource = latexSource;
     this.details = details;
-    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields });
+    this.restoreEntityTableMetadata({ createdAt, updatedAt, tableFields, tableFieldsOwned });
     this.collisionBox = collisionBox;
     this.color = color;
     this.fontScaleLevel = fontScaleLevel;
 
-    // 异步渲染 LaTeX 公式，初始颜色：透明色→主题边框色，否则→用户自定义色
-    const initColor = color.a === 0 ? this.project.stageStyleManager.currentStyle.StageObjectBorder : color;
-    this.renderLatexToImage(latexSource, initColor.toString());
+    // 视口驱动懒渲染：v3 SQLite 打开已有精确尺寸，避免开页期对全图所有离屏公式批量跑 KaTeX + DOM 重排
+    if (!deferRender) {
+      const initColor = color.a === 0 ? this.project.stageStyleManager.currentStyle.StageObjectBorder : color;
+      this.hasStartedRender = true;
+      void this.renderLatexToImage(latexSource, initColor.toString());
+    }
+  }
+
+  /**
+   * 进入视口时按需触发首次 LaTeX 渲染（幂等，已启动则不重复触发）。
+   */
+  public ensureRendered(colorCss: string): void {
+    if (this.hasStartedRender) return;
+    this.hasStartedRender = true;
+    void this.renderLatexToImage(this.latexSource, colorCss);
   }
 
   /**
@@ -151,6 +168,8 @@ export class LatexNode extends ConnectableEntity {
     if (anchorRate) {
       this._adjustLocationToKeepAnchor(oldRect, anchorRate);
     }
+    this.project?.stageManager?.updateSpatialIndex?.(this);
+    this.project?.docCommandBus?.markStyleDirty(this);
   }
 
   private _adjustLocationToKeepAnchor(oldRect: Rectangle, anchorRate: Vector): void {
@@ -168,7 +187,11 @@ export class LatexNode extends ConnectableEntity {
    * @param colorCss 渲染颜色（CSS color 字符串，如 "rgba(255,0,0,0.5)" / "#ffffff"），不传则沿用当前已记录的颜色
    */
   public async updateLatex(newLatex: string, colorCss?: string): Promise<void> {
+    if (this.latexSource !== newLatex) {
+      this.project?.docCommandBus?.markSemanticDirty(this);
+    }
     this.latexSource = newLatex;
+    this.hasStartedRender = true;
     await this.renderLatexToImage(newLatex, colorCss ?? (this.currentRenderedColorCss || "#000000"));
   }
 
@@ -176,6 +199,7 @@ export class LatexNode extends ConnectableEntity {
    * 以指定颜色重新渲染当前 LaTeX（颜色变化时由 LatexNodeRenderer 调用）
    */
   public async reRenderWithColor(colorCss: string): Promise<void> {
+    this.hasStartedRender = true;
     await this.renderLatexToImage(this.latexSource, colorCss);
   }
 

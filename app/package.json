@@ -156,6 +156,7 @@
     "pdf-lib": "^1.17.1",
     "platejs": "^49.2.12",
     "radix-ui": "^1.4.3",
+    "rbush": "^4.0.1",
     "react": "catalog:",
     "react-day-picker": "^9.14.0",
     "react-dom": "catalog:",
@@ -201,6 +202,7 @@
   },
   "devDependencies": {
     "@types/events": "^3.0.3",
-    "@types/mapbox__shelf-pack": "^3.0.6"
+    "@types/mapbox__shelf-pack": "^3.0.6",
+    "@types/rbush": "^4.0.0"
   }
 }

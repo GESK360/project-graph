@@ -298,6 +298,11 @@ export class ControllerUtils {
         edge.text,
         (text) => {
           edge.rename(text);
+          if (edge instanceof MultiTargetUndirectedEdge) {
+            this.project.docCommandBus?.markAssociationDirty(edge);
+          } else {
+            this.project.docCommandBus?.markEdgeStyleDirty(edge);
+          }
         },
         {
           position: "fixed",
@@ -340,14 +345,21 @@ export class ControllerUtils {
     if (!this.project.stage.includes(clickedNode)) return;
     NodeDetailsWindow.open(clickedNode.details, (value) => {
       clickedNode.details = value;
+      clickedNode.updatedAt = Math.trunc(Date.now());
+      this.project.docCommandBus?.markSemanticDirty(clickedNode);
       // 向孪生兄弟同步 details
       this.project.syncAssociationManager.syncFrom(clickedNode, "details");
       if (this.project.getService("stageTable")) {
-        this.project.stageTable.syncSemanticTimestamps();
         this.project.stageTable.notifyChange({ emitSync: false });
       }
-      this.project.projectState = ProjectState.Unsaved;
-      this.project.emit("document-commit-debounced");
+      this.project.docCommandBus?.scheduleDebouncedCommit({
+        label: "edit_details",
+        recordHistory: true,
+        delayMs: 300,
+      });
+      if (!this.project.isSqliteV3 || this.project.isDraft) {
+        this.project.projectState = ProjectState.Unsaved;
+      }
     });
   }
 

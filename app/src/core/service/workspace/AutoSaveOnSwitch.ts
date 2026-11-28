@@ -12,6 +12,14 @@ let queue: Promise<void> = Promise.resolve();
 async function persistBeforeSwitchingAway(project: Project): Promise<void> {
   if (!Settings.autoSaveOnSwitch) return;
   if (project.isDraft || project.isCollab || project.closing) return;
+  if (project.isSqliteV3) {
+    try {
+      await project.flushV3Persist();
+    } catch (error) {
+      toast.error(i18next.t("workspace.autoSaveFailed", { defaultValue: String(error) }));
+    }
+    return;
+  }
   if (project.projectState !== ProjectState.Unsaved) return;
   try {
     await project.save({ includeThumbnail: false });

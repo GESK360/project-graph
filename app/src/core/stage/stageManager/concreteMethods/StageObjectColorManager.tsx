@@ -1,4 +1,5 @@
 import { Project, service } from "@/core/Project";
+import { Edge } from "@/core/stage/stageObject/association/Edge";
 import { Color } from "@graphif/data-structures";
 
 /**
@@ -13,6 +14,7 @@ export class StageObjectColorManager {
     for (const node of this.project.stageManager.getTextNodes()) {
       if (node.isSelected) {
         node.color = color;
+        this.project.docCommandBus?.markStyleDirty(node);
         // 向孪生兄弟同步 color
         this.project.syncAssociationManager.syncFrom(node, "color");
       }
@@ -20,31 +22,41 @@ export class StageObjectColorManager {
     for (const node of this.project.stageManager.getSections()) {
       if (node.isSelected) {
         node.color = color;
+        this.project.docCommandBus?.markStyleDirty(node);
       }
     }
     for (const entity of this.project.stageManager.getPenStrokes()) {
       if (entity.isSelected) {
         entity.color = color;
+        this.project.docCommandBus?.markStyleDirty(entity);
       }
     }
     for (const entity of this.project.stageManager.getSvgNodes()) {
       if (entity.isSelected) {
         entity.changeColor(color);
+        this.project.docCommandBus?.markStyleDirty(entity);
       }
     }
     for (const node of this.project.stageManager.getLatexNodes()) {
       if (node.isSelected) {
         node.color = color;
+        this.project.docCommandBus?.markStyleDirty(node);
       }
     }
     for (const entity of this.project.stageManager.getUrlNodes()) {
       if (entity.isSelected) {
         entity.color = color;
+        this.project.docCommandBus?.markStyleDirty(entity);
       }
     }
     for (const edge of this.project.stageManager.getAssociations()) {
       if (edge.isSelected) {
         edge.color = color;
+        if (edge instanceof Edge) {
+          this.project.docCommandBus?.markEdgeStyleDirty(edge);
+        } else {
+          this.project.docCommandBus?.markAssociationDirty(edge);
+        }
       }
     }
     // 特性：统一取消框选
@@ -62,6 +74,7 @@ export class StageObjectColorManager {
         darkenedColor.g = Math.max(darkenedColor.g - 20, 0);
         darkenedColor.b = Math.max(darkenedColor.b - 20, 0);
         node.color = darkenedColor;
+        this.project.docCommandBus?.markStyleDirty(node);
       }
     }
     this.project.historyManager.recordStep();
@@ -75,6 +88,7 @@ export class StageObjectColorManager {
         lightenedColor.g = Math.min(lightenedColor.g + 20, 255);
         lightenedColor.b = Math.min(lightenedColor.b + 20, 255);
         node.color = lightenedColor;
+        this.project.docCommandBus?.markStyleDirty(node);
       }
     }
     this.project.historyManager.recordStep();

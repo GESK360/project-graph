@@ -141,6 +141,9 @@ export class RectangleSelect {
   }
 
   private updateStageObjectByMove() {
+    if (!this.selectingRectangle) {
+      return;
+    }
     if (
       this.project.controller.pressingKeySet.has("shift") ||
       (isMac
@@ -155,11 +158,14 @@ export class RectangleSelect {
       });
     }
 
+    const candidateEntities = this.project.stageManager.queryEntitiesInRect(this.selectingRectangle);
+    const candidateAssociations = this.project.stageManager.queryAssociationsInRect(this.selectingRectangle);
+
     if (
       isMac ? this.project.controller.pressingKeySet.has("meta") : this.project.controller.pressingKeySet.has("control")
     ) {
       // 交叉选择，没的变有，有的变没
-      for (const entity of this.project.stageManager.getEntities()) {
+      for (const entity of candidateEntities) {
         if (entity.isHiddenBySectionCollapse) {
           continue;
         }
@@ -175,7 +181,7 @@ export class RectangleSelect {
           }
         }
       }
-      for (const association of this.project.stageManager.getAssociations()) {
+      for (const association of candidateAssociations) {
         if (this.isSelectWithEntity(association)) {
           if (this.project.controller.lastSelectedEdgeUUID.has(association.uuid)) {
             association.isSelected = false;
@@ -191,10 +197,7 @@ export class RectangleSelect {
 
       // Entity
       if (!isHaveEntity) {
-        for (const otherEntities of this.project.stageManager.getEntities()) {
-          // if (otherEntities instanceof Section) {
-          //   continue;
-          // }
+        for (const otherEntities of candidateEntities) {
           if (otherEntities.isHiddenBySectionCollapse) {
             continue;
           }
@@ -214,7 +217,7 @@ export class RectangleSelect {
       // Edge
       if (!isHaveEntity) {
         // 如果已经有节点被选择了，则不能再选择边了
-        for (const edge of this.project.stageManager.getAssociations()) {
+        for (const edge of candidateAssociations) {
           if (edge instanceof Edge && edge.isHiddenBySectionCollapse) {
             continue;
           }

@@ -51,6 +51,8 @@ nodeDetailsWindow:
 findWindow:
   useRegex: 使用正则表达式
   invalidRegex: 正则表达式无效
+  scopeWorkspace: 搜索整个工作空间
+  workspacePlaceholder: 在整个工作空间中搜索节点与详情...
 
 stageTable:
   expandPanel: 展开多维表格
@@ -75,6 +77,8 @@ stageTable:
     searchPlaceholder: 查找属性...
   columns:
     name: 名称
+    sourceFile: 来源文件
+    sourceFolder: 来源文件夹
     images: 图片
     createdAt: 创建时间
     updatedAt: 最后编辑时间
@@ -432,6 +436,38 @@ stageTable:
     resetZoom: 重置缩放
     currentNodeScope: "当前节点 ({{count}})"
     allImagesScope: "全部图片 ({{count}})"
+  workspaceTab:
+    title: 工作空间多维表格
+  scope:
+    currentDoc: 当前画布
+    currentFolder: 当前文件夹
+    allWorkspace: 整个工作空间
+    selectedFolders: "已选 {{count}} 个文件夹"
+    selectedDocs: "已选 {{count}} 个画布"
+    mode_all: 全部
+    mode_folders: 文件夹
+    mode_docs: 画布
+    allSummary: "包含当前工作空间内全部 {{count}} 个画布"
+    noFolders: 当前工作空间没有子文件夹
+  workspaceColumns:
+    button: 共享字段
+    title: 工作空间共享字段管理
+    description: 显式共享字段在跨文件重命名时仍保持对齐；同名自动对齐字段可一键升级或合并。
+    newColumnPlaceholder: 输入新共享字段名称...
+    createShared: 新建共享字段
+    empty: 当前工作空间暂无自定义字段
+    badgeProtected: 受保护
+    badgeShared: 共享字段
+    badgeAuto: 同名自动对齐
+    docCount: "{{count}} 个文件"
+    promote: 升级共享
+    mergeSelectedCount: "已选 {{count}} 列合并为:"
+    mergeTargetPlaceholder: 目标共享字段名称
+    mergeAction: 合并字段
+    mergeTypeMismatch: 只能合并相同类型且非受保护的字段
+    createdToast: "已创建共享字段「{{name}}」"
+    promotedToast: "已将「{{name}}」升级为跨文件共享字段"
+    mergedToast: "已合并为共享字段「{{name}}」"
 
 projectStatus:
   emptyCanvas: 画布里没有节点
@@ -3383,6 +3419,22 @@ workspace:
   versionSnapshotFailed: 历史版本快照写入失败
   notAWorkspace: 所选文件夹不可用
   rootMissing: 工作空间目录已不存在
+  v3CheckpointSaved: 已同步合并并保存历史快照
+  openGlobalTable: 工作空间多维表格
+  openGlobalSpacedRepetition: 全局间隔重复
+  upgradeV3:
+    title: 一键备份并升级到 .prg v3.0.0
+    description: 检测到工作空间内有 {{count}} 个旧版 v2.x 工程文件（共 {{size}}）。升级到 SQLite v3.0.0 后可显著提升大图打开速度并支持实时自动落盘。
+    backupHint: 升级前将保留完整目录结构自动备份全部旧版文件到：
+    moreFiles: 还有 {{count}} 个文件未展开显示
+    backingUp: 正在完整备份旧版文件…
+    migratingFile: 正在升级（{{completed}}/{{total}}）：{{file}}
+    summary: 升级完成：成功 {{succeeded}} 个，失败 {{failed}} 个。
+    backupSavedAt: 原文件已备份至：{{dir}}
+    later: 稍后再说
+    confirmUpgrade: 一键备份并升级
+    upgrading: 正在升级…
+    done: 完成
 
 common:
   editModeHint:

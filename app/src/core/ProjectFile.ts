@@ -5,7 +5,8 @@ import type { Decoder } from "@msgpack/msgpack";
 import { BlobWriter, Uint8ArrayReader, Uint8ArrayWriter, ZipReader } from "@zip.js/zip.js";
 import mime from "mime";
 
-export const LATEST_PROJECT_VERSION = "2.8.0";
+export const LATEST_V2_PROJECT_VERSION = "2.8.0";
+export const LATEST_PROJECT_VERSION = "3.0.0";
 
 export type ParsedProjectFile = {
   serializedStageObjects: any[];

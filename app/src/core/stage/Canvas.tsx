@@ -10,6 +10,9 @@ import { Vector } from "@graphif/data-structures";
 export class Canvas {
   ctx: CanvasRenderingContext2D;
   private resizeObserver?: ResizeObserver;
+  private readonly onWindowKeyDown?: (event: KeyboardEvent) => void;
+  private readonly onWindowKeyUp?: (event: KeyboardEvent) => void;
+  private readonly onWindowBlur?: () => void;
 
   constructor(
     private readonly project: Project,
@@ -17,76 +20,81 @@ export class Canvas {
   ) {
     element.tabIndex = -1;
     element.style.touchAction = "none";
-    // 鼠标移动到画布上开始tick
-    element.addEventListener("mousemove", () => {
-      if (document.querySelector("[data-radix-popper-content-wrapper]")) {
-        // workaround: 解决菜单栏弹出后鼠标移动到canvas区域，导致菜单自动关闭的问题
-        return;
-      }
-      this.project.loop();
-    });
-    // 重定向键盘事件
-    element.addEventListener("focus", () => element.blur());
-    const shouldRedirectKeyboardEvent = () =>
-      store.get(activeTabAtom) === this.project &&
-      !(
-        document.activeElement?.tagName === "INPUT" ||
-        document.activeElement?.tagName === "TEXTAREA" ||
-        document.activeElement?.getAttribute("contenteditable") === "true"
-      );
-    window.addEventListener("keydown", (event) => {
-      // 在窗口层面拦截浏览器默认快捷键，避免触发系统/浏览器查找/搜索等行为
-      // 必须在 shouldRedirectKeyboardEvent 判断之前执行，否则输入框聚焦时会被跳过
-      const key = event.key;
-      if (
-        (event.ctrlKey &&
-          (key === "f" ||
-            key === "F" ||
-            key === "g" ||
-            key === "G" ||
-            key === "r" ||
-            key === "R" ||
-            (!event.altKey && !event.metaKey && !event.shiftKey && (key === "u" || key === "U")))) ||
-        key === "F3" ||
-        key === "F5" ||
-        key === "F7"
-      ) {
-        event.preventDefault();
-      }
-      if (!shouldRedirectKeyboardEvent()) return;
-      if (project.isRunning) {
-        element.dispatchEvent(
-          new KeyboardEvent("keydown", {
-            key: event.key,
-            altKey: event.altKey,
-            ctrlKey: event.ctrlKey,
-            shiftKey: event.shiftKey,
-            metaKey: event.metaKey,
-          }),
+    if (!project.isOffscreen) {
+      // 鼠标移动到画布上开始tick
+      element.addEventListener("mousemove", () => {
+        if (document.querySelector("[data-radix-popper-content-wrapper]")) {
+          // workaround: 解决菜单栏弹出后鼠标移动到canvas区域，导致菜单自动关闭的问题
+          return;
+        }
+        this.project.loop();
+      });
+      // 重定向键盘事件
+      element.addEventListener("focus", () => element.blur());
+      const shouldRedirectKeyboardEvent = () =>
+        store.get(activeTabAtom) === this.project &&
+        !(
+          document.activeElement?.tagName === "INPUT" ||
+          document.activeElement?.tagName === "TEXTAREA" ||
+          document.activeElement?.getAttribute("contenteditable") === "true"
         );
-      }
-    });
-    window.addEventListener("keyup", (event) => {
-      if (!shouldRedirectKeyboardEvent()) {
-        this.project.controller.pressingKeySet.clear();
-        return;
-      }
-      if (project.isRunning) {
-        element.dispatchEvent(
-          new KeyboardEvent("keyup", {
-            key: event.key,
-            altKey: event.altKey,
-            ctrlKey: event.ctrlKey,
-            shiftKey: event.shiftKey,
-            metaKey: event.metaKey,
-          }),
-        );
-      }
-    });
-    // 失焦时清空按下的按键
-    window.addEventListener("blur", () => {
-      this.project.controller.pressingKeySet.clear();
-    });
+      this.onWindowKeyDown = (event: KeyboardEvent) => {
+        // 在窗口层面拦截浏览器默认快捷键，避免触发系统/浏览器查找/搜索等行为
+        // 必须在 shouldRedirectKeyboardEvent 判断之前执行，否则输入框聚焦时会被跳过
+        const key = event.key;
+        if (
+          (event.ctrlKey &&
+            (key === "f" ||
+              key === "F" ||
+              key === "g" ||
+              key === "G" ||
+              key === "r" ||
+              key === "R" ||
+              (!event.altKey && !event.metaKey && !event.shiftKey && (key === "u" || key === "U")))) ||
+          key === "F3" ||
+          key === "F5" ||
+          key === "F7"
+        ) {
+          event.preventDefault();
+        }
+        if (!shouldRedirectKeyboardEvent()) return;
+        if (project.isRunning) {
+          element.dispatchEvent(
+            new KeyboardEvent("keydown", {
+              key: event.key,
+              altKey: event.altKey,
+              ctrlKey: event.ctrlKey,
+              shiftKey: event.shiftKey,
+              metaKey: event.metaKey,
+            }),
+          );
+        }
+      };
+      this.onWindowKeyUp = (event: KeyboardEvent) => {
+        if (!shouldRedirectKeyboardEvent()) {
+          this.project.controller?.pressingKeySet.clear();
+          return;
+        }
+        if (project.isRunning) {
+          element.dispatchEvent(
+            new KeyboardEvent("keyup", {
+              key: event.key,
+              altKey: event.altKey,
+              ctrlKey: event.ctrlKey,
+              shiftKey: event.shiftKey,
+              metaKey: event.metaKey,
+            }),
+          );
+        }
+      };
+      this.onWindowBlur = () => {
+        this.project.controller?.pressingKeySet.clear();
+      };
+      window.addEventListener("keydown", this.onWindowKeyDown);
+      window.addEventListener("keyup", this.onWindowKeyUp);
+      // 失焦时清空按下的按键
+      window.addEventListener("blur", this.onWindowBlur);
+    }
     this.ctx = element.getContext("2d")!;
     if (Settings.antialiasing === "disabled") {
       this.ctx.imageSmoothingEnabled = false;
@@ -136,6 +144,9 @@ export class Canvas {
   }
 
   dispose() {
+    if (this.onWindowKeyDown) window.removeEventListener("keydown", this.onWindowKeyDown);
+    if (this.onWindowKeyUp) window.removeEventListener("keyup", this.onWindowKeyUp);
+    if (this.onWindowBlur) window.removeEventListener("blur", this.onWindowBlur);
     this.resizeObserver?.disconnect();
     this.element.remove();
   }

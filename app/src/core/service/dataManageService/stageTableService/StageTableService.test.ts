@@ -64,6 +64,7 @@ import "@/core/stage/stageObject/association/MutiTargetUndirectedEdge";
 import "@/core/stage/stageObject/association/SyncAssociation";
 
 import { LATEST_PROJECT_VERSION, parseProjectFile } from "@/core/ProjectFile";
+import { DocCommandBus } from "@/core/sqlite/DocCommandBus";
 import { ProjectUpgrader } from "@/core/stage/ProjectUpgrader";
 import { Camera } from "@/core/stage/Camera";
 import { HistoryManager } from "@/core/stage/stageManager/StageHistoryManager";
@@ -115,6 +116,13 @@ function createTestHarness() {
     },
     table: createDefaultTableData(),
     projectState: "saved",
+    isSqliteV3: false,
+    v3DocId: null,
+    v3Revision: 0,
+    stageRevision: 0,
+    bumpStageRevision: () => {
+      project.stageRevision++;
+    },
     renderer: { frameIndex: 0, w: 1200, h: 800 },
     effects: { addEffect: vi.fn(), addMoveShadow: vi.fn() },
     sectionCollisionSolver: { solveOverlaps: vi.fn() },
@@ -123,6 +131,8 @@ function createTestHarness() {
     loop: vi.fn(),
     getService: (id: string) => services.get(id),
   };
+
+  project.docCommandBus = new DocCommandBus(project);
 
   const register = <T>(id: string, instance: T): T => {
     services.set(id, instance);
@@ -202,7 +212,7 @@ describe("StageTableService & .prg v2.8.0", () => {
     );
 
     expect(upgradedMetadata.version).toBe(LATEST_PROJECT_VERSION);
-    expect(upgradedMetadata.version).toBe("2.8.0");
+    expect(upgradedMetadata.version).toBe("3.0.0");
     expect(upgradedStage[0].createdAt).toBe(1700000100000);
     expect(upgradedStage[0].updatedAt).toBe(1700000200000);
     expect(upgradedStage[0].children[0].createdAt).toBe(1700000100000);
@@ -1009,15 +1019,15 @@ describe("StageTableService & .prg v2.8.0", () => {
     expect(created!.primaryText).toBe("细胞器图像");
     expect(created!.tableFields[startCol.id]).toBe("2026-11-25");
 
-    const prevRef = created!.entity.tableFields;
+    const prevRef = created!.entity!.tableFields;
     const ok = project.stageTable.updateRowCustomFields(created!.uuid, {
       [startCol.id]: "2026-11-26",
       [endCol.id]: "2026-11-28",
     });
     expect(ok).toBe(true);
-    expect(created!.entity.tableFields).not.toBe(prevRef);
-    expect(created!.entity.tableFields[startCol.id]).toBe("2026-11-26");
-    expect(created!.entity.tableFields[endCol.id]).toBe("2026-11-28");
+    expect(created!.entity!.tableFields).not.toBe(prevRef);
+    expect(created!.entity!.tableFields[startCol.id]).toBe("2026-11-26");
+    expect(created!.entity!.tableFields[endCol.id]).toBe("2026-11-28");
   });
 
   it("supports multi-condition filterGroup with category operators, AND/OR, date presets, collapse persistence, and cleanup", () => {
@@ -1235,7 +1245,7 @@ describe("StageTableService & .prg v2.8.0", () => {
       updatedAt: initialUpdatedAt,
     });
     project.stageManager.add(nodeA);
-    project.stageTable.captureBaselineDigests();
+    project.historyManager.clearHistory();
 
     // 预先手工建一个同名同类型列（备注），验证创建间隔重复视图时会复用而不是重复创建
     const existingNotes = project.stageTable.addCustomColumn({ name: "备注", type: "text" });

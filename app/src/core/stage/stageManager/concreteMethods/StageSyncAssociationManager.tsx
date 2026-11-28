@@ -1,4 +1,5 @@
 import { Project, service } from "@/core/Project";
+import { Entity } from "@/core/stage/stageObject/abstract/StageEntity";
 import { StageObject } from "@/core/stage/stageObject/abstract/StageObject";
 import { CollisionBox } from "@/core/stage/stageObject/collisionBox/collisionBox";
 import { TextNode } from "@/core/stage/stageObject/entity/TextNode";
@@ -99,6 +100,7 @@ export class StageSyncAssociationManager {
     if (existingSyncAssociations.length > 0) {
       // 加入已有的第一个孪生组
       existingSyncAssociations[0].associationList.push(twin);
+      this.project.docCommandBus?.markAssociationDirty(existingSyncAssociations[0]);
     } else {
       // 新建一个 SyncAssociation，包含原节点和新节点
       const syncAssociation = new SyncAssociation(this.project, {
@@ -143,6 +145,14 @@ export class StageSyncAssociationManager {
         } else if (key in source && key in member) {
           // color / details 等字段直接赋值
           (member as any)[key] = (source as any)[key];
+          if (member instanceof Entity) {
+            if (key === "details") {
+              member.updatedAt = Math.trunc(Date.now());
+              this.project.docCommandBus?.markSemanticDirty(member);
+            } else {
+              this.project.docCommandBus?.markStyleDirty(member);
+            }
+          }
         }
 
         // 递归：若该成员也在其他 SyncAssociation 中，继续向外传播
@@ -173,6 +183,8 @@ export class StageSyncAssociationManager {
       // 成员数量不足 2，孪生关系失去意义，整个关系对象也要删除
       if (sa.associationList.length < 2) {
         toDeleteSyncAssociations.push(sa);
+      } else if (idx !== -1) {
+        this.project.docCommandBus?.markAssociationDirty(sa);
       }
     }
 

@@ -88,34 +88,32 @@ export class CollisionBox {
    * 如果形状数组为空，则返回00点的无大小矩形
    */
   getRectangle(): Rectangle {
-    if (this.shapes.length === 0) {
+    const len = this.shapes.length;
+    if (len === 0) {
       return new Rectangle(Vector.getZero(), Vector.getZero());
+    }
+    if (len === 1) {
+      const first = this.shapes[0];
+      if (first instanceof Rectangle) {
+        return new Rectangle(new Vector(first.location.x, first.location.y), new Vector(first.size.x, first.size.y));
+      }
+      return first.getRectangle();
     }
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
-    for (const shape of this.shapes) {
-      const rectangle = shape.getRectangle();
-      const x = rectangle.location.x,
-        y = rectangle.location.y;
-      const width = rectangle.size.x,
-        height = rectangle.size.y;
-      if (x < minX) {
-        minX = x;
-      }
-      if (y < minY) {
-        minY = y;
-      }
-      if (x + width > maxX) {
-        maxX = x + width;
-      }
-      if (y + height > maxY) {
-        maxY = y + height;
-      }
+    for (let i = 0; i < len; i++) {
+      const rectangle = this.shapes[i].getRectangle();
+      const x = rectangle.location.x;
+      const y = rectangle.location.y;
+      const x2 = x + rectangle.size.x;
+      const y2 = y + rectangle.size.y;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x2 > maxX) maxX = x2;
+      if (y2 > maxY) maxY = y2;
     }
-    const leftTopLocation = new Vector(minX, minY);
-    const sizeVector = new Vector(maxX - minX, maxY - minY);
-    return new Rectangle(leftTopLocation, sizeVector);
+    return new Rectangle(new Vector(minX, minY), new Vector(maxX - minX, maxY - minY));
   }
 }

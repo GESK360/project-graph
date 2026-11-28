@@ -24,37 +24,31 @@ import { ExtensionEntityRenderer } from "./ExtensionEntityRenderer";
  */
 @service("entityRenderer")
 export class EntityRenderer {
-  private sectionSortedZIndex: Section[] = [];
+  private visibleSectionsSorted: Section[] = [];
+  private lastSectionsFrame = -1;
   public extensionEntityRenderer: ExtensionEntityRenderer;
 
   constructor(private readonly project: Project) {
     this.extensionEntityRenderer = new ExtensionEntityRenderer(this.project);
   }
 
-  /**
-   * 对所有section排序一次
-   * 为了防止每帧都调用导致排序，为了提高性能
-   * 决定：每隔几秒更新一次
-   */
-  sortSectionsByZIndex() {
-    const sections = this.project.stageManager.getSections();
+  private getVisibleSectionsSorted(viewRectangle: Rectangle): Section[] {
+    const frame = this.project.renderer.frameIndex;
+    if (this.lastSectionsFrame === frame) {
+      return this.visibleSectionsSorted;
+    }
+    const visibleEntities = this.project.stageManager.queryEntitiesInRect(viewRectangle, { preserveOrder: false });
+    const sections = visibleEntities.filter((entity): entity is Section => entity instanceof Section);
     sections.sort((a, b) => a.collisionBox.getRectangle().top - b.collisionBox.getRectangle().top);
-    this.sectionSortedZIndex = sections;
+    this.visibleSectionsSorted = sections;
+    this.lastSectionsFrame = frame;
+    return sections;
   }
 
-  private tickNumber = 0;
-
   renderAllSectionsBackground(viewRectangle: Rectangle) {
-    if (this.sectionSortedZIndex.length !== this.project.stageManager.getSections().length) {
-      this.sortSectionsByZIndex();
-    } else {
-      // 假设fps=60，则10秒更新一次
-      if (this.tickNumber % 600 === 0) {
-        this.sortSectionsByZIndex();
-      }
-    }
-    // 1 遍历所有section实体，画底部颜色
-    for (const section of this.sectionSortedZIndex) {
+    const sections = this.getVisibleSectionsSorted(viewRectangle);
+    // 1 仅遍历 RBush 裁剪后的可视 Section 实体，画底部颜色
+    for (const section of sections) {
       if (this.project.renderer.isOverView(viewRectangle, section)) {
         continue;
       }
@@ -66,12 +60,10 @@ export class EntityRenderer {
       }
       this.project.sectionRenderer.renderBackgroundColor(section);
     }
-    // 最后更新帧
-    this.tickNumber++;
   }
 
   /**
-   * 统一渲染全部框的大标题
+   * 统一渲染全部可视框的大标题
    */
   renderAllSectionsBigTitle(viewRectangle: Rectangle) {
     if (
@@ -80,11 +72,9 @@ export class EntityRenderer {
     ) {
       return;
     }
-    // 从最深层的最小框开始渲染
-    // 目前的层级排序是假的，是直接按y轴从上往下判定
-    // 认为最靠上的才是最底下的
-    for (let z = this.sectionSortedZIndex.length - 1; z >= 0; z--) {
-      const section = this.sectionSortedZIndex[z];
+    const sections = this.getVisibleSectionsSorted(viewRectangle);
+    for (let z = sections.length - 1; z >= 0; z--) {
+      const section = sections[z];
       if (this.project.renderer.isOverView(viewRectangle, section)) {
         continue;
       }
@@ -122,27 +112,38 @@ export class EntityRenderer {
   }
 
   /**
-   * 统一渲染所有实体
+   * 基于 RBush 空间索引精准裁剪并渲染可视区域内的实体
    */
   renderAllEntities(viewRectangle: Rectangle) {
-    const entities = this.project.stageManager.getEntities();
+    const visibleEntities = this.project.stageManager.queryEntitiesInRect(viewRectangle);
+    const visibleSections: Section[] = [];
+    const visiblePenStrokes: PenStroke[] = [];
 
-    // 先渲染所有背景图片
-    entities.forEach((entity) => {
+    // 1. 先渲染可视背景图片
+    for (const entity of visibleEntities) {
       if (this.isBackgroundImageNode(entity) && !this.project.renderer.isOverView(viewRectangle, entity)) {
         this.renderEntity(entity);
       }
-    });
+    }
 
-    // 再渲染所有非背景图片的实体
-    for (const entity of entities) {
+    // 2. 再渲染所有可视非背景、非 Section、非涂鸦实体，同时顺手收集 Section 与涂鸦
+    for (const entity of visibleEntities) {
+      if (entity instanceof Section) {
+        visibleSections.push(entity);
+        continue;
+      }
+      if (entity instanceof PenStroke) {
+        visiblePenStrokes.push(entity);
+        continue;
+      }
       if (this.isBackgroundImageNode(entity) || this.shouldSkipEntity(entity, viewRectangle)) {
         continue;
       }
       this.renderEntity(entity);
     }
-    // 3 遍历所有section实体，画顶部大文字
-    for (const section of this.project.stageManager.getSections()) {
+
+    // 3. 渲染可视 Section 边框与顶部大文字
+    for (const section of visibleSections) {
       if (this.project.renderer.isOverView(viewRectangle, section)) {
         continue;
       }
@@ -153,15 +154,15 @@ export class EntityRenderer {
         continue;
       }
       this.project.sectionRenderer.render(section);
-      // details右上角小按钮
       if (this.project.camera.currentScale > 0.065 && !section.isHiddenBySectionCollapse) {
         this.project.entityDetailsButtonRenderer.render(section);
       }
       this.renderEntityDebug(section);
       this.renderEntityTagShap(section);
     }
-    // 4 遍历所有涂鸦实体
-    for (const penStroke of this.project.stageManager.getPenStrokes()) {
+
+    // 4. 渲染可视涂鸦实体
+    for (const penStroke of visiblePenStrokes) {
       if (this.project.renderer.isOverView(viewRectangle, penStroke)) {
         continue;
       }
@@ -281,8 +282,11 @@ export class EntityRenderer {
       return;
     }
 
+    // 触发视口按需解码与 LRU 触摸
+    imageNode.ensureBitmapLoaded(this.project.renderer.frameIndex);
+
     // 先渲染图片内容
-    if (imageNode.state === "loading") {
+    if (imageNode.state === "loading" || (imageNode.state === "success" && !imageNode.bitmap)) {
       this.project.textRenderer.renderTextFromCenter(
         "loading...",
         this.project.renderer.transformWorld2View(imageNode.rectangle.center),

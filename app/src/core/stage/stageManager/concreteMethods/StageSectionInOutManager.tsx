@@ -72,12 +72,16 @@ export class SectionInOutManager {
     if (entity === section) {
       return false;
     }
+    const oldParent = entity.parentSection;
     let changed = false;
     changed = this.entityDropParent(entity, false, section) || changed;
     if (!section.children.includes(entity)) {
       section.children.push(entity);
       entity.parentSection = section;
       changed = true;
+    }
+    if (changed) {
+      this.project.docCommandBus?.markReparent(entity, oldParent, section);
     }
     return changed;
   }
@@ -128,6 +132,7 @@ export class SectionInOutManager {
     if (entity.parentSection === section) {
       entity.parentSection = null;
     }
+    this.project.docCommandBus?.markReparent(entity, section, null);
     if (convertEmptySectionToTextNode && section.children.length === 0) {
       this.convertSectionToTextNode(section);
     }
@@ -168,11 +173,6 @@ export class SectionInOutManager {
     // 获取section的父级section
     const fatherSection = section.parentSection;
 
-    // 先从父 section 的 children 中移除旧的 section 引用，避免空 Section 的连锁转换。
-    if (fatherSection) {
-      this.sectionDropChild(fatherSection, section, false);
-    }
-
     // 创建新的TextNode，保持UUID与表格元数据不变
     const textNode = new TextNode(this.project, {
       uuid: section.uuid,
@@ -187,16 +187,17 @@ export class SectionInOutManager {
     });
 
     // 原地替换舞台中的原section，避免出现重复UUID或删除爆炸特效
-    const stageIndex = this.project.stage.indexOf(section);
-    if (stageIndex !== -1) {
-      this.project.stage[stageIndex] = textNode;
-    } else {
-      this.project.stage.push(textNode);
-    }
+    this.project.stageManager.replaceStageObject(section, textNode);
 
-    // 将新的TextNode添加到父section中
+    // 将新的TextNode放回父section原位
     if (fatherSection) {
-      this.attachEntityToSection(textNode, fatherSection);
+      const childIdx = fatherSection.children.indexOf(section);
+      if (childIdx !== -1) {
+        fatherSection.children[childIdx] = textNode;
+      } else {
+        fatherSection.children.push(textNode);
+      }
+      textNode.parentSection = fatherSection;
     }
 
     // 处理所有连向section的边与孪生同步关系
